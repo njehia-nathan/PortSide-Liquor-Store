@@ -137,104 +137,103 @@ const Reports = () => {
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-            <h1 className="text-2xl font-bold text-slate-800">Sales Reports</h1>
-            <span className="text-sm text-slate-500">Last updated: {new Date().toLocaleTimeString()}</span>
+    <div className="p-3 lg:p-6 max-w-7xl mx-auto space-y-4 lg:space-y-6">
+      <div className="flex flex-col gap-3">
+        <div className="flex justify-between items-center">
+            <h1 className="text-xl lg:text-2xl font-bold text-slate-800">Reports</h1>
+            <span className="text-xs lg:text-sm text-slate-500">{new Date().toLocaleDateString()}</span>
         </div>
 
         {/* Filters & Actions */}
-        <div className="flex flex-col md:flex-row gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-sm w-full md:w-auto">
-            <div className="flex items-center gap-2 px-2">
-                <Calendar size={16} className="text-slate-400"/>
+        <div className="flex flex-col sm:flex-row gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-sm">
+            <div className="flex items-center gap-2 px-2 flex-1">
+                <Calendar size={16} className="text-slate-400 shrink-0"/>
                 <input 
                     type="date" 
-                    className="text-sm border-none outline-none text-slate-600 bg-transparent"
+                    className="text-sm border-none outline-none text-slate-600 bg-transparent min-w-0 flex-1"
                     value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
                 />
                 <span className="text-slate-400">-</span>
                 <input 
                     type="date" 
-                    className="text-sm border-none outline-none text-slate-600 bg-transparent"
+                    className="text-sm border-none outline-none text-slate-600 bg-transparent min-w-0 flex-1"
                     value={endDate}
                     onChange={(e) => setEndDate(e.target.value)}
                 />
+                {(startDate || endDate) && (
+                    <button 
+                        onClick={() => { setStartDate(''); setEndDate(''); }}
+                        className="p-1 text-slate-400 hover:text-red-500 shrink-0"
+                        title="Clear"
+                    >
+                        <FilterX size={16} />
+                    </button>
+                )}
             </div>
-            {(startDate || endDate) && (
-                <button 
-                    onClick={() => { setStartDate(''); setEndDate(''); }}
-                    className="p-2 text-slate-400 hover:text-red-500"
-                    title="Clear Dates"
-                >
-                    <FilterX size={16} />
-                </button>
-            )}
-            <div className="w-px bg-slate-200 hidden md:block"></div>
             <button 
                 onClick={downloadExcel}
-                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                className="flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-md text-sm font-medium transition-colors"
             >
                 <Download size={16} />
-                Download Excel
+                <span className="hidden sm:inline">Download</span> Excel
             </button>
         </div>
       </div>
 
       {filteredSales.length === 0 ? (
-         <div className="bg-white p-12 rounded-xl border border-slate-200 text-center shadow-sm">
-            <div className="text-slate-400 text-6xl mb-4">📅</div>
-            <h3 className="text-xl font-medium text-slate-700">No Transactions Found</h3>
-            <p className="text-slate-500 mt-2">No sales found for the selected date range. Try adjusting your filters.</p>
+         <div className="bg-white p-8 lg:p-12 rounded-xl border border-slate-200 text-center shadow-sm">
+            <div className="text-slate-400 text-4xl lg:text-6xl mb-3 lg:mb-4">📅</div>
+            <h3 className="text-lg lg:text-xl font-medium text-slate-700">No Transactions Found</h3>
+            <p className="text-sm lg:text-base text-slate-500 mt-2">No sales found for the selected date range.</p>
          </div>
       ) : (
         <>
             {/* KPI Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                    <h3 className="text-sm font-medium text-slate-500 uppercase">Total Revenue</h3>
-                    <p className="text-3xl font-bold text-slate-900 mt-2">{CURRENCY_FORMATTER.format(totalRevenue)}</p>
+            <div className="grid grid-cols-3 gap-2 lg:gap-6">
+                <div className="bg-white p-3 lg:p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 className="text-[10px] lg:text-sm font-medium text-slate-500 uppercase">Revenue</h3>
+                    <p className="text-lg lg:text-3xl font-bold text-slate-900 mt-1 lg:mt-2">{CURRENCY_FORMATTER.format(totalRevenue)}</p>
                 </div>
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                    <h3 className="text-sm font-medium text-slate-500 uppercase">Gross Profit</h3>
-                    <p className="text-3xl font-bold text-green-600 mt-2">{CURRENCY_FORMATTER.format(grossProfit)}</p>
+                <div className="bg-white p-3 lg:p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 className="text-[10px] lg:text-sm font-medium text-slate-500 uppercase">Profit</h3>
+                    <p className="text-lg lg:text-3xl font-bold text-green-600 mt-1 lg:mt-2">{CURRENCY_FORMATTER.format(grossProfit)}</p>
                 </div>
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                    <h3 className="text-sm font-medium text-slate-500 uppercase">Transactions</h3>
-                    <p className="text-3xl font-bold text-slate-900 mt-2">{filteredSales.length}</p>
+                <div className="bg-white p-3 lg:p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 className="text-[10px] lg:text-sm font-medium text-slate-500 uppercase">Sales</h3>
+                    <p className="text-lg lg:text-3xl font-bold text-slate-900 mt-1 lg:mt-2">{filteredSales.length}</p>
                 </div>
             </div>
 
             {/* Payment Breakdown */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
-                    <div className="p-3 bg-green-100 text-green-600 rounded-full"><Banknote size={24}/></div>
-                    <div>
-                        <p className="text-sm text-slate-500 font-medium">Cash Sales</p>
-                        <p className="text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.CASH)}</p>
+            <div className="grid grid-cols-3 gap-2 lg:gap-6">
+                <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center lg:items-center gap-2 lg:gap-4">
+                    <div className="p-2 lg:p-3 bg-green-100 text-green-600 rounded-full"><Banknote size={18} className="lg:w-6 lg:h-6"/></div>
+                    <div className="text-center lg:text-left">
+                        <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Cash</p>
+                        <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.CASH)}</p>
                     </div>
                 </div>
-                <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
-                    <div className="p-3 bg-blue-100 text-blue-600 rounded-full"><CreditCard size={24}/></div>
-                    <div>
-                        <p className="text-sm text-slate-500 font-medium">Card Sales</p>
-                        <p className="text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.CARD)}</p>
+                <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center lg:items-center gap-2 lg:gap-4">
+                    <div className="p-2 lg:p-3 bg-blue-100 text-blue-600 rounded-full"><CreditCard size={18} className="lg:w-6 lg:h-6"/></div>
+                    <div className="text-center lg:text-left">
+                        <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Card</p>
+                        <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.CARD)}</p>
                     </div>
                 </div>
-                <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
-                    <div className="p-3 bg-purple-100 text-purple-600 rounded-full"><Smartphone size={24}/></div>
-                    <div>
-                        <p className="text-sm text-slate-500 font-medium">Mobile Money</p>
-                        <p className="text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.MOBILE)}</p>
+                <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center lg:items-center gap-2 lg:gap-4">
+                    <div className="p-2 lg:p-3 bg-purple-100 text-purple-600 rounded-full"><Smartphone size={18} className="lg:w-6 lg:h-6"/></div>
+                    <div className="text-center lg:text-left">
+                        <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Mobile</p>
+                        <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.MOBILE)}</p>
                     </div>
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
                 {/* Sales by Category Chart */}
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm h-80">
-                    <h3 className="font-bold text-slate-700 mb-4">Revenue by Category</h3>
+                <div className="bg-white p-4 lg:p-6 rounded-xl border border-slate-200 shadow-sm h-64 lg:h-80">
+                    <h3 className="font-bold text-slate-700 mb-2 lg:mb-4 text-sm lg:text-base">Revenue by Category</h3>
                     <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                             <Pie
@@ -257,8 +256,8 @@ const Reports = () => {
                 </div>
 
                 {/* Top Products */}
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm h-80">
-                    <h3 className="font-bold text-slate-700 mb-4">Top Selling Products (Qty)</h3>
+                <div className="bg-white p-4 lg:p-6 rounded-xl border border-slate-200 shadow-sm h-64 lg:h-80">
+                    <h3 className="font-bold text-slate-700 mb-2 lg:mb-4 text-sm lg:text-base">Top Products</h3>
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={topProductsData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
                             <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} />
@@ -275,8 +274,8 @@ const Reports = () => {
                 </div>
 
                 {/* Hourly Sales Chart - Full Width */}
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm h-80 lg:col-span-2">
-                    <h3 className="font-bold text-slate-700 mb-4">Sales by Hour</h3>
+                <div className="bg-white p-4 lg:p-6 rounded-xl border border-slate-200 shadow-sm h-64 lg:h-80 lg:col-span-2">
+                    <h3 className="font-bold text-slate-700 mb-2 lg:mb-4 text-sm lg:text-base">Sales by Hour</h3>
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={hourlyData}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} />
@@ -294,36 +293,54 @@ const Reports = () => {
 
             {/* Transaction List */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                <div className="px-6 py-4 border-b border-slate-100 bg-slate-50">
-                    <h3 className="font-bold text-slate-800">Recent Transactions</h3>
+                <div className="px-4 lg:px-6 py-3 lg:py-4 border-b border-slate-100 bg-slate-50">
+                    <h3 className="font-bold text-slate-800 text-sm lg:text-base">Recent Transactions</h3>
                 </div>
-                <div className="max-h-96 overflow-y-auto">
-                <table className="w-full text-left">
-                    <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold sticky top-0">
-                        <tr>
-                            <th className="px-6 py-3">Time</th>
-                            <th className="px-6 py-3">Cashier</th>
-                            <th className="px-6 py-3">Method</th>
-                            <th className="px-6 py-3 text-right">Amount</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-sm">
-                        {filteredSales.map((sale) => (
-                            <tr key={sale.id} className="hover:bg-slate-50">
-                                <td className="px-6 py-3 text-slate-500">
-                                    {new Date(sale.timestamp).toLocaleString()}
-                                </td>
-                                <td className="px-6 py-3 font-medium">{sale.cashierName}</td>
-                                <td className="px-6 py-3">
-                                    <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs font-bold">{sale.paymentMethod}</span>
-                                </td>
-                                <td className="px-6 py-3 text-right font-bold text-slate-900">
-                                    {CURRENCY_FORMATTER.format(sale.totalAmount)}
-                                </td>
+                
+                {/* Mobile Card View */}
+                <div className="lg:hidden divide-y divide-slate-100 max-h-80 overflow-y-auto">
+                    {filteredSales.map((sale) => (
+                        <div key={sale.id} className="p-3 hover:bg-slate-50">
+                            <div className="flex justify-between items-start mb-1">
+                                <span className="font-medium text-slate-900 text-sm">{sale.cashierName}</span>
+                                <span className="font-bold text-slate-900">{CURRENCY_FORMATTER.format(sale.totalAmount)}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-xs text-slate-500">{new Date(sale.timestamp).toLocaleString()}</span>
+                                <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-xs font-bold">{sale.paymentMethod}</span>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+                
+                {/* Desktop Table View */}
+                <div className="hidden lg:block max-h-96 overflow-y-auto">
+                    <table className="w-full text-left">
+                        <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold sticky top-0">
+                            <tr>
+                                <th className="px-6 py-3">Time</th>
+                                <th className="px-6 py-3">Cashier</th>
+                                <th className="px-6 py-3">Method</th>
+                                <th className="px-6 py-3 text-right">Amount</th>
                             </tr>
-                        ))}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-sm">
+                            {filteredSales.map((sale) => (
+                                <tr key={sale.id} className="hover:bg-slate-50">
+                                    <td className="px-6 py-3 text-slate-500">
+                                        {new Date(sale.timestamp).toLocaleString()}
+                                    </td>
+                                    <td className="px-6 py-3 font-medium">{sale.cashierName}</td>
+                                    <td className="px-6 py-3">
+                                        <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs font-bold">{sale.paymentMethod}</span>
+                                    </td>
+                                    <td className="px-6 py-3 text-right font-bold text-slate-900">
+                                        {CURRENCY_FORMATTER.format(sale.totalAmount)}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </>

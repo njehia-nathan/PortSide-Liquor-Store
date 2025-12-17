@@ -1,9 +1,9 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useRef, PropsWithChildren } from 'react';
+import React, { createContext, useContext, useEffect, useState, PropsWithChildren } from 'react';
 import { 
   User, Product, Sale, Shift, AuditLog, Role, SaleItem 
 } from '../types';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
-import { dbPromise, addToSyncQueue, SyncQueueItem } from '../db';
+import { dbPromise, addToSyncQueue } from '../db';
 import { pushToCloud, supabase } from '../cloud';
 
 /**
@@ -24,8 +24,6 @@ interface StoreContextType {
   isLoading: boolean;
   isOnline: boolean;
   isSyncing: boolean;
-  pendingSyncItems: SyncQueueItem[];
-  pendingSyncCount: number;
 
   // --- AUTH ACTIONS ---
   login: (pin: string) => boolean;
@@ -63,11 +61,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [pendingSyncItems, setPendingSyncItems] = useState<SyncQueueItem[]>([]);
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const lastActivityRef = useRef<number>(Date.now());
-  const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutes in milliseconds
   const [users, setUsers] = useState<User[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
@@ -176,31 +171,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         setSales(loadedSales);
         setShifts(loadedShifts);
         setAuditLogs(loadedLogs);
-
-        // RESTORE SESSION: Check if user was previously logged in
-        const savedSession = localStorage.getItem('pos_session');
-        if (savedSession) {
-          try {
-            const session = JSON.parse(savedSession);
-            const sessionAge = Date.now() - session.loginTime;
-            
-            // Only restore if session is less than 5 minutes old
-            if (sessionAge < 5 * 60 * 1000) {
-              const savedUser = loadedUsers.find(u => u.id === session.userId);
-              if (savedUser) {
-                setCurrentUser(savedUser);
-                lastActivityRef.current = Date.now();
-                console.log('🔐 Session restored for:', savedUser.name);
-              }
-            } else {
-              // Session expired, clear it
-              localStorage.removeItem('pos_session');
-              console.log('🔐 Session expired, please login again');
-            }
-          } catch (e) {
-            localStorage.removeItem('pos_session');
-          }
-        }
       } catch (err) {
         console.error("Failed to load database:", err);
       } finally {
@@ -223,49 +193,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   }, []);
 
   // ------------------------------------------------------------------
-  // INACTIVITY TIMEOUT
-  // Logs user out after 5 minutes of no activity
-  // ------------------------------------------------------------------
-  useEffect(() => {
-    if (!currentUser) return;
-
-    // Update activity on user interactions
-    const updateActivity = () => {
-      lastActivityRef.current = Date.now();
-      // Also update the session timestamp in localStorage
-      const session = localStorage.getItem('pos_session');
-      if (session) {
-        try {
-          const parsed = JSON.parse(session);
-          localStorage.setItem('pos_session', JSON.stringify({
-            ...parsed,
-            loginTime: Date.now()
-          }));
-        } catch (e) {}
-      }
-    };
-
-    // Check for inactivity every 30 seconds
-    const checkInactivity = setInterval(() => {
-      const timeSinceActivity = Date.now() - lastActivityRef.current;
-      if (timeSinceActivity >= INACTIVITY_TIMEOUT) {
-        console.log('⏰ Session timed out due to inactivity');
-        setCurrentUser(null);
-        localStorage.removeItem('pos_session');
-      }
-    }, 30000);
-
-    // Listen for user activity
-    const events = ['mousedown', 'keydown', 'touchstart', 'scroll'];
-    events.forEach(event => window.addEventListener(event, updateActivity));
-
-    return () => {
-      clearInterval(checkInactivity);
-      events.forEach(event => window.removeEventListener(event, updateActivity));
-    };
-  }, [currentUser]);
-
-  // ------------------------------------------------------------------
   // 2. CLOUD SYNCHRONIZATION LOOP
   // Checks for pending jobs in the queue and sends them to Cloud.
   // Enhanced with retry tracking and failure handling.
@@ -276,17 +203,13 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const MAX_RETRIES = 5;
 
     const syncData = async () => {
+        // If we have no internet, we cannot sync.
+        if (!isOnline) return;
+        
         const db = await dbPromise;
         // Get keys and values separately since IDB auto-increment keys aren't in the value
         const keys = await db.getAllKeys('syncQueue');
         const values = await db.getAll('syncQueue');
-        
-        // Always update pending items state for UI display
-        const itemsWithKeys = values.map((v, i) => ({ ...v, key: keys[i] }));
-        setPendingSyncItems(itemsWithKeys);
-
-        // If we have no internet, we cannot sync but we still show pending count
-        if (!isOnline) return;
 
         if (keys.length > 0) {
             setIsSyncing(true);
@@ -301,6 +224,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
                 // Skip permanently failed jobs (will be cleaned up or handled manually)
                 if (retryCount >= MAX_RETRIES) {
                     console.error(`❌ Job ${jobKey} (${job.type}) exceeded max retries. Moving to next item.`);
+                    // Optionally: Move to a dead-letter queue or delete
+                    // For now, delete to prevent queue blockage
                     await db.delete('syncQueue', jobKey);
                     delete retryCountsRef[jobKey];
                     continue;
@@ -310,19 +235,17 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
                 const success = await pushToCloud(job.type, job.payload);
                 
                 if (success) {
+                    // If cloud accepted it, remove from local queue
                     await db.delete('syncQueue', jobKey);
                     delete retryCountsRef[jobKey];
                     console.log(`✅ Synced: ${job.type}`);
                 } else {
+                    // Increment retry count and continue to next item
                     retryCountsRef[jobKey] = retryCount + 1;
                     console.warn(`⚠️ Sync job ${job.type} failed (attempt ${retryCount + 1}/${MAX_RETRIES}). Will retry.`);
+                    // Don't break - try other items in queue
                 }
             }
-            
-            // Refresh pending items after sync
-            const remainingKeys = await db.getAllKeys('syncQueue');
-            const remainingValues = await db.getAll('syncQueue');
-            setPendingSyncItems(remainingValues.map((v, i) => ({ ...v, key: remainingKeys[i] })));
             
             setIsSyncing(false);
         }
@@ -375,12 +298,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const user = users.find(u => u.pin === pin);
     if (user) {
       setCurrentUser(user);
-      // Persist session to localStorage
-      localStorage.setItem('pos_session', JSON.stringify({
-        userId: user.id,
-        loginTime: Date.now()
-      }));
-      lastActivityRef.current = Date.now();
       return true;
     }
     return false;
@@ -388,7 +305,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
   const logout = () => {
     setCurrentUser(null);
-    localStorage.removeItem('pos_session');
   };
 
   /**
@@ -626,8 +542,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       isLoading,
       isOnline,
       isSyncing,
-      pendingSyncItems,
-      pendingSyncCount: pendingSyncItems.length,
       login,
       logout,
       updateUser,

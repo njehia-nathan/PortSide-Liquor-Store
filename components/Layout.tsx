@@ -6,15 +6,20 @@ import {
   Package, 
   BarChart3, 
   ShieldAlert,
-  Save
+  Cloud,
+  CloudOff,
+  RefreshCw,
+  Save,
+  Menu,
+  X
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
-import SyncStatusBadge from './SyncStatusBadge';
 
 const Layout = ({ children }: PropsWithChildren) => {
-  const { currentUser, logout, currentShift, auditLogs } = useStore();
+  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs } = useStore();
   const location = useLocation();
   const [lastSaved, setLastSaved] = useState<string>('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Update the "Last Saved" display whenever audit logs change
   useEffect(() => {
@@ -35,14 +40,63 @@ const Layout = ({ children }: PropsWithChildren) => {
   // Helper to check permission
   const hasPerm = (perm: string) => currentUser.permissions?.includes(perm);
 
+  // Close sidebar when route changes (mobile)
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [location.pathname]);
+
   return (
     <div className="flex h-screen bg-slate-100 overflow-hidden print:overflow-visible print:bg-white print:h-auto">
-      {/* Sidebar - Hide when printing */}
-      <aside className="w-64 bg-slate-900 text-white flex flex-col flex-shrink-0 print:hidden">
+      {/* Mobile Header Bar */}
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-slate-900 text-white px-4 py-3 flex items-center justify-between print:hidden">
+        <button 
+          onClick={() => setSidebarOpen(true)} 
+          className="p-2 hover:bg-slate-800 rounded-lg"
+        >
+          <Menu size={24} />
+        </button>
+        <h1 className="text-lg font-bold flex items-center gap-2">
+          <span className="text-amber-500">🍾</span> Port Side
+        </h1>
+        <div className="flex items-center gap-2">
+          {isSyncing ? (
+            <RefreshCw size={18} className="animate-spin text-blue-400" />
+          ) : isOnline ? (
+            <Cloud size={18} className="text-green-500" />
+          ) : (
+            <CloudOff size={18} className="text-slate-500" />
+          )}
+        </div>
+      </div>
+
+      {/* Mobile Overlay */}
+      {sidebarOpen && (
+        <div 
+          className="lg:hidden fixed inset-0 bg-black/50 z-40 print:hidden" 
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar - Collapsible on mobile */}
+      <aside className={`
+        fixed lg:static inset-y-0 left-0 z-50
+        w-64 bg-slate-900 text-white flex flex-col flex-shrink-0 
+        transform transition-transform duration-300 ease-in-out
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+        print:hidden
+      `}>
         <div className="p-6 border-b border-slate-800">
-          <h1 className="text-xl font-bold flex items-center gap-2">
-             <span className="text-amber-500 text-2xl">🍾</span> Port Side Liquor
-          </h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold flex items-center gap-2">
+               <span className="text-amber-500 text-2xl">🍾</span> Port Side Liquor
+            </h1>
+            <button 
+              onClick={() => setSidebarOpen(false)} 
+              className="lg:hidden p-1 hover:bg-slate-800 rounded"
+            >
+              <X size={20} />
+            </button>
+          </div>
           <div className="mt-4 text-sm text-slate-400">
             <p>User: <span className="text-white font-medium">{currentUser.name}</span></p>
             <p className="mt-1 flex items-center gap-2">
@@ -84,8 +138,25 @@ const Layout = ({ children }: PropsWithChildren) => {
 
         {/* System Status Footer */}
         <div className="px-6 py-3 bg-slate-800/50 border-t border-slate-800 space-y-2">
-            {/* Cloud Sync Status Badge */}
-            <SyncStatusBadge />
+            {/* Cloud Status */}
+            <div className="flex items-center gap-2 text-xs font-medium">
+                {isSyncing ? (
+                    <>
+                        <RefreshCw size={14} className="animate-spin text-blue-400" />
+                        <span className="text-blue-400">Syncing to Cloud...</span>
+                    </>
+                ) : isOnline ? (
+                    <>
+                        <Cloud size={14} className="text-green-500" />
+                        <span className="text-green-500">Cloud Connected</span>
+                    </>
+                ) : (
+                    <>
+                        <CloudOff size={14} className="text-slate-500" />
+                        <span className="text-slate-500">Offline Mode</span>
+                    </>
+                )}
+            </div>
 
             {/* Local Save Status */}
             <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -106,7 +177,7 @@ const Layout = ({ children }: PropsWithChildren) => {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto bg-slate-100 relative print:overflow-visible print:bg-white print:p-0">
+      <main className="flex-1 overflow-auto bg-slate-100 relative print:overflow-visible print:bg-white print:p-0 pt-14 lg:pt-0">
         {children}
       </main>
     </div>

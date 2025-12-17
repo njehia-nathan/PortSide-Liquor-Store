@@ -71,38 +71,21 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
       if (error) throw error;
     } else {
       // Upsert handles both Insert (New) and Update (Existing ID)
-      const { data, error } = await supabase.from(table).upsert(payload).select();
+      const { error } = await supabase.from(table).upsert(payload);
       
       if (error) {
           // Help debug schema issues
-          console.error(`[Cloud Sync] Error syncing to '${table}':`, {
-              code: error.code,
-              message: error.message,
-              details: error.details,
-              hint: error.hint,
-              payload: payload
-          });
-          
           if (error.code === '42703') { // Postgres code for undefined_column
-              console.error(`[Cloud Sync] Schema Error: A column is missing in Supabase table '${table}'.`);
-              console.error(`[Cloud Sync] Payload keys: ${Object.keys(payload).join(', ')}`);
-          }
-          if (error.code === '23502') { // NOT NULL violation
-              console.error(`[Cloud Sync] NOT NULL constraint: A required column is missing in payload.`);
-          }
-          if (error.code === '23505') { // Unique violation
-              console.error(`[Cloud Sync] Unique constraint violation - duplicate key.`);
+              console.error(`[Cloud Sync] Schema Error: A column is missing in Supabase table '${table}'. Check your SQL setup.`, error.message);
           }
           throw error;
       }
-      
-      console.log(`[Cloud Sync] ✓ ${type} synced to ${table}:`, data?.[0]?.id || payload.id);
     }
 
     return true; // Success
 
-  } catch (error: any) {
-    console.error(`[Cloud Error] Failed to sync ${type}:`, error?.message || error);
+  } catch (error) {
+    console.error(`[Cloud Error] Failed to sync ${type}:`, error);
     return false; // Failed, keep in queue
   }
 };

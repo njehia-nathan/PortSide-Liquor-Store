@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import './globals.css';
 import { StoreProvider } from '../context/StoreContext';
 
@@ -9,6 +9,16 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // Register service worker for PWA
+  useEffect(() => {
+    if ('serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
+      navigator.serviceWorker.register('/sw.js').then(
+        (registration) => console.log('SW registered:', registration.scope),
+        (err) => console.log('SW registration failed:', err)
+      );
+    }
+  }, []);
+
   return (
     <html lang="en">
       <head>

@@ -1,6 +1,7 @@
 {
-  "name": "PORTSIDE LIQUOR",
-  "short_name": "PORTSIDE LIQUOR",
+  "name": "Port Side Liquor POS",
+  "short_name": "PortSide POS",
+  "description": "Offline-first Point of Sale system for liquor stores",
   "icons": [
     {
       "src": "icons/icon-48x48.png",
@@ -50,11 +51,16 @@
     {
       "src": "icons/icon-512x512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ],
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#000000"
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "categories": ["business", "finance"],
+  "prefer_related_applications": false
 }

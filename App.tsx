@@ -8,6 +8,7 @@ import Layout from './components/Layout';
 import Inventory from './pages/Inventory';
 import Reports from './pages/Reports';
 import Admin from './pages/Admin';
+import Settings from './pages/Settings';
 
 const ProtectedRoute = ({ children, requiredPermission }: PropsWithChildren<{ requiredPermission?: string }>) => {
   const { currentUser } = useStore();
@@ -57,6 +58,12 @@ const AppRoutes = () => {
       <Route path="/admin" element={
         <ProtectedRoute requiredPermission="ADMIN">
           <Admin />
+        </ProtectedRoute>
+      } />
+
+      <Route path="/settings" element={
+        <ProtectedRoute requiredPermission="ADMIN">
+          <Settings />
         </ProtectedRoute>
       } />
 

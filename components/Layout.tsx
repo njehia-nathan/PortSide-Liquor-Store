@@ -11,12 +11,13 @@ import {
   RefreshCw,
   Save,
   Menu,
-  X
+  X,
+  Settings
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
 const Layout = ({ children }: PropsWithChildren) => {
-  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs } = useStore();
+  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings } = useStore();
   const location = useLocation();
   const [lastSaved, setLastSaved] = useState<string>('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -56,7 +57,12 @@ const Layout = ({ children }: PropsWithChildren) => {
           <Menu size={24} />
         </button>
         <h1 className="text-lg font-bold flex items-center gap-2">
-          <span className="text-amber-500">🍾</span> Port Side
+          {businessSettings?.logoUrl ? (
+            <img src={businessSettings.logoUrl} alt="Logo" className="w-6 h-6 rounded object-contain" />
+          ) : (
+            <div className="w-6 h-6 bg-amber-500 rounded flex items-center justify-center text-white font-bold text-xs">PS</div>
+          )}
+          <span className="truncate">{businessSettings?.businessName?.split(' ')[0] || 'Port Side'}</span>
         </h1>
         <div className="flex items-center gap-2">
           {isSyncing ? (
@@ -88,7 +94,12 @@ const Layout = ({ children }: PropsWithChildren) => {
         <div className="p-6 border-b border-slate-800">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-bold flex items-center gap-2">
-               <span className="text-amber-500 text-2xl">🍾</span> Port Side Liquor
+               {businessSettings?.logoUrl ? (
+                 <img src={businessSettings.logoUrl} alt="Logo" className="w-8 h-8 rounded-lg object-contain" />
+               ) : (
+                 <div className="w-8 h-8 bg-amber-500 rounded-lg flex items-center justify-center text-white font-bold text-sm">PS</div>
+               )}
+               <span className="truncate">{businessSettings?.businessName || 'Port Side Liquor'}</span>
             </h1>
             <button 
               onClick={() => setSidebarOpen(false)} 
@@ -132,6 +143,13 @@ const Layout = ({ children }: PropsWithChildren) => {
             <Link to="/admin" className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/admin')}`}>
               <ShieldAlert size={20} />
               <span className="font-medium">Admin & Logs</span>
+            </Link>
+          )}
+          
+          {hasPerm('ADMIN') && (
+            <Link to="/settings" className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/settings')}`}>
+              <Settings size={20} />
+              <span className="font-medium">Settings</span>
             </Link>
           )}
         </nav>

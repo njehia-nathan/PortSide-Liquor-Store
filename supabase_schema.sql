@@ -109,6 +109,27 @@ CREATE POLICY "Allow all for anon" ON audit_logs FOR ALL USING (true);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
 
 -- ============================================================================
+-- BUSINESS_SETTINGS TABLE
+-- Store business configuration (single row with id='default')
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS business_settings (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    "businessName" TEXT NOT NULL DEFAULT 'Port Side Liquor',
+    tagline TEXT,
+    phone TEXT NOT NULL DEFAULT '+254 700 000000',
+    email TEXT,
+    location TEXT NOT NULL DEFAULT 'Nairobi, Kenya',
+    "logoUrl" TEXT,
+    "receiptFooter" TEXT DEFAULT 'Thank you for your business!'
+);
+
+ALTER TABLE business_settings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all for anon" ON business_settings FOR ALL USING (true);
+
+-- Insert default settings if not exists
+INSERT INTO business_settings (id) VALUES ('default') ON CONFLICT (id) DO NOTHING;
+
+-- ============================================================================
 -- HELPFUL QUERIES
 -- ============================================================================
 

@@ -5,7 +5,7 @@ import { CURRENCY_FORMATTER } from '../constants';
 import { Search, Plus, Minus, Trash2, CreditCard, Banknote, Smartphone, LogOut, Receipt, Printer, X, Clock } from 'lucide-react';
 
 const POS = () => {
-  const { products, sales, processSale, currentShift, openShift, closeShift, logout } = useStore();
+  const { products, sales, processSale, currentShift, openShift, closeShift, logout, businessSettings } = useStore();
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<AlcoholType | 'ALL'>('ALL');
@@ -399,9 +399,34 @@ const POS = () => {
               <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full overflow-hidden print:shadow-none print:w-full print:max-w-none">
                   
                   {/* Print Content Container */}
-                  <div className="p-8 pb-4 text-center print:p-8">
-                      <h2 className="text-2xl font-bold mb-1">Port Side Liquor</h2>
-                      <p className="text-xs text-slate-500 mb-4">Westlands, Nairobi • +254 700 000000</p>
+                  <div className="p-6 lg:p-8 pb-4 text-center print:p-8">
+                      {/* Logo */}
+                      {businessSettings?.logoUrl && (
+                        <img 
+                          src={businessSettings.logoUrl} 
+                          alt="Logo" 
+                          className="w-16 h-16 mx-auto mb-3 object-contain"
+                        />
+                      )}
+                      
+                      {/* Business Name */}
+                      <h2 className="text-xl lg:text-2xl font-bold mb-0.5">
+                        {businessSettings?.businessName || 'Port Side Liquor'}
+                      </h2>
+                      
+                      {/* Tagline */}
+                      {businessSettings?.tagline && (
+                        <p className="text-xs text-slate-400 italic mb-1">{businessSettings.tagline}</p>
+                      )}
+                      
+                      {/* Contact Info */}
+                      <p className="text-xs text-slate-500 mb-1">
+                        {businessSettings?.location || 'Nairobi, Kenya'}
+                      </p>
+                      <p className="text-xs text-slate-500 mb-4">
+                        {businessSettings?.phone || '+254 700 000000'}
+                        {businessSettings?.email && ` • ${businessSettings.email}`}
+                      </p>
                       
                       <div className="border-t border-b border-dashed border-slate-300 py-4 my-4 space-y-1 text-sm text-left">
                           <div className="flex justify-between">
@@ -441,7 +466,9 @@ const POS = () => {
                           <span className="text-2xl font-bold">{CURRENCY_FORMATTER.format(receiptSale.totalAmount)}</span>
                       </div>
 
-                      <p className="text-xs text-slate-500 italic text-center">Thank you for your business!</p>
+                      <p className="text-xs text-slate-500 italic text-center">
+                        {businessSettings?.receiptFooter || 'Thank you for your business!'}
+                      </p>
                   </div>
 
                   {/* Action Buttons (Hidden when printing) */}

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'portside-pos-v1';
+const CACHE_NAME = 'portside-pos-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

@@ -8,8 +8,12 @@ const withPWA = require("@ducanh2912/next-pwa").default({
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Disable SSR for this app since it uses IndexedDB (browser-only)
-  // All pages will be client-side rendered
+  // Empty turbopack config to silence the warning
+  turbopack: {},
+  // Use webpack for builds (required for PWA plugin)
+  experimental: {
+    forceSwcTransforms: true,
+  },
 };
 
 module.exports = withPWA(nextConfig);

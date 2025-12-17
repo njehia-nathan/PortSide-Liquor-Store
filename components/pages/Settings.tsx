@@ -72,7 +72,26 @@ const Settings = () => {
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 lg:p-6">
           <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><FileText size={18} /> Receipt Customization</h2>
           <div className="space-y-4">
-            <div><label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Image size={14} /> Logo URL (Optional)</label><input type="url" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="https://example.com/logo.png or /icons/icon-192x192.png" value={formData.logoUrl} onChange={(e) => handleChange('logoUrl', e.target.value)} /><p className="text-xs text-slate-500 mt-1">Use /icons/icon-192x192.png for the app icon</p></div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Image size={14} /> Business Logo (Optional)</label>
+              <input type="file" ref={fileInputRef} accept="image/*" onChange={handleLogoUpload} className="hidden" />
+              {formData.logoUrl ? (
+                <div className="flex items-center gap-4 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <img src={formData.logoUrl} alt="Logo preview" className="w-16 h-16 object-contain rounded" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-slate-700">Logo uploaded</p>
+                    <p className="text-xs text-slate-500">Click remove to change</p>
+                  </div>
+                  <button type="button" onClick={removeLogo} className="p-2 text-red-500 hover:bg-red-50 rounded-lg"><X size={18} /></button>
+                </div>
+              ) : (
+                <button type="button" onClick={() => fileInputRef.current?.click()} className="w-full flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed border-slate-300 rounded-lg hover:border-amber-400 hover:bg-amber-50 transition-colors">
+                  <Upload size={24} className="text-slate-400" />
+                  <span className="text-sm font-medium text-slate-600">Click to upload logo</span>
+                  <span className="text-xs text-slate-400">PNG, JPG up to 500KB</span>
+                </button>
+              )}
+            </div>
             <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Receipt Footer Message</label><textarea className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="Thank you for shopping with us!" rows={2} value={formData.receiptFooter} onChange={(e) => handleChange('receiptFooter', e.target.value)} /></div>
           </div>
         </div>

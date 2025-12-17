@@ -82,7 +82,22 @@ export const initDB = async (): Promise<IDBPDatabase<POSDB>> => {
 };
 
 // Singleton promise to ensure we only open the DB once
-export const dbPromise = initDB();
+// Only initialize on client side (browser) - not on server
+let dbPromiseInternal: Promise<IDBPDatabase<POSDB>> | null = null;
+
+export const getDB = (): Promise<IDBPDatabase<POSDB>> => {
+  if (typeof window === 'undefined') {
+    // Server-side: return a rejected promise
+    return Promise.reject(new Error('IndexedDB is not available on the server'));
+  }
+  if (!dbPromiseInternal) {
+    dbPromiseInternal = initDB();
+  }
+  return dbPromiseInternal;
+};
+
+// Export getDB as dbPromise for backward compatibility
+export const dbPromise = getDB;
 
 /**
  * HELPER: ADD TO SYNC QUEUE
@@ -94,7 +109,7 @@ export const dbPromise = initDB();
  * @param payload - The data object
  */
 export const addToSyncQueue = async (type: string, payload: any) => {
-  const db = await dbPromise;
+  const db = await getDB();
   await db.add('syncQueue', {
     type,
     payload,

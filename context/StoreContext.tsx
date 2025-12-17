@@ -81,7 +81,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const db = await dbPromise;
+        const db = await dbPromise();
         
         // Fetch all data from local stores
         let loadedUsers = await db.getAll('users');
@@ -230,7 +230,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         // If we have no internet, we cannot sync.
         if (!isOnline) return;
         
-        const db = await dbPromise;
+        const db = await dbPromise();
         // Get keys and values separately since IDB auto-increment keys aren't in the value
         const keys = await db.getAllKeys('syncQueue');
         const values = await db.getAll('syncQueue');
@@ -311,7 +311,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     setAuditLogs(prev => [newLog, ...prev]);
 
     // Save to Local DB
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('auditLogs', newLog);
     
     // Queue for Cloud
@@ -336,7 +336,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
    */
   const updateUser = async (updatedUser: User) => {
     setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('users', updatedUser);
     await addLog('USER_UPDATE', `Updated user details for ${updatedUser.name}`);
     await addToSyncQueue('UPDATE_USER', updatedUser);
@@ -348,7 +348,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       id: Date.now().toString(),
     };
     setUsers(prev => [...prev, newUser]);
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('users', newUser);
     await addLog('USER_ADD', `Added new user: ${newUser.name} (${newUser.role})`);
     await addToSyncQueue('ADD_USER', newUser);
@@ -358,7 +358,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const user = users.find(u => u.id === userId);
     if (user) {
         setUsers(prev => prev.filter(u => u.id !== userId));
-        const db = await dbPromise;
+        const db = await dbPromise();
         await db.delete('users', userId);
         await addLog('USER_DELETE', `Deleted user: ${user.name}`);
         await addToSyncQueue('DELETE_USER', { id: userId });
@@ -382,7 +382,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     };
     setShifts(prev => [...prev, newShift]);
     
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('shifts', newShift);
     
     const details = openingCash > 0 
@@ -415,7 +415,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
     
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('shifts', updatedShift);
     await addLog('SHIFT_CLOSE', `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}`);
     await addToSyncQueue('CLOSE_SHIFT', updatedShift);
@@ -443,7 +443,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     };
 
     // DB Transaction: We need to update Products AND save Sale together
-    const db = await dbPromise;
+    const db = await dbPromise();
     const tx = db.transaction(['products', 'sales', 'syncQueue'], 'readwrite');
     
     // 1. Update Inventory locally (Optimistic)
@@ -498,7 +498,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     };
     setProducts(prev => [...prev, newProduct]);
     
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('products', newProduct);
     await addLog('PRODUCT_ADD', `Added product: ${newProduct.name} (${newProduct.size})`);
     await addToSyncQueue('ADD_PRODUCT', newProduct);
@@ -507,7 +507,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const updateProduct = async (product: Product) => {
     setProducts(prev => prev.map(p => p.id === product.id ? product : p));
     
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('products', product);
     await addLog('PRODUCT_EDIT', `Updated product: ${product.name} (${product.size})`);
     await addToSyncQueue('UPDATE_PRODUCT', product);
@@ -520,7 +520,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const updatedProduct = { ...product, stock: product.stock + change };
     setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
 
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('products', updatedProduct);
     await addLog('INVENTORY_ADJ', `Adjusted ${product.name} by ${change}. Reason: ${reason}`);
     await addToSyncQueue('ADJUST_STOCK', updatedProduct); // Send full product object to simple overwrite
@@ -538,7 +538,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
     
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('products', updatedProduct);
     await addLog('STOCK_RECEIVE', `Received ${quantity} of ${product.name}.`);
     await addToSyncQueue('RECEIVE_STOCK', updatedProduct);
@@ -549,7 +549,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
    */
   const updateBusinessSettings = async (settings: BusinessSettings) => {
     setBusinessSettings(settings);
-    const db = await dbPromise;
+    const db = await dbPromise();
     await db.put('businessSettings', settings);
     await addLog('SETTINGS_UPDATE', `Updated business settings: ${settings.businessName}`);
     await addToSyncQueue('UPDATE_SETTINGS', settings);

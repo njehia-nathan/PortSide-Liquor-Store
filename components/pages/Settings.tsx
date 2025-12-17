@@ -1,13 +1,14 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { Settings as SettingsIcon, Building2, Phone, Mail, MapPin, Save, Image, FileText } from 'lucide-react';
+import { Settings as SettingsIcon, Building2, Phone, Mail, MapPin, Save, Image, FileText, Upload, X } from 'lucide-react';
 
 const Settings = () => {
   const { businessSettings, updateBusinessSettings, currentUser } = useStore();
   const [formData, setFormData] = useState({ businessName: '', tagline: '', phone: '', email: '', location: '', logoUrl: '', receiptFooter: '' });
   const [saved, setSaved] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (businessSettings) {
@@ -17,6 +18,27 @@ const Settings = () => {
 
   const handleSubmit = async (e: React.FormEvent) => { e.preventDefault(); await updateBusinessSettings({ id: 'default', ...formData }); setSaved(true); setTimeout(() => setSaved(false), 3000); };
   const handleChange = (field: string, value: string) => { setFormData(prev => ({ ...prev, [field]: value })); };
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 500 * 1024) {
+        alert('Logo file must be less than 500KB');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = reader.result as string;
+        setFormData(prev => ({ ...prev, logoUrl: base64 }));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const removeLogo = () => {
+    setFormData(prev => ({ ...prev, logoUrl: '' }));
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   if (!currentUser?.permissions?.includes('ADMIN')) {
     return (<div className="p-6 flex items-center justify-center h-full"><div className="text-center"><div className="text-6xl mb-4">🔒</div><h2 className="text-xl font-bold text-slate-800">Access Denied</h2><p className="text-slate-500 mt-2">Only administrators can access settings.</p></div></div>);

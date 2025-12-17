@@ -1,5 +1,5 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
-import { User, Product, Sale, Shift, AuditLog } from './types';
+import { User, Product, Sale, Shift, AuditLog, BusinessSettings } from './types';
 
 /**
  * DATABASE SCHEMA DEFINITION
@@ -23,6 +23,9 @@ export interface POSDB extends DBSchema {
   // Store for Audit Logs (Security trail)
   auditLogs: { key: string; value: AuditLog };
   
+  // Store for Business Settings (single row)
+  businessSettings: { key: string; value: BusinessSettings };
+  
   // SYNC QUEUE
   // This is the most important part for "Offline-First".
   // When we do an action, we store it here.
@@ -43,7 +46,7 @@ export interface SyncQueueItem {
 
 // Name of the database in the browser's developer tools
 const DB_NAME = 'PortSidePOS_DB';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Bumped for businessSettings store
 
 /**
  * INITIALIZE DATABASE
@@ -68,6 +71,9 @@ export const initDB = async (): Promise<IDBPDatabase<POSDB>> => {
       
       // Create 'auditLogs' table
       if (!db.objectStoreNames.contains('auditLogs')) db.createObjectStore('auditLogs', { keyPath: 'id' });
+      
+      // Create 'businessSettings' table
+      if (!db.objectStoreNames.contains('businessSettings')) db.createObjectStore('businessSettings', { keyPath: 'id' });
       
       // Create 'syncQueue' table with auto-incrementing numbers for keys
       if (!db.objectStoreNames.contains('syncQueue')) db.createObjectStore('syncQueue', { keyPath: 'key', autoIncrement: true });

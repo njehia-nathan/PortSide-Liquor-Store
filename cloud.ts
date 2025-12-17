@@ -60,6 +60,9 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
       case 'LOG':
         table = 'audit_logs';
         break;
+      case 'UPDATE_SETTINGS':
+        table = 'business_settings';
+        break;
       default:
         console.warn('Unknown sync type:', type);
         return true; // Skip unknown types to clear queue

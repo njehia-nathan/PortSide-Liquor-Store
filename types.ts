@@ -90,3 +90,14 @@ export interface InventoryAdjustment {
   userId: string;
   timestamp: string;
 }
+
+export interface BusinessSettings {
+  id: string; // Always 'default' - single row
+  businessName: string;
+  tagline?: string;
+  phone: string;
+  email: string;
+  location: string;
+  logoUrl?: string; // Path to logo image
+  receiptFooter?: string; // Custom message at bottom of receipt
+}

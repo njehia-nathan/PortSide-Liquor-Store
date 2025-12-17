@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, PropsWithChildren } from 'react';
 import { 
-  User, Product, Sale, Shift, AuditLog, Role, SaleItem 
+  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings 
 } from '../types';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
 import { dbPromise, addToSyncQueue } from '../db';
@@ -19,6 +19,7 @@ interface StoreContextType {
   shifts: Shift[];
   auditLogs: AuditLog[];
   currentShift: Shift | null;
+  businessSettings: BusinessSettings | null;
   
   // --- APP STATE ---
   isLoading: boolean;
@@ -44,6 +45,9 @@ interface StoreContextType {
   // --- SHIFT ACTIONS ---
   openShift: (openingCash?: number) => Promise<void>;
   closeShift: (closingCash: number) => Promise<void>;
+  
+  // --- SETTINGS ACTIONS ---
+  updateBusinessSettings: (settings: BusinessSettings) => Promise<void>;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
@@ -68,6 +72,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [sales, setSales] = useState<Sale[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [businessSettings, setBusinessSettings] = useState<BusinessSettings | null>(null);
 
   // ------------------------------------------------------------------
   // 1. INITIALIZATION
@@ -164,6 +169,25 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         // Sort Data (Newest first for logs/sales)
         loadedSales.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+        // Load Business Settings
+        const loadedSettings = await db.get('businessSettings', 'default');
+        if (loadedSettings) {
+          setBusinessSettings(loadedSettings);
+        } else {
+          // Set default settings
+          const defaultSettings: BusinessSettings = {
+            id: 'default',
+            businessName: 'Port Side Liquor',
+            phone: '+254 700 000000',
+            email: '',
+            location: 'Nairobi, Kenya',
+            logoUrl: '/icons/icon-192x192.png',
+            receiptFooter: 'Thank you for your business!'
+          };
+          await db.put('businessSettings', defaultSettings);
+          setBusinessSettings(defaultSettings);
+        }
 
         // Update React State
         setUsers(loadedUsers);
@@ -520,6 +544,17 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     await addToSyncQueue('RECEIVE_STOCK', updatedProduct);
   };
 
+  /**
+   * Business Settings
+   */
+  const updateBusinessSettings = async (settings: BusinessSettings) => {
+    setBusinessSettings(settings);
+    const db = await dbPromise;
+    await db.put('businessSettings', settings);
+    await addLog('SETTINGS_UPDATE', `Updated business settings: ${settings.businessName}`);
+    await addToSyncQueue('UPDATE_SETTINGS', settings);
+  };
+
   if (isLoading) {
       return (
           <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
@@ -554,6 +589,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       receiveStock,
       openShift,
       closeShift,
+      businessSettings,
+      updateBusinessSettings,
     }}>
       {children}
     </StoreContext.Provider>

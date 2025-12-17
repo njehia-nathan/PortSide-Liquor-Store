@@ -36,13 +36,10 @@ input, select, textarea {
   }
 }
 
-/* Print styles */
+/* Print styles - Tailwind handles print:hidden utility */
 @media print {
   body {
     background: white !important;
-  }
-  .print\\:hidden {
-    display: none !important;
   }
 }
 

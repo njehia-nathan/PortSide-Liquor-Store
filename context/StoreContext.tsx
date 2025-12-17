@@ -175,14 +175,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         if (loadedSettings) {
           setBusinessSettings(loadedSettings);
         } else {
-          // Set default settings
+          // Set default settings (no logo by default - user must upload)
           const defaultSettings: BusinessSettings = {
             id: 'default',
             businessName: 'Port Side Liquor',
             phone: '+254 700 000000',
             email: '',
             location: 'Nairobi, Kenya',
-            logoUrl: '/icons/icon-192x192.png',
+            logoUrl: '',
             receiptFooter: 'Thank you for your business!'
           };
           await db.put('businessSettings', defaultSettings);

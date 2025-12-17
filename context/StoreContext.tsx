@@ -1,0 +1,655 @@
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef, PropsWithChildren } from 'react';
+import { 
+  User, Product, Sale, Shift, AuditLog, Role, SaleItem 
+} from '../types';
+import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
+import { dbPromise, addToSyncQueue, SyncQueueItem } from '../db';
+import { pushToCloud, supabase } from '../cloud';
+
+/**
+ * STORE CONTEXT INTERFACE
+ * Defines all the data and functions available to the rest of the app.
+ */
+interface StoreContextType {
+  // --- DATA ---
+  currentUser: User | null;
+  users: User[];
+  products: Product[];
+  sales: Sale[];
+  shifts: Shift[];
+  auditLogs: AuditLog[];
+  currentShift: Shift | null;
+  
+  // --- APP STATE ---
+  isLoading: boolean;
+  isOnline: boolean;
+  isSyncing: boolean;
+  pendingSyncItems: SyncQueueItem[];
+  pendingSyncCount: number;
+
+  // --- AUTH ACTIONS ---
+  login: (pin: string) => boolean;
+  logout: () => void;
+  updateUser: (user: User) => Promise<void>;
+  addUser: (user: Omit<User, 'id'>) => Promise<void>;
+  deleteUser: (userId: string) => Promise<void>;
+  
+  // --- POS ACTIONS ---
+  processSale: (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE') => Promise<Sale | undefined>;
+  
+  // --- INVENTORY ACTIONS ---
+  addProduct: (product: Omit<Product, 'id'>) => Promise<void>;
+  updateProduct: (product: Product) => Promise<void>;
+  adjustStock: (productId: string, change: number, reason: string) => Promise<void>;
+  receiveStock: (productId: string, quantity: number, newCost?: number) => Promise<void>;
+  
+  // --- SHIFT ACTIONS ---
+  openShift: (openingCash?: number) => Promise<void>;
+  closeShift: (closingCash: number) => Promise<void>;
+}
+
+const StoreContext = createContext<StoreContextType | undefined>(undefined);
+
+/**
+ * STORE PROVIDER
+ * This is the "Brain" of the application. It manages:
+ * 1. State (React useState)
+ * 2. Local Database (IndexedDB)
+ * 3. Cloud Synchronization (Supabase)
+ */
+export const StoreProvider = ({ children }: PropsWithChildren) => {
+  // --- LOCAL STATE ---
+  // These hold the data currently displayed on the screen
+  const [isLoading, setIsLoading] = useState(true);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [pendingSyncItems, setPendingSyncItems] = useState<SyncQueueItem[]>([]);
+
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const lastActivityRef = useRef<number>(Date.now());
+  const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutes in milliseconds
+  const [users, setUsers] = useState<User[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [sales, setSales] = useState<Sale[]>([]);
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+
+  // ------------------------------------------------------------------
+  // 1. INITIALIZATION
+  // Loads data from IndexedDB when the app starts.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const db = await dbPromise;
+        
+        // Fetch all data from local stores
+        let loadedUsers = await db.getAll('users');
+        let loadedProducts = await db.getAll('products');
+        let loadedSales = await db.getAll('sales');
+        let loadedShifts = await db.getAll('shifts');
+        const loadedLogs = await db.getAll('auditLogs');
+
+        // CLOUD SYNC PULL (On Startup)
+        // If we are online, we try to fetch the latest "truth" from the server
+        // for all data stores to ensure multi-device consistency.
+        if (navigator.onLine) {
+            try {
+                // 1. Users
+                const { data: cloudUsers } = await supabase.from('users').select('*');
+                if (cloudUsers && cloudUsers.length > 0) {
+                    for (const u of cloudUsers) await db.put('users', u);
+                    loadedUsers = cloudUsers;
+                }
+
+                // 2. Products
+                const { data: cloudProducts } = await supabase.from('products').select('*');
+                if (cloudProducts && cloudProducts.length > 0) {
+                    for (const p of cloudProducts) await db.put('products', p);
+                    loadedProducts = cloudProducts;
+                }
+
+                // 3. Sales (merge cloud sales with local - cloud is source of truth for existing IDs)
+                const { data: cloudSales } = await supabase.from('sales').select('*');
+                if (cloudSales && cloudSales.length > 0) {
+                    // Merge: Cloud sales take precedence, but keep local-only sales
+                    const cloudSaleIds = new Set(cloudSales.map((s: Sale) => s.id));
+                    const localOnlySales = loadedSales.filter(s => !cloudSaleIds.has(s.id));
+                    const mergedSales = [...cloudSales, ...localOnlySales];
+                    for (const s of cloudSales) await db.put('sales', s);
+                    loadedSales = mergedSales;
+                }
+
+                // 4. Shifts (same merge strategy)
+                const { data: cloudShifts } = await supabase.from('shifts').select('*');
+                if (cloudShifts && cloudShifts.length > 0) {
+                    const cloudShiftIds = new Set(cloudShifts.map((s: Shift) => s.id));
+                    const localOnlyShifts = loadedShifts.filter(s => !cloudShiftIds.has(s.id));
+                    const mergedShifts = [...cloudShifts, ...localOnlyShifts];
+                    for (const s of cloudShifts) await db.put('shifts', s);
+                    loadedShifts = mergedShifts;
+                }
+
+                console.log('☁️ Cloud sync pull complete');
+            } catch (cloudErr) {
+                console.warn("Could not fetch initial cloud data, using local.", cloudErr);
+            }
+        }
+
+        // SEEDING: If this is the very first time running the app (no users),
+        // we populate the DB with the initial constants so the user can login.
+        if (loadedUsers.length === 0) {
+            // Check localStorage for migration (legacy support) or use constants
+            const legacyUsers = localStorage.getItem('bk_users');
+            const seedUsers = legacyUsers ? JSON.parse(legacyUsers) : INITIAL_USERS;
+            
+            // Normalize permissions to ensure data integrity
+            const finalSeedUsers = seedUsers.map((u: any) => {
+                if (!u.permissions) {
+                     if (u.role === Role.ADMIN) return { ...u, permissions: ['POS', 'INVENTORY', 'REPORTS', 'ADMIN'] };
+                     if (u.role === Role.MANAGER) return { ...u, permissions: ['POS', 'INVENTORY', 'REPORTS'] };
+                     return { ...u, permissions: ['POS'] };
+                }
+                return u;
+            });
+
+            // Save seeds to DB
+            for (const u of finalSeedUsers) await db.put('users', u);
+            loadedUsers = finalSeedUsers;
+        }
+
+        // Seed Products if empty
+        if (loadedProducts.length === 0) {
+            const legacyProducts = localStorage.getItem('bk_products');
+            const seedProducts = legacyProducts ? JSON.parse(legacyProducts) : INITIAL_PRODUCTS;
+            for (const p of seedProducts) await db.put('products', p);
+            loadedProducts = seedProducts;
+        }
+
+        // Sort Data (Newest first for logs/sales)
+        loadedSales.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+        // Update React State
+        setUsers(loadedUsers);
+        setProducts(loadedProducts);
+        setSales(loadedSales);
+        setShifts(loadedShifts);
+        setAuditLogs(loadedLogs);
+
+        // RESTORE SESSION: Check if user was previously logged in
+        const savedSession = localStorage.getItem('pos_session');
+        if (savedSession) {
+          try {
+            const session = JSON.parse(savedSession);
+            const sessionAge = Date.now() - session.loginTime;
+            
+            // Only restore if session is less than 5 minutes old
+            if (sessionAge < 5 * 60 * 1000) {
+              const savedUser = loadedUsers.find(u => u.id === session.userId);
+              if (savedUser) {
+                setCurrentUser(savedUser);
+                lastActivityRef.current = Date.now();
+                console.log('🔐 Session restored for:', savedUser.name);
+              }
+            } else {
+              // Session expired, clear it
+              localStorage.removeItem('pos_session');
+              console.log('🔐 Session expired, please login again');
+            }
+          } catch (e) {
+            localStorage.removeItem('pos_session');
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load database:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadData();
+
+    // Setup Event Listeners for Internet Connection
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // ------------------------------------------------------------------
+  // INACTIVITY TIMEOUT
+  // Logs user out after 5 minutes of no activity
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (!currentUser) return;
+
+    // Update activity on user interactions
+    const updateActivity = () => {
+      lastActivityRef.current = Date.now();
+      // Also update the session timestamp in localStorage
+      const session = localStorage.getItem('pos_session');
+      if (session) {
+        try {
+          const parsed = JSON.parse(session);
+          localStorage.setItem('pos_session', JSON.stringify({
+            ...parsed,
+            loginTime: Date.now()
+          }));
+        } catch (e) {}
+      }
+    };
+
+    // Check for inactivity every 30 seconds
+    const checkInactivity = setInterval(() => {
+      const timeSinceActivity = Date.now() - lastActivityRef.current;
+      if (timeSinceActivity >= INACTIVITY_TIMEOUT) {
+        console.log('⏰ Session timed out due to inactivity');
+        setCurrentUser(null);
+        localStorage.removeItem('pos_session');
+      }
+    }, 30000);
+
+    // Listen for user activity
+    const events = ['mousedown', 'keydown', 'touchstart', 'scroll'];
+    events.forEach(event => window.addEventListener(event, updateActivity));
+
+    return () => {
+      clearInterval(checkInactivity);
+      events.forEach(event => window.removeEventListener(event, updateActivity));
+    };
+  }, [currentUser]);
+
+  // ------------------------------------------------------------------
+  // 2. CLOUD SYNCHRONIZATION LOOP
+  // Checks for pending jobs in the queue and sends them to Cloud.
+  // Enhanced with retry tracking and failure handling.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    // Track retry attempts per job key (in memory, resets on page reload)
+    const retryCountsRef: Record<number, number> = {};
+    const MAX_RETRIES = 5;
+
+    const syncData = async () => {
+        const db = await dbPromise;
+        // Get keys and values separately since IDB auto-increment keys aren't in the value
+        const keys = await db.getAllKeys('syncQueue');
+        const values = await db.getAll('syncQueue');
+        
+        // Always update pending items state for UI display
+        const itemsWithKeys = values.map((v, i) => ({ ...v, key: keys[i] }));
+        setPendingSyncItems(itemsWithKeys);
+
+        // If we have no internet, we cannot sync but we still show pending count
+        if (!isOnline) return;
+
+        if (keys.length > 0) {
+            setIsSyncing(true);
+            console.log(`☁️ Starting Sync: ${keys.length} items pending...`);
+            
+            // Process queue items one by one
+            for (let i = 0; i < keys.length; i++) {
+                const jobKey = keys[i];
+                const job = values[i];
+                const retryCount = retryCountsRef[jobKey] || 0;
+
+                // Skip permanently failed jobs (will be cleaned up or handled manually)
+                if (retryCount >= MAX_RETRIES) {
+                    console.error(`❌ Job ${jobKey} (${job.type}) exceeded max retries. Moving to next item.`);
+                    await db.delete('syncQueue', jobKey);
+                    delete retryCountsRef[jobKey];
+                    continue;
+                }
+
+                // Call our Cloud Service (Supabase)
+                const success = await pushToCloud(job.type, job.payload);
+                
+                if (success) {
+                    await db.delete('syncQueue', jobKey);
+                    delete retryCountsRef[jobKey];
+                    console.log(`✅ Synced: ${job.type}`);
+                } else {
+                    retryCountsRef[jobKey] = retryCount + 1;
+                    console.warn(`⚠️ Sync job ${job.type} failed (attempt ${retryCount + 1}/${MAX_RETRIES}). Will retry.`);
+                }
+            }
+            
+            // Refresh pending items after sync
+            const remainingKeys = await db.getAllKeys('syncQueue');
+            const remainingValues = await db.getAll('syncQueue');
+            setPendingSyncItems(remainingValues.map((v, i) => ({ ...v, key: remainingKeys[i] })));
+            
+            setIsSyncing(false);
+        }
+    };
+
+    // Run the sync check every 5 seconds
+    const interval = setInterval(syncData, 5000);
+    
+    // Also run immediately if we just came online
+    if (isOnline) syncData();
+
+    return () => clearInterval(interval);
+  }, [isOnline]); // Only re-run when online status changes
+
+
+  // Computed value: The currently active shift for the logged-in user
+  const currentShift = shifts.find(s => s.status === 'OPEN' && s.cashierId === currentUser?.id) || null;
+
+  // ------------------------------------------------------------------
+  // 3. ACTION HANDLERS
+  // ------------------------------------------------------------------
+
+  /**
+   * Add Audit Log
+   * Records important actions for security.
+   */
+  const addLog = async (action: string, details: string) => {
+    if (!currentUser) return;
+    const newLog: AuditLog = {
+      id: Date.now().toString(),
+      timestamp: new Date().toISOString(),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      action,
+      details,
+    };
+    
+    // Update UI immediately (Optimistic)
+    setAuditLogs(prev => [newLog, ...prev]);
+
+    // Save to Local DB
+    const db = await dbPromise;
+    await db.put('auditLogs', newLog);
+    
+    // Queue for Cloud
+    await addToSyncQueue('LOG', newLog);
+  };
+
+  const login = (pin: string) => {
+    const user = users.find(u => u.pin === pin);
+    if (user) {
+      setCurrentUser(user);
+      // Persist session to localStorage
+      localStorage.setItem('pos_session', JSON.stringify({
+        userId: user.id,
+        loginTime: Date.now()
+      }));
+      lastActivityRef.current = Date.now();
+      return true;
+    }
+    return false;
+  };
+
+  const logout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('pos_session');
+  };
+
+  /**
+   * User Management Actions
+   */
+  const updateUser = async (updatedUser: User) => {
+    setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+    const db = await dbPromise;
+    await db.put('users', updatedUser);
+    await addLog('USER_UPDATE', `Updated user details for ${updatedUser.name}`);
+    await addToSyncQueue('UPDATE_USER', updatedUser);
+  };
+
+  const addUser = async (userData: Omit<User, 'id'>) => {
+    const newUser: User = {
+      ...userData,
+      id: Date.now().toString(),
+    };
+    setUsers(prev => [...prev, newUser]);
+    const db = await dbPromise;
+    await db.put('users', newUser);
+    await addLog('USER_ADD', `Added new user: ${newUser.name} (${newUser.role})`);
+    await addToSyncQueue('ADD_USER', newUser);
+  };
+
+  const deleteUser = async (userId: string) => {
+    const user = users.find(u => u.id === userId);
+    if (user) {
+        setUsers(prev => prev.filter(u => u.id !== userId));
+        const db = await dbPromise;
+        await db.delete('users', userId);
+        await addLog('USER_DELETE', `Deleted user: ${user.name}`);
+        await addToSyncQueue('DELETE_USER', { id: userId });
+    }
+  };
+
+  /**
+   * Shift Management
+   * Controls opening and closing the cash drawer sessions.
+   * Updated: openingCash is now optional (defaults to 0) for businesses without a fixed float.
+   */
+  const openShift = async (openingCash: number = 0) => {
+    if (!currentUser) return;
+    const newShift: Shift = {
+      id: Date.now().toString(),
+      cashierId: currentUser.id,
+      cashierName: currentUser.name,
+      startTime: new Date().toISOString(),
+      openingCash,
+      status: 'OPEN',
+    };
+    setShifts(prev => [...prev, newShift]);
+    
+    const db = await dbPromise;
+    await db.put('shifts', newShift);
+    
+    const details = openingCash > 0 
+        ? `Shift opened with ${CURRENCY_FORMATTER.format(openingCash)}`
+        : `Shift opened (No Float)`;
+
+    await addLog('SHIFT_OPEN', details);
+    await addToSyncQueue('OPEN_SHIFT', newShift);
+  };
+
+  const closeShift = async (closingCash: number) => {
+    if (!currentShift) return;
+    
+    // Calculate how much cash should be in drawer based on sales
+    const shiftSales = sales.filter(s => 
+      new Date(s.timestamp) > new Date(currentShift.startTime) && 
+      s.cashierId === currentShift.cashierId &&
+      s.paymentMethod === 'CASH'
+    );
+    const totalCashSales = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+    const expected = currentShift.openingCash + totalCashSales;
+
+    const updatedShift: Shift = {
+      ...currentShift,
+      endTime: new Date().toISOString(),
+      closingCash,
+      expectedCash: expected,
+      status: 'CLOSED',
+    };
+
+    setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
+    
+    const db = await dbPromise;
+    await db.put('shifts', updatedShift);
+    await addLog('SHIFT_CLOSE', `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}`);
+    await addToSyncQueue('CLOSE_SHIFT', updatedShift);
+  };
+
+  /**
+   * PROCESS SALE
+   * The core function of the POS. Handles money and inventory deduction.
+   */
+  const processSale = async (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE') => {
+    if (!currentUser) return undefined;
+    
+    const totalAmount = items.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
+    const totalCost = items.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
+
+    const newSale: Sale = {
+      id: Date.now().toString(),
+      timestamp: new Date().toISOString(),
+      cashierId: currentUser.id,
+      cashierName: currentUser.name,
+      totalAmount,
+      totalCost,
+      paymentMethod,
+      items,
+    };
+
+    // DB Transaction: We need to update Products AND save Sale together
+    const db = await dbPromise;
+    const tx = db.transaction(['products', 'sales', 'syncQueue'], 'readwrite');
+    
+    // 1. Update Inventory locally (Optimistic)
+    const updatedProducts = [...products];
+    
+    for (const item of items) {
+       const idx = updatedProducts.findIndex(p => p.id === item.productId);
+       if (idx > -1) {
+           updatedProducts[idx] = { 
+               ...updatedProducts[idx], 
+               stock: updatedProducts[idx].stock - item.quantity 
+           };
+           // Update product in DB
+           await tx.objectStore('products').put(updatedProducts[idx]);
+           
+           // Queue the product update so Cloud inventory matches
+           await tx.objectStore('syncQueue').add({
+             type: 'UPDATE_PRODUCT',
+             payload: updatedProducts[idx],
+             timestamp: Date.now()
+           });
+       }
+    }
+
+    // Update React State
+    setProducts(updatedProducts);
+    setSales(prev => [newSale, ...prev]);
+
+    // 2. Save Sale to DB
+    await tx.objectStore('sales').put(newSale);
+    await tx.objectStore('syncQueue').add({
+        type: 'SALE',
+        payload: newSale,
+        timestamp: Date.now()
+    });
+    
+    // Commit transaction
+    await tx.done;
+    
+    await addLog('SALE', `Sale #${newSale.id} processed for ${CURRENCY_FORMATTER.format(totalAmount)} via ${paymentMethod}`);
+
+    return newSale;
+  };
+
+  /**
+   * Inventory Management Functions
+   */
+  const addProduct = async (productData: Omit<Product, 'id'>) => {
+    const newProduct: Product = {
+      ...productData,
+      id: Date.now().toString(),
+    };
+    setProducts(prev => [...prev, newProduct]);
+    
+    const db = await dbPromise;
+    await db.put('products', newProduct);
+    await addLog('PRODUCT_ADD', `Added product: ${newProduct.name} (${newProduct.size})`);
+    await addToSyncQueue('ADD_PRODUCT', newProduct);
+  };
+
+  const updateProduct = async (product: Product) => {
+    setProducts(prev => prev.map(p => p.id === product.id ? product : p));
+    
+    const db = await dbPromise;
+    await db.put('products', product);
+    await addLog('PRODUCT_EDIT', `Updated product: ${product.name} (${product.size})`);
+    await addToSyncQueue('UPDATE_PRODUCT', product);
+  };
+
+  const adjustStock = async (productId: string, change: number, reason: string) => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+
+    const updatedProduct = { ...product, stock: product.stock + change };
+    setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
+
+    const db = await dbPromise;
+    await db.put('products', updatedProduct);
+    await addLog('INVENTORY_ADJ', `Adjusted ${product.name} by ${change}. Reason: ${reason}`);
+    await addToSyncQueue('ADJUST_STOCK', updatedProduct); // Send full product object to simple overwrite
+  };
+
+  const receiveStock = async (productId: string, quantity: number, newCost?: number) => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+
+    const updatedProduct = {
+          ...product,
+          stock: product.stock + quantity,
+          costPrice: newCost !== undefined ? newCost : product.costPrice
+    };
+
+    setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
+    
+    const db = await dbPromise;
+    await db.put('products', updatedProduct);
+    await addLog('STOCK_RECEIVE', `Received ${quantity} of ${product.name}.`);
+    await addToSyncQueue('RECEIVE_STOCK', updatedProduct);
+  };
+
+  if (isLoading) {
+      return (
+          <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
+              <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+              <h2 className="text-xl font-bold">Loading System...</h2>
+              <p className="text-slate-400 mt-2">Initializing Database</p>
+          </div>
+      );
+  }
+
+  return (
+    <StoreContext.Provider value={{
+      currentUser,
+      users,
+      products,
+      sales,
+      shifts,
+      auditLogs,
+      currentShift,
+      isLoading,
+      isOnline,
+      isSyncing,
+      pendingSyncItems,
+      pendingSyncCount: pendingSyncItems.length,
+      login,
+      logout,
+      updateUser,
+      addUser,
+      deleteUser,
+      processSale,
+      addProduct,
+      updateProduct,
+      adjustStock,
+      receiveStock,
+      openShift,
+      closeShift,
+    }}>
+      {children}
+    </StoreContext.Provider>
+  );
+};
+
+export const useStore = () => {
+  const context = useContext(StoreContext);
+  if (context === undefined) {
+    throw new Error('useStore must be used within a StoreProvider');
+  }
+  return context;
+};

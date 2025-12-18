@@ -56,7 +56,7 @@ export default function RootLayout({
         <link rel="icon" type="image/png" href="/icons/icon-192x192.png" />
         <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
       </head>
-      <body className="bg-gray-100 text-gray-900 antialiased select-none">
+      <body className="bg-gray-100 text-gray-900 antialiased">
         <StoreProvider>
           {children}
         </StoreProvider>

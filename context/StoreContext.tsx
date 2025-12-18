@@ -73,6 +73,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [businessSettings, setBusinessSettings] = useState<BusinessSettings | null>(null);
+  const [lastActivity, setLastActivity] = useState<number>(Date.now());
 
   // ------------------------------------------------------------------
   // 1. INITIALIZATION
@@ -82,6 +83,28 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const loadData = async () => {
       try {
         const db = await dbPromise();
+
+        // Restore user session from localStorage
+        const savedSession = localStorage.getItem('pos_session');
+        if (savedSession) {
+          try {
+            const { userId, lastActivity: savedLastActivity } = JSON.parse(savedSession);
+            const timeSinceActivity = Date.now() - savedLastActivity;
+            const FIVE_MINUTES = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+            // Only restore if less than 5 minutes of inactivity
+            if (timeSinceActivity < FIVE_MINUTES) {
+              // Will be set after users are loaded
+              console.log('Restoring session for user:', userId);
+            } else {
+              console.log('Session expired (inactive for', Math.round(timeSinceActivity / 60000), 'minutes)');
+              localStorage.removeItem('pos_session');
+            }
+          } catch (e) {
+            console.error('Failed to parse session:', e);
+            localStorage.removeItem('pos_session');
+          }
+        }
 
         // Fetch all data from local stores
         let loadedUsers = await db.getAll('users');
@@ -195,6 +218,27 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         setSales(loadedSales);
         setShifts(loadedShifts);
         setAuditLogs(loadedLogs);
+
+        // Restore user session after users are loaded
+        const savedSession = localStorage.getItem('pos_session');
+        if (savedSession) {
+          try {
+            const { userId, lastActivity: savedLastActivity } = JSON.parse(savedSession);
+            const timeSinceActivity = Date.now() - savedLastActivity;
+            const FIVE_MINUTES = 5 * 60 * 1000;
+
+            if (timeSinceActivity < FIVE_MINUTES) {
+              const user = loadedUsers.find(u => u.id === userId);
+              if (user) {
+                setCurrentUser(user);
+                setLastActivity(Date.now());
+                console.log('✅ Session restored for:', user.name);
+              }
+            }
+          } catch (e) {
+            // Already handled above
+          }
+        }
       } catch (err) {
         console.error("Failed to load database:", err);
       } finally {
@@ -284,6 +328,50 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     return () => clearInterval(interval);
   }, [isOnline]); // Only re-run when online status changes
 
+  // ------------------------------------------------------------------
+  // 3. SESSION MANAGEMENT
+  // Auto-logout after 5 minutes of inactivity
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (!currentUser) return;
+
+    // Save session to localStorage
+    localStorage.setItem('pos_session', JSON.stringify({
+      userId: currentUser.id,
+      lastActivity: lastActivity
+    }));
+
+    // Check for inactivity every 30 seconds
+    const inactivityCheck = setInterval(() => {
+      const timeSinceActivity = Date.now() - lastActivity;
+      const FIVE_MINUTES = 5 * 60 * 1000;
+
+      if (timeSinceActivity >= FIVE_MINUTES) {
+        console.log('⏱️ Auto-logout due to inactivity');
+        setCurrentUser(null);
+        localStorage.removeItem('pos_session');
+      }
+    }, 30000); // Check every 30 seconds
+
+    // Track user activity
+    const updateActivity = () => {
+      setLastActivity(Date.now());
+    };
+
+    // Listen for user interactions
+    window.addEventListener('mousedown', updateActivity);
+    window.addEventListener('keydown', updateActivity);
+    window.addEventListener('touchstart', updateActivity);
+    window.addEventListener('scroll', updateActivity);
+
+    return () => {
+      clearInterval(inactivityCheck);
+      window.removeEventListener('mousedown', updateActivity);
+      window.removeEventListener('keydown', updateActivity);
+      window.removeEventListener('touchstart', updateActivity);
+      window.removeEventListener('scroll', updateActivity);
+    };
+  }, [currentUser, lastActivity]);
 
   // Computed value: The currently active shift for the logged-in user
   const currentShift = shifts.find(s => s.status === 'OPEN' && s.cashierId === currentUser?.id) || null;
@@ -322,6 +410,11 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const user = users.find(u => u.pin === pin);
     if (user) {
       setCurrentUser(user);
+      setLastActivity(Date.now());
+      localStorage.setItem('pos_session', JSON.stringify({
+        userId: user.id,
+        lastActivity: Date.now()
+      }));
       return true;
     }
     return false;
@@ -329,6 +422,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
   const logout = () => {
     setCurrentUser(null);
+    localStorage.removeItem('pos_session');
   };
 
   /**

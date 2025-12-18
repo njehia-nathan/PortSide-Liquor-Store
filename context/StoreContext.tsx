@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, PropsWithChildren } from 'react';
-import { 
-  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings 
+import {
+  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings
 } from '../types';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
 import { dbPromise, addToSyncQueue } from '../db';
@@ -20,7 +20,7 @@ interface StoreContextType {
   auditLogs: AuditLog[];
   currentShift: Shift | null;
   businessSettings: BusinessSettings | null;
-  
+
   // --- APP STATE ---
   isLoading: boolean;
   isOnline: boolean;
@@ -32,20 +32,20 @@ interface StoreContextType {
   updateUser: (user: User) => Promise<void>;
   addUser: (user: Omit<User, 'id'>) => Promise<void>;
   deleteUser: (userId: string) => Promise<void>;
-  
+
   // --- POS ACTIONS ---
   processSale: (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE') => Promise<Sale | undefined>;
-  
+
   // --- INVENTORY ACTIONS ---
   addProduct: (product: Omit<Product, 'id'>) => Promise<void>;
   updateProduct: (product: Product) => Promise<void>;
   adjustStock: (productId: string, change: number, reason: string) => Promise<void>;
   receiveStock: (productId: string, quantity: number, newCost?: number) => Promise<void>;
-  
+
   // --- SHIFT ACTIONS ---
   openShift: (openingCash?: number) => Promise<void>;
   closeShift: (closingCash: number) => Promise<void>;
-  
+
   // --- SETTINGS ACTIONS ---
   updateBusinessSettings: (settings: BusinessSettings) => Promise<void>;
 }
@@ -82,7 +82,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const loadData = async () => {
       try {
         const db = await dbPromise();
-        
+
         // Fetch all data from local stores
         let loadedUsers = await db.getAll('users');
         let loadedProducts = await db.getAll('products');
@@ -94,76 +94,76 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         // If we are online, we try to fetch the latest "truth" from the server
         // for all data stores to ensure multi-device consistency.
         if (navigator.onLine) {
-            try {
-                // 1. Users
-                const { data: cloudUsers } = await supabase.from('users').select('*');
-                if (cloudUsers && cloudUsers.length > 0) {
-                    for (const u of cloudUsers) await db.put('users', u);
-                    loadedUsers = cloudUsers;
-                }
-
-                // 2. Products
-                const { data: cloudProducts } = await supabase.from('products').select('*');
-                if (cloudProducts && cloudProducts.length > 0) {
-                    for (const p of cloudProducts) await db.put('products', p);
-                    loadedProducts = cloudProducts;
-                }
-
-                // 3. Sales (merge cloud sales with local - cloud is source of truth for existing IDs)
-                const { data: cloudSales } = await supabase.from('sales').select('*');
-                if (cloudSales && cloudSales.length > 0) {
-                    // Merge: Cloud sales take precedence, but keep local-only sales
-                    const cloudSaleIds = new Set(cloudSales.map((s: Sale) => s.id));
-                    const localOnlySales = loadedSales.filter(s => !cloudSaleIds.has(s.id));
-                    const mergedSales = [...cloudSales, ...localOnlySales];
-                    for (const s of cloudSales) await db.put('sales', s);
-                    loadedSales = mergedSales;
-                }
-
-                // 4. Shifts (same merge strategy)
-                const { data: cloudShifts } = await supabase.from('shifts').select('*');
-                if (cloudShifts && cloudShifts.length > 0) {
-                    const cloudShiftIds = new Set(cloudShifts.map((s: Shift) => s.id));
-                    const localOnlyShifts = loadedShifts.filter(s => !cloudShiftIds.has(s.id));
-                    const mergedShifts = [...cloudShifts, ...localOnlyShifts];
-                    for (const s of cloudShifts) await db.put('shifts', s);
-                    loadedShifts = mergedShifts;
-                }
-
-                console.log('☁️ Cloud sync pull complete');
-            } catch (cloudErr) {
-                console.warn("Could not fetch initial cloud data, using local.", cloudErr);
+          try {
+            // 1. Users
+            const { data: cloudUsers } = await supabase.from('users').select('*');
+            if (cloudUsers && cloudUsers.length > 0) {
+              for (const u of cloudUsers) await db.put('users', u);
+              loadedUsers = cloudUsers;
             }
+
+            // 2. Products
+            const { data: cloudProducts } = await supabase.from('products').select('*');
+            if (cloudProducts && cloudProducts.length > 0) {
+              for (const p of cloudProducts) await db.put('products', p);
+              loadedProducts = cloudProducts;
+            }
+
+            // 3. Sales (merge cloud sales with local - cloud is source of truth for existing IDs)
+            const { data: cloudSales } = await supabase.from('sales').select('*');
+            if (cloudSales && cloudSales.length > 0) {
+              // Merge: Cloud sales take precedence, but keep local-only sales
+              const cloudSaleIds = new Set(cloudSales.map((s: Sale) => s.id));
+              const localOnlySales = loadedSales.filter(s => !cloudSaleIds.has(s.id));
+              const mergedSales = [...cloudSales, ...localOnlySales];
+              for (const s of cloudSales) await db.put('sales', s);
+              loadedSales = mergedSales;
+            }
+
+            // 4. Shifts (same merge strategy)
+            const { data: cloudShifts } = await supabase.from('shifts').select('*');
+            if (cloudShifts && cloudShifts.length > 0) {
+              const cloudShiftIds = new Set(cloudShifts.map((s: Shift) => s.id));
+              const localOnlyShifts = loadedShifts.filter(s => !cloudShiftIds.has(s.id));
+              const mergedShifts = [...cloudShifts, ...localOnlyShifts];
+              for (const s of cloudShifts) await db.put('shifts', s);
+              loadedShifts = mergedShifts;
+            }
+
+            console.log('☁️ Cloud sync pull complete');
+          } catch (cloudErr) {
+            console.warn("Could not fetch initial cloud data, using local.", cloudErr);
+          }
         }
 
         // SEEDING: If this is the very first time running the app (no users),
         // we populate the DB with the initial constants so the user can login.
         if (loadedUsers.length === 0) {
-            // Check localStorage for migration (legacy support) or use constants
-            const legacyUsers = localStorage.getItem('bk_users');
-            const seedUsers = legacyUsers ? JSON.parse(legacyUsers) : INITIAL_USERS;
-            
-            // Normalize permissions to ensure data integrity
-            const finalSeedUsers = seedUsers.map((u: any) => {
-                if (!u.permissions) {
-                     if (u.role === Role.ADMIN) return { ...u, permissions: ['POS', 'INVENTORY', 'REPORTS', 'ADMIN'] };
-                     if (u.role === Role.MANAGER) return { ...u, permissions: ['POS', 'INVENTORY', 'REPORTS'] };
-                     return { ...u, permissions: ['POS'] };
-                }
-                return u;
-            });
+          // Check localStorage for migration (legacy support) or use constants
+          const legacyUsers = localStorage.getItem('bk_users');
+          const seedUsers = legacyUsers ? JSON.parse(legacyUsers) : INITIAL_USERS;
 
-            // Save seeds to DB
-            for (const u of finalSeedUsers) await db.put('users', u);
-            loadedUsers = finalSeedUsers;
+          // Normalize permissions to ensure data integrity
+          const finalSeedUsers = seedUsers.map((u: any) => {
+            if (!u.permissions) {
+              if (u.role === Role.ADMIN) return { ...u, permissions: ['POS', 'INVENTORY', 'REPORTS', 'ADMIN'] };
+              if (u.role === Role.MANAGER) return { ...u, permissions: ['POS', 'INVENTORY', 'REPORTS'] };
+              return { ...u, permissions: ['POS'] };
+            }
+            return u;
+          });
+
+          // Save seeds to DB
+          for (const u of finalSeedUsers) await db.put('users', u);
+          loadedUsers = finalSeedUsers;
         }
 
         // Seed Products if empty
         if (loadedProducts.length === 0) {
-            const legacyProducts = localStorage.getItem('bk_products');
-            const seedProducts = legacyProducts ? JSON.parse(legacyProducts) : INITIAL_PRODUCTS;
-            for (const p of seedProducts) await db.put('products', p);
-            loadedProducts = seedProducts;
+          const legacyProducts = localStorage.getItem('bk_products');
+          const seedProducts = legacyProducts ? JSON.parse(legacyProducts) : INITIAL_PRODUCTS;
+          for (const p of seedProducts) await db.put('products', p);
+          loadedProducts = seedProducts;
         }
 
         // Sort Data (Newest first for logs/sales)
@@ -211,8 +211,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     window.addEventListener('offline', handleOffline);
 
     return () => {
-        window.removeEventListener('online', handleOnline);
-        window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
@@ -227,57 +227,57 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const MAX_RETRIES = 5;
 
     const syncData = async () => {
-        // If we have no internet, we cannot sync.
-        if (!isOnline) return;
-        
-        const db = await dbPromise();
-        // Get keys and values separately since IDB auto-increment keys aren't in the value
-        const keys = await db.getAllKeys('syncQueue');
-        const values = await db.getAll('syncQueue');
+      // If we have no internet, we cannot sync.
+      if (!isOnline) return;
 
-        if (keys.length > 0) {
-            setIsSyncing(true);
-            console.log(`☁️ Starting Sync: ${keys.length} items pending...`);
-            
-            // Process queue items one by one
-            for (let i = 0; i < keys.length; i++) {
-                const jobKey = keys[i];
-                const job = values[i];
-                const retryCount = retryCountsRef[jobKey] || 0;
+      const db = await dbPromise();
+      // Get keys and values separately since IDB auto-increment keys aren't in the value
+      const keys = await db.getAllKeys('syncQueue');
+      const values = await db.getAll('syncQueue');
 
-                // Skip permanently failed jobs (will be cleaned up or handled manually)
-                if (retryCount >= MAX_RETRIES) {
-                    console.error(`❌ Job ${jobKey} (${job.type}) exceeded max retries. Moving to next item.`);
-                    // Optionally: Move to a dead-letter queue or delete
-                    // For now, delete to prevent queue blockage
-                    await db.delete('syncQueue', jobKey);
-                    delete retryCountsRef[jobKey];
-                    continue;
-                }
+      if (keys.length > 0) {
+        setIsSyncing(true);
+        console.log(`☁️ Starting Sync: ${keys.length} items pending...`);
 
-                // Call our Cloud Service (Supabase)
-                const success = await pushToCloud(job.type, job.payload);
-                
-                if (success) {
-                    // If cloud accepted it, remove from local queue
-                    await db.delete('syncQueue', jobKey);
-                    delete retryCountsRef[jobKey];
-                    console.log(`✅ Synced: ${job.type}`);
-                } else {
-                    // Increment retry count and continue to next item
-                    retryCountsRef[jobKey] = retryCount + 1;
-                    console.warn(`⚠️ Sync job ${job.type} failed (attempt ${retryCount + 1}/${MAX_RETRIES}). Will retry.`);
-                    // Don't break - try other items in queue
-                }
-            }
-            
-            setIsSyncing(false);
+        // Process queue items one by one
+        for (let i = 0; i < keys.length; i++) {
+          const jobKey = keys[i];
+          const job = values[i];
+          const retryCount = retryCountsRef[jobKey] || 0;
+
+          // Skip permanently failed jobs (will be cleaned up or handled manually)
+          if (retryCount >= MAX_RETRIES) {
+            console.error(`❌ Job ${jobKey} (${job.type}) exceeded max retries. Moving to next item.`);
+            // Optionally: Move to a dead-letter queue or delete
+            // For now, delete to prevent queue blockage
+            await db.delete('syncQueue', jobKey);
+            delete retryCountsRef[jobKey];
+            continue;
+          }
+
+          // Call our Cloud Service (Supabase)
+          const success = await pushToCloud(job.type, job.payload);
+
+          if (success) {
+            // If cloud accepted it, remove from local queue
+            await db.delete('syncQueue', jobKey);
+            delete retryCountsRef[jobKey];
+            console.log(`✅ Synced: ${job.type}`);
+          } else {
+            // Increment retry count and continue to next item
+            retryCountsRef[jobKey] = retryCount + 1;
+            console.warn(`⚠️ Sync job ${job.type} failed (attempt ${retryCount + 1}/${MAX_RETRIES}). Will retry.`);
+            // Don't break - try other items in queue
+          }
         }
+
+        setIsSyncing(false);
+      }
     };
 
     // Run the sync check every 5 seconds
     const interval = setInterval(syncData, 5000);
-    
+
     // Also run immediately if we just came online
     if (isOnline) syncData();
 
@@ -306,14 +306,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       action,
       details,
     };
-    
+
     // Update UI immediately (Optimistic)
     setAuditLogs(prev => [newLog, ...prev]);
 
     // Save to Local DB
     const db = await dbPromise();
     await db.put('auditLogs', newLog);
-    
+
     // Queue for Cloud
     await addToSyncQueue('LOG', newLog);
   };
@@ -357,11 +357,11 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const deleteUser = async (userId: string) => {
     const user = users.find(u => u.id === userId);
     if (user) {
-        setUsers(prev => prev.filter(u => u.id !== userId));
-        const db = await dbPromise();
-        await db.delete('users', userId);
-        await addLog('USER_DELETE', `Deleted user: ${user.name}`);
-        await addToSyncQueue('DELETE_USER', { id: userId });
+      setUsers(prev => prev.filter(u => u.id !== userId));
+      const db = await dbPromise();
+      await db.delete('users', userId);
+      await addLog('USER_DELETE', `Deleted user: ${user.name}`);
+      await addToSyncQueue('DELETE_USER', { id: userId });
     }
   };
 
@@ -381,13 +381,13 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       status: 'OPEN',
     };
     setShifts(prev => [...prev, newShift]);
-    
+
     const db = await dbPromise();
     await db.put('shifts', newShift);
-    
-    const details = openingCash > 0 
-        ? `Shift opened with ${CURRENCY_FORMATTER.format(openingCash)}`
-        : `Shift opened (No Float)`;
+
+    const details = openingCash > 0
+      ? `Shift opened with ${CURRENCY_FORMATTER.format(openingCash)}`
+      : `Shift opened (No Float)`;
 
     await addLog('SHIFT_OPEN', details);
     await addToSyncQueue('OPEN_SHIFT', newShift);
@@ -395,10 +395,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
   const closeShift = async (closingCash: number) => {
     if (!currentShift) return;
-    
+
     // Calculate how much cash should be in drawer based on sales
-    const shiftSales = sales.filter(s => 
-      new Date(s.timestamp) > new Date(currentShift.startTime) && 
+    const shiftSales = sales.filter(s =>
+      new Date(s.timestamp) > new Date(currentShift.startTime) &&
       s.cashierId === currentShift.cashierId &&
       s.paymentMethod === 'CASH'
     );
@@ -414,7 +414,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     };
 
     setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
-    
+
     const db = await dbPromise();
     await db.put('shifts', updatedShift);
     await addLog('SHIFT_CLOSE', `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}`);
@@ -427,7 +427,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
    */
   const processSale = async (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE') => {
     if (!currentUser) return undefined;
-    
+
     const totalAmount = items.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
     const totalCost = items.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
 
@@ -445,27 +445,27 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     // DB Transaction: We need to update Products AND save Sale together
     const db = await dbPromise();
     const tx = db.transaction(['products', 'sales', 'syncQueue'], 'readwrite');
-    
+
     // 1. Update Inventory locally (Optimistic)
     const updatedProducts = [...products];
-    
+
     for (const item of items) {
-       const idx = updatedProducts.findIndex(p => p.id === item.productId);
-       if (idx > -1) {
-           updatedProducts[idx] = { 
-               ...updatedProducts[idx], 
-               stock: updatedProducts[idx].stock - item.quantity 
-           };
-           // Update product in DB
-           await tx.objectStore('products').put(updatedProducts[idx]);
-           
-           // Queue the product update so Cloud inventory matches
-           await tx.objectStore('syncQueue').add({
-             type: 'UPDATE_PRODUCT',
-             payload: updatedProducts[idx],
-             timestamp: Date.now()
-           });
-       }
+      const idx = updatedProducts.findIndex(p => p.id === item.productId);
+      if (idx > -1) {
+        updatedProducts[idx] = {
+          ...updatedProducts[idx],
+          stock: updatedProducts[idx].stock - item.quantity
+        };
+        // Update product in DB
+        await tx.objectStore('products').put(updatedProducts[idx]);
+
+        // Queue the product update so Cloud inventory matches
+        await tx.objectStore('syncQueue').add({
+          type: 'UPDATE_PRODUCT',
+          payload: updatedProducts[idx],
+          timestamp: Date.now()
+        });
+      }
     }
 
     // Update React State
@@ -475,14 +475,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     // 2. Save Sale to DB
     await tx.objectStore('sales').put(newSale);
     await tx.objectStore('syncQueue').add({
-        type: 'SALE',
-        payload: newSale,
-        timestamp: Date.now()
+      type: 'SALE',
+      payload: newSale,
+      timestamp: Date.now()
     });
-    
+
     // Commit transaction
     await tx.done;
-    
+
     await addLog('SALE', `Sale #${newSale.id} processed for ${CURRENCY_FORMATTER.format(totalAmount)} via ${paymentMethod}`);
 
     return newSale;
@@ -497,7 +497,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       id: Date.now().toString(),
     };
     setProducts(prev => [...prev, newProduct]);
-    
+
     const db = await dbPromise();
     await db.put('products', newProduct);
     await addLog('PRODUCT_ADD', `Added product: ${newProduct.name} (${newProduct.size})`);
@@ -506,7 +506,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
   const updateProduct = async (product: Product) => {
     setProducts(prev => prev.map(p => p.id === product.id ? product : p));
-    
+
     const db = await dbPromise();
     await db.put('products', product);
     await addLog('PRODUCT_EDIT', `Updated product: ${product.name} (${product.size})`);
@@ -531,13 +531,13 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     if (!product) return;
 
     const updatedProduct = {
-          ...product,
-          stock: product.stock + quantity,
-          costPrice: newCost !== undefined ? newCost : product.costPrice
+      ...product,
+      stock: product.stock + quantity,
+      costPrice: newCost !== undefined ? newCost : product.costPrice
     };
 
     setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
-    
+
     const db = await dbPromise();
     await db.put('products', updatedProduct);
     await addLog('STOCK_RECEIVE', `Received ${quantity} of ${product.name}.`);
@@ -556,13 +556,13 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   };
 
   if (isLoading) {
-      return (
-          <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
-              <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-              <h2 className="text-xl font-bold">Loading System...</h2>
-              <p className="text-slate-400 mt-2">Initializing Database</p>
-          </div>
-      );
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
+        <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <h2 className="text-xl font-bold">Loading System...</h2>
+        <p className="text-slate-400 mt-2">Initializing Database</p>
+      </div>
+    );
   }
 
   return (

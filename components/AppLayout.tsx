@@ -4,11 +4,11 @@ import React, { PropsWithChildren, useEffect, useState } from 'react';
 import { useStore } from '../context/StoreContext';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { 
-  LogOut, 
-  ShoppingCart, 
-  Package, 
-  BarChart3, 
+import {
+  LogOut,
+  ShoppingCart,
+  Package,
+  BarChart3,
   ShieldAlert,
   Cloud,
   CloudOff,
@@ -24,6 +24,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const pathname = usePathname();
   const [lastSaved, setLastSaved] = useState<string>('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showOfflineBanner, setShowOfflineBanner] = useState(true);
 
   useEffect(() => {
     if (auditLogs.length > 0) {
@@ -33,6 +34,13 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       setLastSaved('Just now');
     }
   }, [auditLogs]);
+
+  useEffect(() => {
+    // Show banner when going offline
+    if (!isOnline) {
+      setShowOfflineBanner(true);
+    }
+  }, [isOnline]);
 
   if (!currentUser) {
     return <>{children}</>;
@@ -45,8 +53,8 @@ const AppLayout = ({ children }: PropsWithChildren) => {
     <div className="flex h-screen bg-slate-100 overflow-hidden print:overflow-visible print:bg-white print:h-auto">
       {/* Mobile Header Bar */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-slate-900 text-white px-4 py-3 flex items-center justify-between print:hidden">
-        <button 
-          onClick={() => setSidebarOpen(true)} 
+        <button
+          onClick={() => setSidebarOpen(true)}
           className="p-2 hover:bg-slate-800 rounded-lg"
         >
           <Menu size={24} />
@@ -72,8 +80,8 @@ const AppLayout = ({ children }: PropsWithChildren) => {
 
       {/* Mobile Overlay */}
       {sidebarOpen && (
-        <div 
-          className="lg:hidden fixed inset-0 bg-black/50 z-40 print:hidden" 
+        <div
+          className="lg:hidden fixed inset-0 bg-black/50 z-40 print:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -96,8 +104,8 @@ const AppLayout = ({ children }: PropsWithChildren) => {
               )}
               <span className="truncate">{businessSettings?.businessName || 'Port Side Liquor'}</span>
             </h1>
-            <button 
-              onClick={() => setSidebarOpen(false)} 
+            <button
+              onClick={() => setSidebarOpen(false)}
               className="lg:hidden p-1 hover:bg-slate-800 rounded"
             >
               <X size={20} />
@@ -140,7 +148,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
               <span className="font-medium">Admin & Logs</span>
             </Link>
           )}
-          
+
           {hasPerm('ADMIN') && (
             <Link href="/settings" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/settings')}`}>
               <Settings size={20} />
@@ -176,7 +184,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         </div>
 
         <div className="p-4 border-t border-slate-800">
-          <button 
+          <button
             onClick={logout}
             className="flex items-center gap-3 px-4 py-3 w-full rounded-lg text-red-400 hover:bg-slate-800 hover:text-red-300 transition-colors"
           >
@@ -188,6 +196,34 @@ const AppLayout = ({ children }: PropsWithChildren) => {
 
       {/* Main Content */}
       <main className="flex-1 overflow-auto bg-slate-100 relative print:overflow-visible print:bg-white print:p-0 pt-14 lg:pt-0">
+        {/* Offline Banner */}
+        {!isOnline && showOfflineBanner && (
+          <div className="sticky top-0 z-30 bg-amber-500 text-slate-900 px-4 py-3 flex items-center justify-between shadow-lg print:hidden">
+            <div className="flex items-center gap-3 flex-1">
+              <CloudOff size={20} className="flex-shrink-0" />
+              <div className="flex-1">
+                <p className="font-semibold text-sm">Working Offline</p>
+                <p className="text-xs">All data is saved locally and will sync when you're back online</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowOfflineBanner(false)}
+              className="p-1 hover:bg-amber-600 rounded transition-colors"
+              aria-label="Dismiss"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        )}
+
+        {/* Syncing Banner */}
+        {isOnline && isSyncing && (
+          <div className="sticky top-0 z-30 bg-blue-500 text-white px-4 py-2 flex items-center gap-3 shadow-lg print:hidden">
+            <RefreshCw size={18} className="animate-spin flex-shrink-0" />
+            <p className="text-sm font-medium">Syncing data to cloud...</p>
+          </div>
+        )}
+
         {children}
       </main>
     </div>

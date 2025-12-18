@@ -1,26 +1,26 @@
-const CACHE_VERSION = 'v3';
-const APP_SHELL_CACHE = `portside-pos-app-shell-${CACHE_VERSION}`;
-const STATIC_CACHE = `portside-pos-static-${CACHE_VERSION}`;
-const NEXT_STATIC_CACHE = `portside-pos-next-static-${CACHE_VERSION}`;
-
-// Note: This is a Next.js app. There is no /index.html or /index.css in production.
-// We cache the app shell (/) and manifest/icons so the UI can boot offline.
-const APP_SHELL_ASSETS = [
+const CACHE_NAME = 'portside-pos-v3';
+const STATIC_ASSETS = [
   '/',
-  '/manifest.json',
+  '/inventory',
+  '/reports',
+  '/admin',
+  '/settings',
   '/icons/icon-192x192.png',
-  '/icons/icon-512x512.png'
+  '/icons/icon-512x512.png',
+  '/manifest.json'
 ];
 
 // Install event - cache static assets
 self.addEventListener('install', (event) => {
   console.log('[SW] Installing service worker...');
   event.waitUntil(
-    (async () => {
-      const cache = await caches.open(APP_SHELL_CACHE);
-      console.log('[SW] Caching app shell assets');
-      await cache.addAll(APP_SHELL_ASSETS);
-    })()
+    caches.open(CACHE_NAME).then((cache) => {
+      console.log('[SW] Caching app shell');
+      // Cache the root, other routes will be handled dynamically
+      return cache.add('/').catch(err => {
+        console.log('[SW] Failed to cache root during install:', err);
+      });
+    })
   );
   self.skipWaiting();
 });
@@ -32,11 +32,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames
-          .filter((name) => ![
-            APP_SHELL_CACHE,
-            STATIC_CACHE,
-            NEXT_STATIC_CACHE,
-          ].includes(name))
+          .filter((name) => name !== CACHE_NAME)
           .map((name) => {
             console.log('[SW] Deleting old cache:', name);
             return caches.delete(name);
@@ -47,7 +43,7 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch event - serve from cache, fallback to network
+// Fetch event - Network First strategy for HTML, Cache First for assets
 self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
   if (event.request.method !== 'GET') return;
@@ -56,86 +52,84 @@ self.addEventListener('fetch', (event) => {
   if (!event.request.url.startsWith(self.location.origin)) return;
 
   const url = new URL(event.request.url);
-  const isNavigation = event.request.mode === 'navigate';
-  const isNextStatic = url.pathname.startsWith('/_next/static/');
-  const isIconOrManifest = url.pathname === '/manifest.json' || url.pathname.startsWith('/icons/');
 
-  // Navigation requests: network-first, fallback to cached app shell.
-  if (isNavigation) {
+  // For navigation requests (HTML pages), use Network First with cache fallback
+  if (event.request.mode === 'navigate' || event.request.destination === 'document') {
     event.respondWith(
-      (async () => {
-        try {
-          const networkResponse = await fetch(event.request);
+      fetch(event.request)
+        .then((networkResponse) => {
+          // Cache successful responses
           if (networkResponse && networkResponse.status === 200) {
-            const cache = await caches.open(APP_SHELL_CACHE);
-            cache.put(event.request, networkResponse.clone());
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, responseClone);
+            });
           }
           return networkResponse;
-        } catch (e) {
-          // If offline, serve the cached home page (app shell)
-          const cached = await caches.match('/', { cacheName: APP_SHELL_CACHE });
-          return cached || caches.match('/');
-        }
-      })()
-    );
-    return;
-  }
-
-  // Next.js build assets: cache-first (critical for offline usability).
-  if (isNextStatic) {
-    event.respondWith(
-      (async () => {
-        const cache = await caches.open(NEXT_STATIC_CACHE);
-        const cached = await cache.match(event.request);
-        if (cached) return cached;
-        try {
-          const networkResponse = await fetch(event.request);
-          if (networkResponse && networkResponse.status === 200) {
-            cache.put(event.request, networkResponse.clone());
-          }
-          return networkResponse;
-        } catch (e) {
-          return cached;
-        }
-      })()
-    );
-    return;
-  }
-
-  // Icons/manifest and other same-origin static files: stale-while-revalidate.
-  if (isIconOrManifest) {
-    event.respondWith(
-      (async () => {
-        const cache = await caches.open(STATIC_CACHE);
-        const cached = await cache.match(event.request);
-        const networkPromise = fetch(event.request)
-          .then((networkResponse) => {
-            if (networkResponse && networkResponse.status === 200) {
-              cache.put(event.request, networkResponse.clone());
+        })
+        .catch(() => {
+          // If network fails, serve from cache
+          return caches.match(event.request).then((cachedResponse) => {
+            if (cachedResponse) {
+              console.log('[SW] Serving cached page:', url.pathname);
+              return cachedResponse;
             }
-            return networkResponse;
-          })
-          .catch(() => null);
-
-        return cached || (await networkPromise) || cached;
-      })()
+            // If specific route not cached, serve the root app shell
+            // The React app will handle routing client-side
+            return caches.match('/').then((rootResponse) => {
+              if (rootResponse) {
+                console.log('[SW] Serving app shell for:', url.pathname);
+                return rootResponse;
+              }
+              // Last resort: return a basic offline response
+              return new Response(
+                '<html><body><h1>Offline</h1><p>App is loading...</p></body></html>',
+                { headers: { 'Content-Type': 'text/html' } }
+              );
+            });
+          });
+        })
     );
     return;
   }
 
-  // Default: network-first with cache fallback.
+  // For static assets (JS, CSS, images, etc.), use Cache First strategy
   event.respondWith(
-    (async () => {
-      const cache = await caches.open(STATIC_CACHE);
-      try {
-        const networkResponse = await fetch(event.request);
-        if (networkResponse && networkResponse.status === 200) {
-          cache.put(event.request, networkResponse.clone());
-        }
-        return networkResponse;
-      } catch (e) {
-        return cache.match(event.request);
+    caches.match(event.request).then((cachedResponse) => {
+      if (cachedResponse) {
+        // Return cached version immediately and update in background
+        event.waitUntil(
+          fetch(event.request)
+            .then((networkResponse) => {
+              if (networkResponse && networkResponse.status === 200) {
+                caches.open(CACHE_NAME).then((cache) => {
+                  cache.put(event.request, networkResponse.clone());
+                });
+              }
+            })
+            .catch(() => {
+              // Network failed, but we already have cached version
+            })
+        );
+        return cachedResponse;
       }
-    })()
+
+      // Not in cache, fetch from network and cache it
+      return fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, responseClone);
+            });
+          }
+          return networkResponse;
+        })
+        .catch((err) => {
+          console.log('[SW] Fetch failed for:', url.pathname, err);
+          // For failed asset requests, return empty response
+          return new Response('', { status: 404, statusText: 'Not Found' });
+        });
+    })
   );
 });

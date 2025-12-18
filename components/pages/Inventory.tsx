@@ -17,7 +17,7 @@ const Inventory = () => {
   const [editingAlertId, setEditingAlertId] = useState<string | null>(null);
   const [editAlertValue, setEditAlertValue] = useState<string>('');
 
-  const filteredProducts = products.filter(p => 
+  const filteredProducts = products.filter(p =>
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.sku.includes(searchTerm)
   );
 
@@ -57,9 +57,8 @@ const Inventory = () => {
   const TabButton = ({ id, label, icon: Icon }: any) => (
     <button
       onClick={() => { setActiveTab(id); setSelectedProductId(''); }}
-      className={`flex items-center gap-1.5 lg:gap-2 px-3 lg:px-6 py-2.5 lg:py-3 border-b-2 font-medium transition-colors text-xs lg:text-sm whitespace-nowrap ${
-        activeTab === id ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-800'
-      }`}
+      className={`flex items-center gap-1.5 lg:gap-2 px-3 lg:px-6 py-2.5 lg:py-3 border-b-2 font-medium transition-colors text-xs lg:text-sm whitespace-nowrap ${activeTab === id ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-800'
+        }`}
     >
       <Icon size={16} className="lg:w-[18px] lg:h-[18px]" />
       <span className="hidden sm:inline">{label}</span>
@@ -73,7 +72,7 @@ const Inventory = () => {
         <h1 className="text-xl lg:text-2xl font-bold text-slate-800">Inventory</h1>
       </div>
 
-      <div className="flex border-b border-slate-200 mb-4 lg:mb-6 overflow-x-auto -mx-3 px-3 lg:mx-0 lg:px-0">
+      <div className="flex border-b border-slate-200 mb-4 lg:mb-6 overflow-x-auto -mx-3 px-3 lg:mx-0 lg:px-0 relative z-10">
         <TabButton id="VIEW" label="Stock Levels" icon={AlertCircle} />
         <TabButton id="RECEIVE" label="Receive Stock" icon={ArrowDown} />
         <TabButton id="ADJUST" label="Adjustments" icon={ArrowUp} />
@@ -91,7 +90,7 @@ const Inventory = () => {
               onChange={e => setSearchTerm(e.target.value)}
             />
           </div>
-          
+
           {/* Mobile Card View */}
           <div className="lg:hidden divide-y divide-slate-100">
             {filteredProducts.map(p => {
@@ -104,9 +103,8 @@ const Inventory = () => {
                       <h4 className="font-medium text-slate-900 truncate">{p.name}</h4>
                       <p className="text-xs text-slate-500">{p.type} • {p.size}</p>
                     </div>
-                    <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${
-                      isLow ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
-                    }`}>
+                    <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${isLow ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
+                      }`}>
                       {p.stock} in stock
                     </span>
                   </div>
@@ -136,7 +134,7 @@ const Inventory = () => {
               );
             })}
           </div>
-          
+
           {/* Desktop Table View */}
           <div className="hidden lg:block overflow-x-auto">
             <table className="w-full text-left">

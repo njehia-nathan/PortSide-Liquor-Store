@@ -11,7 +11,7 @@ const POS = () => {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<AlcoholType | 'ALL'>('ALL');
-  
+
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [shiftCashAmount, setShiftCashAmount] = useState('');
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
@@ -61,9 +61,9 @@ const POS = () => {
       priceAtSale: c.sellingPrice,
       costAtSale: c.costPrice
     }));
-    
+
     const newSale = await processSale(saleItems, method);
-    
+
     if (newSale) {
       setReceiptSale(newSale);
       setShowReceiptModal(true);
@@ -113,7 +113,7 @@ const POS = () => {
           </div>
           <h2 className="text-xl lg:text-2xl font-bold text-slate-800 mb-2">Start Your Shift</h2>
           <p className="text-slate-500 mb-6 text-sm lg:text-base">Tap below to open the register and begin.</p>
-          <button 
+          <button
             onClick={handleOpenShift}
             className="w-full bg-amber-500 hover:bg-amber-600 text-white py-3 lg:py-4 rounded-lg font-bold text-base lg:text-lg"
           >
@@ -140,15 +140,14 @@ const POS = () => {
               className="w-full pl-10 pr-4 py-2.5 lg:py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-sm lg:text-base"
             />
           </div>
-          
+
           <div className="flex gap-2 overflow-x-auto pb-2 -mx-3 px-3 lg:mx-0 lg:px-0">
             {['ALL', ...Object.values(AlcoholType)].map(type => (
               <button
                 key={type}
                 onClick={() => setFilter(type as AlcoholType | 'ALL')}
-                className={`px-3 lg:px-4 py-1.5 lg:py-2 rounded-full text-xs lg:text-sm font-medium whitespace-nowrap transition-colors ${
-                  filter === type ? 'bg-amber-500 text-white' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
-                }`}
+                className={`px-3 lg:px-4 py-1.5 lg:py-2 rounded-full text-xs lg:text-sm font-medium whitespace-nowrap transition-colors ${filter === type ? 'bg-amber-500 text-white' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
+                  }`}
               >
                 {type}
               </button>
@@ -163,11 +162,10 @@ const POS = () => {
               key={product.id}
               onClick={() => addToCart(product)}
               disabled={product.stock <= 0}
-              className={`bg-white p-3 lg:p-4 rounded-xl shadow-sm border-2 text-left transition-all active:scale-95 ${
-                product.stock <= 0 
-                  ? 'opacity-50 cursor-not-allowed border-slate-200' 
+              className={`bg-white p-3 lg:p-4 rounded-xl shadow-sm border-2 text-left transition-all active:scale-95 ${product.stock <= 0
+                  ? 'opacity-50 cursor-not-allowed border-slate-200'
                   : 'border-transparent hover:border-amber-400 hover:shadow-lg'
-              }`}
+                }`}
             >
               <div className="text-xs lg:text-sm font-bold text-slate-800 truncate">{product.name}</div>
               <div className="text-[10px] lg:text-xs text-slate-400">{product.size}</div>
@@ -233,7 +231,7 @@ const POS = () => {
             <span>Total</span>
             <span className="text-amber-600">{CURRENCY_FORMATTER.format(cartTotal)}</span>
           </div>
-          
+
           <button
             onClick={() => setPaymentModalOpen(true)}
             disabled={cart.length === 0}
@@ -241,7 +239,7 @@ const POS = () => {
           >
             Checkout
           </button>
-          
+
           <button
             onClick={() => setShowShiftModal(true)}
             className="w-full flex items-center justify-center gap-2 text-red-500 hover:text-red-600 py-2 font-medium"
@@ -253,7 +251,7 @@ const POS = () => {
 
       {/* Mobile Cart Button */}
       <div className="lg:hidden fixed bottom-4 left-4 right-4 print:hidden">
-        <button 
+        <button
           onClick={() => setMobileCartOpen(true)}
           className="w-full bg-amber-500 text-white py-4 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-3"
         >
@@ -274,7 +272,7 @@ const POS = () => {
                 <X size={24} />
               </button>
             </div>
-            
+
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
               {cart.map(item => (
                 <div key={item.id} className="bg-slate-50 p-3 rounded-lg">
@@ -304,7 +302,7 @@ const POS = () => {
                 </div>
               ))}
             </div>
-            
+
             <div className="p-4 border-t border-slate-200 space-y-3">
               <div className="flex justify-between items-center text-xl font-bold">
                 <span>Total</span>
@@ -366,10 +364,10 @@ const POS = () => {
             <p className="text-slate-500 mb-6">Count cash and enter amount. <strong className="text-red-600">This will log you out.</strong></p>
             <form onSubmit={handleCloseShift}>
               <label className="block text-sm font-bold text-slate-700 mb-2">Closing Cash (KES)</label>
-              <input 
-                type="number" 
-                step="0.01" 
-                className="w-full text-2xl p-3 border rounded-lg mb-6 border-slate-300" 
+              <input
+                type="number"
+                step="0.01"
+                className="w-full text-2xl p-3 border rounded-lg mb-6 border-slate-300"
                 value={shiftCashAmount}
                 onChange={e => setShiftCashAmount(e.target.value)}
                 placeholder="0.00"
@@ -379,8 +377,8 @@ const POS = () => {
               <button className="w-full bg-red-600 hover:bg-red-700 text-white py-4 rounded-lg font-bold text-lg">
                 Confirm & Logout
               </button>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 onClick={() => { setShowShiftModal(false); setShiftCashAmount(''); }}
                 className="w-full mt-4 text-slate-500 font-medium py-2"
               >
@@ -391,74 +389,164 @@ const POS = () => {
         </div>
       )}
 
-      {/* Receipt Modal */}
+      {/* Receipt Modal - World Class Design */}
       {showReceiptModal && receiptSale && (
-        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 print:fixed print:inset-0 print:z-[9999] print:bg-white print:p-0">
-          <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full overflow-hidden print:shadow-none print:w-full print:max-w-none">
-            <div className="p-6 lg:p-8 pb-4 text-center print:p-8">
-              {businessSettings?.logoUrl && (
-                <img src={businessSettings.logoUrl} alt="Logo" className="w-16 h-16 mx-auto mb-3 object-contain" />
+        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 print:fixed print:inset-0 print:z-[9999] print:bg-white print:p-0 print:flex print:items-start print:justify-center">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden print:shadow-none print:w-[80mm] print:max-w-none print:rounded-none print:m-0">
+            {/* Receipt Header with Logo */}
+            <div className="p-6 lg:p-8 pb-4 text-center print:p-6 print:pb-3">
+              {businessSettings?.logoUrl ? (
+                <div className="mb-4 print:mb-3">
+                  <img
+                    src={businessSettings.logoUrl}
+                    alt="Business Logo"
+                    className="w-24 h-24 mx-auto object-contain print:w-20 print:h-20"
+                  />
+                </div>
+              ) : (
+                <div className="mb-4 print:mb-3">
+                  <div className="w-24 h-24 mx-auto bg-gradient-to-br from-amber-500 to-amber-600 rounded-2xl flex items-center justify-center shadow-lg print:w-20 print:h-20 print:shadow-none">
+                    <span className="text-white text-3xl font-bold print:text-2xl">
+                      {businessSettings?.businessName?.charAt(0) || 'P'}
+                    </span>
+                  </div>
+                </div>
               )}
-              <h2 className="text-xl lg:text-2xl font-bold mb-0.5">
+
+              <h2 className="text-2xl lg:text-3xl font-bold text-slate-900 mb-1 print:text-xl print:mb-0.5">
                 {businessSettings?.businessName || 'Port Side Liquor'}
               </h2>
+
               {businessSettings?.tagline && (
-                <p className="text-xs text-slate-400 italic mb-1">{businessSettings.tagline}</p>
+                <p className="text-sm text-amber-600 font-medium italic mb-2 print:text-xs print:mb-1">
+                  {businessSettings.tagline}
+                </p>
               )}
-              <p className="text-xs text-slate-500 mb-1">{businessSettings?.location || 'Nairobi, Kenya'}</p>
-              <p className="text-xs text-slate-500 mb-4">
-                {businessSettings?.phone || '+254 700 000000'}
-                {businessSettings?.email && ` • ${businessSettings.email}`}
-              </p>
-              
-              <div className="border-t border-b border-dashed border-slate-300 py-4 my-4 space-y-1 text-sm text-left">
+
+              <div className="text-xs text-slate-600 space-y-0.5 mb-4 print:text-[10px] print:mb-3">
+                <p className="flex items-center justify-center gap-1">
+                  <span>📍</span> {businessSettings?.location || 'Nairobi, Kenya'}
+                </p>
+                <p className="flex items-center justify-center gap-1">
+                  <span>📞</span> {businessSettings?.phone || '+254 700 000000'}
+                </p>
+                {businessSettings?.email && (
+                  <p className="flex items-center justify-center gap-1">
+                    <span>✉️</span> {businessSettings.email}
+                  </p>
+                )}
+              </div>
+
+              <div className="border-t-2 border-dashed border-slate-300 my-4 print:my-3"></div>
+
+              {/* Transaction Details */}
+              <div className="bg-slate-50 rounded-lg p-3 mb-4 space-y-1.5 text-sm print:bg-transparent print:p-0 print:mb-3 print:text-xs">
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Receipt #:</span>
-                  <span className="font-mono font-bold">{receiptSale.id.slice(-6)}</span>
+                  <span className="text-slate-600 font-medium">Receipt #</span>
+                  <span className="font-mono font-bold text-slate-900">#{receiptSale.id.slice(-8).toUpperCase()}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Date:</span>
-                  <span>{new Date(receiptSale.timestamp).toLocaleDateString()} {new Date(receiptSale.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                  <span className="text-slate-600 font-medium">Date & Time</span>
+                  <span className="font-medium text-slate-900">
+                    {new Date(receiptSale.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })} • {new Date(receiptSale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Cashier:</span>
-                  <span>{receiptSale.cashierName}</span>
+                  <span className="text-slate-600 font-medium">Cashier</span>
+                  <span className="font-medium text-slate-900">{receiptSale.cashierName}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Payment:</span>
-                  <span className="font-bold">{receiptSale.paymentMethod}</span>
+                  <span className="text-slate-600 font-medium">Payment Method</span>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-800 rounded-full text-xs font-bold print:bg-transparent print:text-slate-900">
+                    {receiptSale.paymentMethod === 'CASH' && '💵'}
+                    {receiptSale.paymentMethod === 'CARD' && '💳'}
+                    {receiptSale.paymentMethod === 'MOBILE' && '📱'}
+                    {receiptSale.paymentMethod}
+                  </span>
                 </div>
               </div>
 
-              <div className="space-y-2 mb-6 text-left">
+              <div className="border-t-2 border-dashed border-slate-300 my-4 print:my-3"></div>
+
+              {/* Items List */}
+              <div className="space-y-3 mb-4 text-left print:space-y-2 print:mb-3">
+                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2 print:text-[10px]">Items Purchased</h3>
                 {receiptSale.items.map((item, idx) => (
-                  <div key={idx} className="flex justify-between text-sm">
-                    <div>
-                      <p className="font-bold text-slate-800">{item.productName}</p>
-                      <p className="text-xs text-slate-500">{item.quantity} x {CURRENCY_FORMATTER.format(item.priceAtSale)}</p>
+                  <div key={idx} className="border-b border-slate-100 pb-2 last:border-0 print:pb-1.5">
+                    <div className="flex justify-between items-start mb-1">
+                      <div className="flex-1">
+                        <p className="font-bold text-slate-900 text-sm print:text-xs">{item.productName}</p>
+                        <p className="text-xs text-slate-500 print:text-[10px]">
+                          {item.size}
+                        </p>
+                      </div>
+                      <div className="text-right ml-2">
+                        <p className="font-bold text-slate-900 text-sm print:text-xs">
+                          {CURRENCY_FORMATTER.format(item.quantity * item.priceAtSale)}
+                        </p>
+                      </div>
                     </div>
-                    <div className="font-bold">
-                      {CURRENCY_FORMATTER.format(item.quantity * item.priceAtSale)}
+                    <div className="flex justify-between text-xs text-slate-600 print:text-[10px]">
+                      <span>{item.quantity} × {CURRENCY_FORMATTER.format(item.priceAtSale)}</span>
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="border-t-2 border-slate-800 pt-4 flex justify-between items-end mb-6">
-                <span className="text-xl font-bold">Total</span>
-                <span className="text-2xl font-bold">{CURRENCY_FORMATTER.format(receiptSale.totalAmount)}</span>
+              <div className="border-t-2 border-slate-300 my-4 print:my-3"></div>
+
+              {/* Subtotal & Total */}
+              <div className="space-y-2 mb-4 print:space-y-1 print:mb-3">
+                <div className="flex justify-between text-sm text-slate-600 print:text-xs">
+                  <span>Subtotal</span>
+                  <span className="font-medium">{CURRENCY_FORMATTER.format(receiptSale.totalAmount)}</span>
+                </div>
+                <div className="flex justify-between text-sm text-slate-600 print:text-xs">
+                  <span>Tax (Included)</span>
+                  <span className="font-medium">KES 0.00</span>
+                </div>
               </div>
 
-              <p className="text-xs text-slate-500 italic text-center">
-                {businessSettings?.receiptFooter || 'Thank you for your business!'}
-              </p>
+              {/* Grand Total */}
+              <div className="bg-gradient-to-r from-amber-500 to-amber-600 rounded-xl p-4 mb-4 print:bg-none print:bg-slate-900 print:rounded-none print:p-3 print:mb-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-white text-lg font-bold print:text-base">TOTAL</span>
+                  <span className="text-white text-2xl font-bold print:text-xl">
+                    {CURRENCY_FORMATTER.format(receiptSale.totalAmount)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="border-t-2 border-dashed border-slate-300 my-4 print:my-3"></div>
+
+              {/* Footer Message */}
+              <div className="text-center space-y-2 print:space-y-1">
+                <p className="text-sm text-slate-700 font-medium italic print:text-xs">
+                  {businessSettings?.receiptFooter || 'Thank you for your business!'}
+                </p>
+                <p className="text-xs text-slate-500 print:text-[10px]">
+                  Please drink responsibly • Must be 18+
+                </p>
+                <div className="pt-2 print:pt-1">
+                  <p className="text-xs text-slate-400 print:text-[10px]">
+                    Powered by Port Side POS
+                  </p>
+                </div>
+              </div>
             </div>
 
-            <div className="bg-slate-50 p-4 border-t border-slate-100 flex gap-4 print:hidden">
-              <button onClick={handlePrint} className="flex-1 bg-slate-900 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-slate-800">
-                <Printer size={18} /> Print
+            {/* Action Buttons - Hidden on Print */}
+            <div className="bg-slate-50 p-4 border-t border-slate-200 flex gap-3 print:hidden">
+              <button
+                onClick={handlePrint}
+                className="flex-1 bg-gradient-to-r from-slate-800 to-slate-900 text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:from-slate-700 hover:to-slate-800 shadow-lg transition-all active:scale-95"
+              >
+                <Printer size={20} /> Print Receipt
               </button>
-              <button onClick={() => setShowReceiptModal(false)} className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-600 hover:bg-white">
+              <button
+                onClick={() => setShowReceiptModal(false)}
+                className="flex-1 border-2 border-slate-300 py-3.5 rounded-xl font-bold text-slate-700 hover:bg-slate-100 hover:border-slate-400 transition-all active:scale-95"
+              >
                 Close
               </button>
             </div>

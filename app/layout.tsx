@@ -11,9 +11,33 @@ export default function RootLayout({
 }) {
   // Register service worker for PWA
   useEffect(() => {
-    if ('serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
+    if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').then(
-        (registration) => console.log('SW registered:', registration.scope),
+        (registration) => {
+          console.log('SW registered:', registration.scope);
+
+          // Check for updates every 60 seconds
+          setInterval(() => {
+            registration.update();
+          }, 60000);
+
+          // Force update on page load
+          registration.update();
+
+          // Listen for new service worker
+          registration.addEventListener('updatefound', () => {
+            const newWorker = registration.installing;
+            if (newWorker) {
+              newWorker.addEventListener('statechange', () => {
+                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  console.log('New service worker available! Reloading...');
+                  // Auto-reload to activate new service worker
+                  window.location.reload();
+                }
+              });
+            }
+          });
+        },
         (err) => console.log('SW registration failed:', err)
       );
     }

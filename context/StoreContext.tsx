@@ -219,8 +219,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         setShifts(loadedShifts);
         setAuditLogs(loadedLogs);
 
-        // Restore user session after users are loaded
-        const savedSession = localStorage.getItem('pos_session');
+        // Restore user session after users are loaded (reuse savedSession from above)
         if (savedSession) {
           try {
             const { userId, lastActivity: savedLastActivity } = JSON.parse(savedSession);

@@ -280,7 +280,7 @@ const POS = () => {
     setShowShiftReport(false);
     setClosedShiftData(null);
     logout();
-    router.push('/');
+    window.location.href = '/';
   };
 
   useEffect(() => {

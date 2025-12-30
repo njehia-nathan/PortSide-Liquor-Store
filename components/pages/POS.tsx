@@ -832,15 +832,22 @@ const POS = () => {
               onChange={e => setBarcodeInput(e.target.value)}
               onKeyDown={e => {
                 if (e.key === 'Enter' && barcodeInput.trim()) {
-                  handleBarcodeScanned(barcodeInput.trim());
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const barcode = barcodeInput.trim();
+                  setBarcodeInput('');
+                  handleBarcodeScanned(barcode);
                 }
               }}
             />
             <div className="flex gap-3 mt-6">
               <button
+                type="button"
                 onClick={() => {
                   if (barcodeInput.trim()) {
-                    handleBarcodeScanned(barcodeInput.trim());
+                    const barcode = barcodeInput.trim();
+                    setBarcodeInput('');
+                    handleBarcodeScanned(barcode);
                   }
                 }}
                 disabled={!barcodeInput.trim()}

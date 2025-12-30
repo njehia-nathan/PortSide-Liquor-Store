@@ -662,7 +662,7 @@ const POS = () => {
                 </p>
               )}
 
-              <div className="text-xs text-slate-600 space-y-0.5 mb-3 sm:mb-4 print:text-[10px] print:mb-3">
+              <div className="text-xs text-black space-y-0.5 mb-3 sm:mb-4 print:text-[10px] print:mb-3">
                 <p className="flex items-center justify-center gap-1">
                   <span>📍</span> {businessSettings?.location || 'Nairobi, Kenya'}
                 </p>
@@ -676,26 +676,26 @@ const POS = () => {
                 )}
               </div>
 
-              <div className="border-t-2 border-dashed border-slate-300 my-3 sm:my-4 print:my-3"></div>
+              <div className="border-t-2 border-dashed border-black my-3 sm:my-4 print:my-3"></div>
 
               {/* Transaction Details */}
               <div className="bg-slate-50 rounded-lg p-2 sm:p-3 mb-3 sm:mb-4 space-y-1 sm:space-y-1.5 text-xs sm:text-sm print:bg-transparent print:p-0 print:mb-3 print:text-xs">
                 <div className="flex justify-between">
-                  <span className="text-slate-600 font-medium">Receipt #</span>
+                  <span className="text-black font-medium">Receipt #</span>
                   <span className="font-mono font-bold text-slate-900">#{receiptSale.id.slice(-8).toUpperCase()}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-600 font-medium">Date & Time</span>
+                  <span className="text-black font-medium">Date & Time</span>
                   <span className="font-medium text-slate-900">
                     {new Date(receiptSale.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })} • {new Date(receiptSale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-600 font-medium">Cashier</span>
+                  <span className="text-black font-medium">Cashier</span>
                   <span className="font-medium text-slate-900">{receiptSale.cashierName}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-600 font-medium">Payment Method</span>
+                  <span className="text-black font-medium">Payment Method</span>
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-800 rounded-full text-xs font-bold print:bg-transparent print:text-slate-900">
                     {receiptSale.paymentMethod === 'CASH' && '💵'}
                     {receiptSale.paymentMethod === 'CARD' && '💳'}
@@ -705,17 +705,17 @@ const POS = () => {
                 </div>
               </div>
 
-              <div className="border-t-2 border-dashed border-slate-300 my-3 sm:my-4 print:my-3"></div>
+              <div className="border-t-2 border-dashed border-black my-3 sm:my-4 print:my-3"></div>
 
               {/* Items List */}
               <div className="space-y-2 sm:space-y-3 mb-3 sm:mb-4 text-left print:space-y-2 print:mb-3">
-                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2 print:text-[10px]">Items Purchased</h3>
+                <h3 className="text-xs font-bold text-black uppercase tracking-wide mb-2 print:text-[10px]">Items Purchased</h3>
                 {receiptSale.items.map((item, idx) => (
                   <div key={idx} className="border-b border-slate-100 pb-2 last:border-0 print:pb-1.5">
                     <div className="flex justify-between items-start mb-1">
                       <div className="flex-1">
                         <p className="font-bold text-slate-900 text-sm print:text-xs">{item.productName}</p>
-                        <p className="text-xs text-slate-500 print:text-[10px]">
+                        <p className="text-xs text-black print:text-[10px]">
                           {item.size}
                         </p>
                       </div>
@@ -725,22 +725,22 @@ const POS = () => {
                         </p>
                       </div>
                     </div>
-                    <div className="flex justify-between text-xs text-slate-600 print:text-[10px]">
+                    <div className="flex justify-between text-xs text-black print:text-[10px]">
                       <span>{item.quantity} × {CURRENCY_FORMATTER.format(item.priceAtSale)}</span>
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="border-t-2 border-slate-300 my-3 sm:my-4 print:my-3"></div>
+              <div className="border-t-2 border-black my-3 sm:my-4 print:my-3"></div>
 
               {/* Subtotal & Total */}
               <div className="space-y-1 sm:space-y-2 mb-3 sm:mb-4 print:space-y-1 print:mb-3">
-                <div className="flex justify-between text-xs sm:text-sm text-slate-600 print:text-xs">
+                <div className="flex justify-between text-xs sm:text-sm text-black print:text-xs">
                   <span>Subtotal</span>
                   <span className="font-medium">{CURRENCY_FORMATTER.format(receiptSale.totalAmount)}</span>
                 </div>
-                <div className="flex justify-between text-sm text-slate-600 print:text-xs">
+                <div className="flex justify-between text-sm text-black print:text-xs">
                   <span>Tax (Included)</span>
                   <span className="font-medium">KES 0.00</span>
                 </div>
@@ -761,8 +761,8 @@ const POS = () => {
                 <div className="bg-green-50 border border-green-200 rounded-lg sm:rounded-xl p-2 sm:p-3 mb-3 sm:mb-4 print:bg-transparent print:border-slate-300 print:p-2 print:mb-3">
                   <div className="space-y-1">
                     <div className="flex justify-between text-xs sm:text-sm">
-                      <span className="text-slate-600">Cash Received</span>
-                      <span className="font-bold text-slate-800">{CURRENCY_FORMATTER.format((receiptSale as any).cashTendered)}</span>
+                      <span className="text-black">Cash Received</span>
+                      <span className="font-bold text-black">{CURRENCY_FORMATTER.format((receiptSale as any).cashTendered)}</span>
                     </div>
                     <div className="flex justify-between text-xs sm:text-sm">
                       <span className="text-green-700 font-medium">Balance</span>
@@ -772,18 +772,18 @@ const POS = () => {
                 </div>
               )}
 
-              <div className="border-t-2 border-dashed border-slate-300 my-3 sm:my-4 print:my-3"></div>
+              <div className="border-t-2 border-dashed border-black my-3 sm:my-4 print:my-3"></div>
 
               {/* Footer Message */}
               <div className="text-center space-y-1 sm:space-y-2 print:space-y-1">
-                <p className="text-xs sm:text-sm text-slate-700 font-medium italic print:text-xs">
+                <p className="text-xs sm:text-sm text-black font-medium italic print:text-xs">
                   {businessSettings?.receiptFooter || 'Thank you for your business!'}
                 </p>
-                <p className="text-[10px] sm:text-xs text-slate-500 print:text-[10px]">
+                <p className="text-[10px] sm:text-xs text-black print:text-[10px]">
                   Please drink responsibly • Must be 18+
                 </p>
                 <div className="pt-1 sm:pt-2 print:pt-1">
-                  <p className="text-[10px] sm:text-xs text-slate-400 print:text-[10px]">
+                  <p className="text-[10px] sm:text-xs text-black print:text-[10px]">
                     Powered by Grab Bottle POS
                   </p>
                 </div>

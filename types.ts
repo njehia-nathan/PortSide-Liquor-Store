@@ -12,6 +12,14 @@ export enum AlcoholType {
   WINE = 'Wine',
   BEER = 'Beer',
   RTD = 'Soft Drink',
+  SPIRITS = 'Spirits',
+  COGNAC = 'Cognac',
+  BRANDY = 'Brandy',
+  LIQUEURS = 'Liqueurs',
+  HERBS = 'Herbs',
+  BITTERS = 'Bitters',
+  CREAMS = 'Creams',
+  TEQUILA = 'Tequila',
   OTHER = 'Other',
 }
 

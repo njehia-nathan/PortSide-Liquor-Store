@@ -4,9 +4,12 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { AlcoholType, Product, CartItem, SaleItem, Sale } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { Search, Plus, Minus, Trash2, CreditCard, Banknote, Smartphone, LogOut, Receipt, Printer, X, Clock, Barcode, MessageCircle, Send, Ban } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, CreditCard, Banknote, Smartphone, LogOut, Receipt, Printer, X, Clock, Barcode, MessageCircle, Send, Ban, CheckCircle, DollarSign } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Shift } from '../../types';
 
 const POS = () => {
+  const router = useRouter();
   const { products, sales, processSale, currentShift, openShift, closeShift, logout, businessSettings, requestVoid, voidRequests } = useStore();
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
@@ -28,6 +31,8 @@ const POS = () => {
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
   const [cashTendered, setCashTendered] = useState('');
   const [showCashModal, setShowCashModal] = useState(false);
+  const [showShiftReport, setShowShiftReport] = useState(false);
+  const [closedShiftData, setClosedShiftData] = useState<{ shift: Shift; salesCount: number; revenue: number; cashSales: number; expectedCash: number; closingCash: number } | null>(null);
   const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
   const lastKeyTime = useRef<number>(0);
 
@@ -240,10 +245,42 @@ const POS = () => {
   const handleCloseShift = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseFloat(shiftCashAmount);
-    if (isNaN(amount)) return;
+    if (isNaN(amount) || !currentShift) return;
+    
+    // Calculate shift stats before closing
+    const shiftSales = sales.filter(s => {
+      const saleTime = new Date(s.timestamp);
+      const startTime = new Date(currentShift.startTime);
+      return s.cashierId === currentShift.cashierId && saleTime >= startTime && !s.isVoided;
+    });
+    const revenue = shiftSales.reduce((sum, s) => sum + s.totalAmount, 0);
+    const cashSalesTotal = shiftSales.filter(s => s.paymentMethod === 'CASH').reduce((sum, s) => sum + s.totalAmount, 0);
+    const expectedCash = currentShift.openingCash + cashSalesTotal;
+    
+    // Store shift data for report
+    setClosedShiftData({
+      shift: { ...currentShift, closingCash: amount, expectedCash },
+      salesCount: shiftSales.length,
+      revenue,
+      cashSales: cashSalesTotal,
+      expectedCash,
+      closingCash: amount
+    });
+    
+    // Close shift
     await closeShift(amount);
-    logout();
     setShiftCashAmount('');
+    setShowShiftModal(false);
+    
+    // Show shift report
+    setShowShiftReport(true);
+  };
+
+  const handleShiftReportOk = () => {
+    setShowShiftReport(false);
+    setClosedShiftData(null);
+    logout();
+    router.push('/');
   };
 
   useEffect(() => {
@@ -636,6 +673,72 @@ const POS = () => {
                 Cancel
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Shift Report Modal - Shows after closing shift */}
+      {showShiftReport && closedShiftData && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/90 backdrop-blur-sm flex items-center justify-center p-4 print:hidden">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            {/* Header */}
+            <div className="p-6 bg-gradient-to-r from-green-500 to-green-600 text-center">
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3">
+                <CheckCircle size={32} className="text-white" />
+              </div>
+              <h2 className="text-2xl font-bold text-white">Shift Closed!</h2>
+              <p className="text-white/80 text-sm mt-1">Here&apos;s your shift summary</p>
+            </div>
+
+            {/* Stats */}
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-slate-50 rounded-xl p-4 text-center">
+                  <p className="text-xs text-slate-500 font-medium">Total Sales</p>
+                  <p className="text-2xl font-bold text-slate-800">{closedShiftData.salesCount}</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-4 text-center">
+                  <p className="text-xs text-slate-500 font-medium">Revenue</p>
+                  <p className="text-xl font-bold text-green-600">{CURRENCY_FORMATTER.format(closedShiftData.revenue)}</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Opening Cash</span>
+                  <span className="font-bold">{CURRENCY_FORMATTER.format(closedShiftData.shift.openingCash)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Cash Sales</span>
+                  <span className="font-bold text-green-600">+{CURRENCY_FORMATTER.format(closedShiftData.cashSales)}</span>
+                </div>
+                <div className="border-t border-slate-200 pt-2 flex justify-between text-sm">
+                  <span className="text-slate-500">Expected Cash</span>
+                  <span className="font-bold">{CURRENCY_FORMATTER.format(closedShiftData.expectedCash)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Closing Cash</span>
+                  <span className="font-bold">{CURRENCY_FORMATTER.format(closedShiftData.closingCash)}</span>
+                </div>
+                <div className="border-t border-slate-200 pt-2 flex justify-between">
+                  <span className="font-medium text-slate-700">Difference</span>
+                  <span className={`font-bold text-lg ${closedShiftData.closingCash - closedShiftData.expectedCash >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {closedShiftData.closingCash - closedShiftData.expectedCash >= 0 ? '+' : ''}
+                    {CURRENCY_FORMATTER.format(closedShiftData.closingCash - closedShiftData.expectedCash)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 pt-0">
+              <button
+                onClick={handleShiftReportOk}
+                className="w-full bg-slate-800 hover:bg-slate-900 text-white py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-2"
+              >
+                <LogOut size={20} /> OK & Logout
+              </button>
+            </div>
           </div>
         </div>
       )}

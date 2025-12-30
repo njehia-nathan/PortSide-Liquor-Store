@@ -11,7 +11,7 @@ export enum AlcoholType {
   RUM = 'Rum',
   WINE = 'Wine',
   BEER = 'Beer',
-  RTD = 'RTD',
+  RTD = 'Soft Drink',
   OTHER = 'Other',
 }
 

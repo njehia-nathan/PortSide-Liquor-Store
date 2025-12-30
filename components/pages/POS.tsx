@@ -16,6 +16,7 @@ const POS = () => {
   const [shiftCashAmount, setShiftCashAmount] = useState('');
   const [showVoidModal, setShowVoidModal] = useState(false);
   const [voidReason, setVoidReason] = useState('');
+  const [showRecentSales, setShowRecentSales] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [receiptSale, setReceiptSale] = useState<Sale | null>(null);
@@ -345,8 +346,17 @@ const POS = () => {
       <div className="hidden lg:flex w-96 bg-white border-l border-slate-200 flex-col print:hidden">
         <div className="p-6 border-b border-slate-200 flex items-center justify-between">
           <h2 className="text-xl font-bold text-slate-800">Current Sale</h2>
-          <button onClick={viewLastTransaction} className="text-slate-400 hover:text-slate-600">
+          <button 
+            onClick={() => setShowRecentSales(true)} 
+            className="text-slate-400 hover:text-amber-600 relative"
+            title="Recent Sales"
+          >
             <Receipt size={20} />
+            {sales.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                {sales.length > 9 ? '9+' : sales.length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -833,6 +843,129 @@ const POS = () => {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recent Sales Modal - Dashboard Style */}
+      {showRecentSales && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 print:hidden">
+          <div className="absolute inset-0 bg-slate-900/60" onClick={() => setShowRecentSales(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-gradient-to-r from-amber-500 to-amber-600">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <Receipt size={20} /> Sales Dashboard
+              </h2>
+              <button onClick={() => setShowRecentSales(false)} className="text-white/80 hover:text-white">
+                <X size={24} />
+              </button>
+            </div>
+
+            {/* Stats Cards - 6 columns */}
+            <div className="p-4 bg-slate-50 border-b border-slate-200 grid grid-cols-3 lg:grid-cols-6 gap-2">
+              <div className="bg-white rounded-lg p-2 border border-slate-200 text-center">
+                <p className="text-[10px] text-slate-500 font-medium">Total</p>
+                <p className="text-lg font-bold text-slate-800">{sales.length}</p>
+              </div>
+              <div className="bg-white rounded-lg p-2 border border-green-200 text-center">
+                <p className="text-[10px] text-green-600 font-medium">Valid</p>
+                <p className="text-lg font-bold text-green-600">{sales.filter(s => !s.isVoided).length}</p>
+              </div>
+              <div className="bg-white rounded-lg p-2 border border-slate-200 text-center">
+                <p className="text-[10px] text-slate-500 font-medium">Revenue</p>
+                <p className="text-sm font-bold text-green-600">{CURRENCY_FORMATTER.format(sales.filter(s => !s.isVoided).reduce((sum, s) => sum + s.totalAmount, 0))}</p>
+              </div>
+              <div className="bg-white rounded-lg p-2 border border-slate-200 text-center">
+                <p className="text-[10px] text-slate-500 font-medium">Cash</p>
+                <p className="text-sm font-bold text-emerald-600">{CURRENCY_FORMATTER.format(sales.filter(s => !s.isVoided && s.paymentMethod === 'CASH').reduce((sum, s) => sum + s.totalAmount, 0))}</p>
+              </div>
+              <div className="bg-white rounded-lg p-2 border border-red-200 text-center">
+                <p className="text-[10px] text-red-500 font-medium">Voided</p>
+                <p className="text-lg font-bold text-red-500">{sales.filter(s => s.isVoided).length}</p>
+              </div>
+              <div className="bg-white rounded-lg p-2 border border-amber-200 text-center">
+                <p className="text-[10px] text-amber-600 font-medium">Pending</p>
+                <p className="text-lg font-bold text-amber-600">{voidRequests.filter(r => r.status === 'PENDING').length}</p>
+              </div>
+            </div>
+            
+            {/* Table */}
+            <div className="flex-1 overflow-auto">
+              {sales.length === 0 ? (
+                <div className="p-8 text-center">
+                  <Receipt size={48} className="mx-auto text-slate-300 mb-3" />
+                  <p className="text-slate-500">No sales yet</p>
+                </div>
+              ) : (
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold sticky top-0">
+                    <tr>
+                      <th className="px-3 py-3">#</th>
+                      <th className="px-3 py-3">Time</th>
+                      <th className="px-3 py-3">Items</th>
+                      <th className="px-3 py-3">Payment</th>
+                      <th className="px-3 py-3">Status</th>
+                      <th className="px-3 py-3 text-right">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-sm">
+                    {sales.slice(0, 15).map((sale, index) => {
+                      const voidReq = voidRequests.find(r => r.saleId === sale.id);
+                      return (
+                        <tr 
+                          key={sale.id} 
+                          onClick={() => {
+                            setReceiptSale(sale);
+                            setShowRecentSales(false);
+                            setShowReceiptModal(true);
+                          }}
+                          className={`hover:bg-amber-50 cursor-pointer transition-colors ${sale.isVoided ? 'bg-red-50/50' : ''}`}
+                        >
+                          <td className="px-3 py-3 font-mono text-slate-400">#{index + 1}</td>
+                          <td className="px-3 py-3 text-slate-600 whitespace-nowrap">
+                            {new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </td>
+                          <td className="px-3 py-3">
+                            <p className={`font-medium text-slate-800 truncate max-w-[150px] ${sale.isVoided ? 'line-through text-red-400' : ''}`}>
+                              {sale.items.map(i => `${i.quantity}x ${i.productName}`).join(', ')}
+                            </p>
+                          </td>
+                          <td className="px-3 py-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-700' :
+                              sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-700' :
+                              'bg-purple-100 text-purple-700'
+                            }`}>{sale.paymentMethod}</span>
+                          </td>
+                          <td className="px-3 py-3">
+                            {sale.isVoided ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">VOIDED</span>
+                            ) : voidReq ? (
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                voidReq.status === 'PENDING' ? 'bg-amber-100 text-amber-700' :
+                                voidReq.status === 'APPROVED' ? 'bg-red-100 text-red-700' :
+                                'bg-slate-100 text-slate-600'
+                              }`}>{voidReq.status}</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700">VALID</span>
+                            )}
+                          </td>
+                          <td className={`px-3 py-3 text-right font-bold ${sale.isVoided ? 'text-red-400 line-through' : 'text-green-600'}`}>
+                            {CURRENCY_FORMATTER.format(sale.totalAmount)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-3 border-t border-slate-200 bg-slate-50 text-center">
+              <p className="text-xs text-slate-500">Click any sale to view receipt & void options</p>
             </div>
           </div>
         </div>

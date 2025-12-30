@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { AlcoholType, Product, Role, User } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { PlusCircle, UserCog, UserPlus, Trash2, Barcode, Camera } from 'lucide-react';
+import { PlusCircle, UserCog, UserPlus, Trash2, Barcode, Camera, Search, Filter, ArrowUpDown, Clock, User as UserIcon, Activity } from 'lucide-react';
 
 const Admin = () => {
   const { products, auditLogs, users, currentUser, addProduct, updateProduct, updateUser, addUser, deleteUser } = useStore();
@@ -17,6 +17,34 @@ const Admin = () => {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [isUserFormOpen, setIsUserFormOpen] = useState(false);
   const [userFormData, setUserFormData] = useState<Partial<User>>({ name: '', pin: '', role: Role.CASHIER, permissions: [] });
+  const [logSearch, setLogSearch] = useState('');
+  const [logFilterAction, setLogFilterAction] = useState<string>('ALL');
+  const [logFilterUser, setLogFilterUser] = useState<string>('ALL');
+  const [logSortOrder, setLogSortOrder] = useState<'newest' | 'oldest'>('newest');
+
+  const uniqueActions = useMemo(() => {
+    const actions = new Set(auditLogs.map(l => l.action));
+    return Array.from(actions).sort();
+  }, [auditLogs]);
+
+  const filteredLogs = useMemo(() => {
+    let logs = [...auditLogs];
+    if (logSearch) {
+      const search = logSearch.toLowerCase();
+      logs = logs.filter(l => l.details.toLowerCase().includes(search) || l.userName.toLowerCase().includes(search) || l.action.toLowerCase().includes(search));
+    }
+    if (logFilterAction !== 'ALL') {
+      logs = logs.filter(l => l.action === logFilterAction);
+    }
+    if (logFilterUser !== 'ALL') {
+      logs = logs.filter(l => l.userId === logFilterUser);
+    }
+    logs.sort((a, b) => {
+      const diff = new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+      return logSortOrder === 'newest' ? diff : -diff;
+    });
+    return logs;
+  }, [auditLogs, logSearch, logFilterAction, logFilterUser, logSortOrder]);
 
   const handleEditProduct = (product: Product) => { setEditingProduct(product); setProductFormData(product); setIsProductFormOpen(true); };
   const handleCreateProduct = () => { setEditingProduct(null); setProductFormData({ name: '', type: AlcoholType.WHISKEY, size: '', brand: '', sku: '', barcode: '', costPrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5 }); setIsProductFormOpen(true); };
@@ -91,15 +119,153 @@ const Admin = () => {
       )}
 
       {activeSection === 'LOGS' && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="lg:hidden divide-y divide-slate-100 max-h-[70vh] overflow-y-auto">
-            {auditLogs.map(log => (<div key={log.id} className="p-3 hover:bg-slate-50"><div className="flex justify-between items-start mb-1"><span className="font-medium text-slate-900">{log.userName}</span><span className="text-xs text-slate-500">{new Date(log.timestamp).toLocaleString()}</span></div><div className="flex items-start gap-2"><span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-bold shrink-0">{log.action}</span><p className="text-xs text-slate-600 line-clamp-2">{log.details}</p></div></div>))}
+        <div className="space-y-4">
+          {/* Stats Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
+              <div className="flex items-center gap-2 text-slate-500 mb-1">
+                <Activity size={16} />
+                <span className="text-xs font-medium">Total Logs</span>
+              </div>
+              <p className="text-2xl font-bold text-slate-800">{auditLogs.length}</p>
+            </div>
+            <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
+              <div className="flex items-center gap-2 text-slate-500 mb-1">
+                <Clock size={16} />
+                <span className="text-xs font-medium">Today</span>
+              </div>
+              <p className="text-2xl font-bold text-blue-600">{auditLogs.filter(l => new Date(l.timestamp).toDateString() === new Date().toDateString()).length}</p>
+            </div>
+            <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
+              <div className="flex items-center gap-2 text-slate-500 mb-1">
+                <UserIcon size={16} />
+                <span className="text-xs font-medium">Users Active</span>
+              </div>
+              <p className="text-2xl font-bold text-green-600">{new Set(auditLogs.map(l => l.userId)).size}</p>
+            </div>
+            <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
+              <div className="flex items-center gap-2 text-slate-500 mb-1">
+                <Filter size={16} />
+                <span className="text-xs font-medium">Filtered</span>
+              </div>
+              <p className="text-2xl font-bold text-amber-600">{filteredLogs.length}</p>
+            </div>
           </div>
-          <div className="hidden lg:block overflow-x-auto max-h-[70vh] overflow-y-auto">
-            <table className="w-full text-left">
-              <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold sticky top-0"><tr><th className="px-6 py-4">Time</th><th className="px-6 py-4">User</th><th className="px-6 py-4">Action</th><th className="px-6 py-4">Details</th></tr></thead>
-              <tbody className="divide-y divide-slate-100 text-sm">{auditLogs.map(log => (<tr key={log.id} className="hover:bg-slate-50"><td className="px-6 py-4 text-slate-500">{new Date(log.timestamp).toLocaleString()}</td><td className="px-6 py-4 font-medium">{log.userName}</td><td className="px-6 py-4"><span className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-xs font-bold">{log.action}</span></td><td className="px-6 py-4 text-slate-600">{log.details}</td></tr>))}</tbody>
-            </table>
+
+          {/* Filters */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+            <div className="flex flex-col lg:flex-row gap-3">
+              <div className="flex-1 relative">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search logs..."
+                  className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+                  value={logSearch}
+                  onChange={e => setLogSearch(e.target.value)}
+                />
+              </div>
+              <select
+                value={logFilterAction}
+                onChange={e => setLogFilterAction(e.target.value)}
+                className="px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+              >
+                <option value="ALL">All Actions</option>
+                {uniqueActions.map(action => (
+                  <option key={action} value={action}>{action}</option>
+                ))}
+              </select>
+              <select
+                value={logFilterUser}
+                onChange={e => setLogFilterUser(e.target.value)}
+                className="px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+              >
+                <option value="ALL">All Users</option>
+                {users.map(user => (
+                  <option key={user.id} value={user.id}>{user.name}</option>
+                ))}
+              </select>
+              <button
+                onClick={() => setLogSortOrder(logSortOrder === 'newest' ? 'oldest' : 'newest')}
+                className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50"
+              >
+                <ArrowUpDown size={16} />
+                {logSortOrder === 'newest' ? 'Newest First' : 'Oldest First'}
+              </button>
+            </div>
+          </div>
+
+          {/* Logs Table */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            {filteredLogs.length === 0 ? (
+              <div className="p-8 text-center">
+                <Activity size={48} className="mx-auto text-slate-300 mb-4" />
+                <p className="text-slate-500">No logs found</p>
+              </div>
+            ) : (
+              <>
+                {/* Mobile View */}
+                <div className="lg:hidden divide-y divide-slate-100 max-h-[60vh] overflow-y-auto">
+                  {filteredLogs.map((log, index) => (
+                    <div key={log.id} className="p-3 hover:bg-slate-50">
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400 font-mono text-xs">#{index + 1}</span>
+                          <span className="font-medium text-slate-900">{log.userName}</span>
+                        </div>
+                        <span className="text-xs text-slate-500">{new Date(log.timestamp).toLocaleString()}</span>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold shrink-0 ${
+                          log.action.includes('SALE') ? 'bg-green-100 text-green-700' :
+                          log.action.includes('VOID') ? 'bg-red-100 text-red-700' :
+                          log.action.includes('SHIFT') ? 'bg-blue-100 text-blue-700' :
+                          log.action.includes('USER') ? 'bg-purple-100 text-purple-700' :
+                          log.action.includes('PRODUCT') || log.action.includes('STOCK') || log.action.includes('INVENTORY') ? 'bg-amber-100 text-amber-700' :
+                          'bg-slate-100 text-slate-700'
+                        }`}>{log.action}</span>
+                      </div>
+                      <p className="text-xs text-slate-600 mt-2 line-clamp-2">{log.details}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Desktop Table */}
+                <div className="hidden lg:block overflow-x-auto max-h-[60vh] overflow-y-auto">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold sticky top-0">
+                      <tr>
+                        <th className="px-4 py-4">#</th>
+                        <th className="px-4 py-4">Time</th>
+                        <th className="px-4 py-4">User</th>
+                        <th className="px-4 py-4">Action</th>
+                        <th className="px-4 py-4">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                      {filteredLogs.map((log, index) => (
+                        <tr key={log.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-4 font-mono text-slate-400">#{index + 1}</td>
+                          <td className="px-4 py-4 text-slate-500 whitespace-nowrap">{new Date(log.timestamp).toLocaleString()}</td>
+                          <td className="px-4 py-4 font-medium text-slate-800">{log.userName}</td>
+                          <td className="px-4 py-4">
+                            <span className={`px-2 py-1 rounded text-xs font-bold ${
+                              log.action.includes('SALE') ? 'bg-green-100 text-green-700' :
+                              log.action.includes('VOID') ? 'bg-red-100 text-red-700' :
+                              log.action.includes('SHIFT') ? 'bg-blue-100 text-blue-700' :
+                              log.action.includes('USER') ? 'bg-purple-100 text-purple-700' :
+                              log.action.includes('PRODUCT') || log.action.includes('STOCK') || log.action.includes('INVENTORY') ? 'bg-amber-100 text-amber-700' :
+                              'bg-slate-100 text-slate-700'
+                            }`}>{log.action}</span>
+                          </td>
+                          <td className="px-4 py-4 text-slate-600 max-w-md truncate">{log.details}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

@@ -323,6 +323,7 @@ const Admin = () => {
                 {barcodeInput.trim() ? 'Use Barcode' : 'Close'}
               </button>
               <button
+                type="button"
                 onClick={() => { setBarcodeInput(''); setIsScanningBarcode(false); }}
                 className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
               >

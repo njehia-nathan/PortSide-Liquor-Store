@@ -353,7 +353,7 @@ const Inventory = () => {
                         <div className="flex items-center gap-1">
                           <input type="number" className="w-12 border rounded px-2 py-1 text-xs" value={editAlertValue} onChange={e => setEditAlertValue(e.target.value)} autoFocus />
                           <button onClick={() => handleUpdateAlert(p)} className="text-green-600 p-1"><Save size={16} /></button>
-                          <button onClick={() => setEditingAlertId(null)} className="text-slate-400 p-1"><X size={16} /></button>
+                          <button type="button" onClick={() => setEditingAlertId(null)} className="text-slate-400 p-1"><X size={16} /></button>
                         </div>
                       ) : (
                         <button onClick={() => startEditAlert(p)} className="font-mono bg-slate-100 px-2 py-0.5 rounded text-xs flex items-center gap-1">
@@ -394,7 +394,7 @@ const Inventory = () => {
                             <div className="flex items-center gap-2">
                               <input type="number" className="w-16 border rounded px-2 py-1" value={editAlertValue} onChange={e => setEditAlertValue(e.target.value)} autoFocus />
                               <button onClick={() => handleUpdateAlert(p)} className="text-green-600 hover:text-green-800"><Save size={18} /></button>
-                              <button onClick={() => setEditingAlertId(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+                              <button type="button" onClick={() => setEditingAlertId(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
                             </div>
                           ) : (
                             <div className="flex items-center gap-2 group">
@@ -649,6 +649,7 @@ const Inventory = () => {
                   Find Product
                 </button>
                 <button
+                  type="button"
                   onClick={() => { setBarcodeInput(''); setShowBarcodeScanner(false); }}
                   className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
                 >

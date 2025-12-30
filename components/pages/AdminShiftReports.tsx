@@ -4,7 +4,7 @@ import React, { useState, useMemo } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Shift } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { Clock, Calendar, DollarSign, Users, MessageSquare, X, Eye, Filter, Printer, FileText } from 'lucide-react';
+import { Clock, Calendar, DollarSign, Users, MessageSquare, X, Eye, Filter, Printer, FileText, Download } from 'lucide-react';
 
 const AdminShiftReports = () => {
   const { shifts, sales, users, businessSettings } = useStore();
@@ -96,6 +96,129 @@ const AdminShiftReports = () => {
     `);
     printWindow.document.close();
     printWindow.print();
+  };
+
+  const handlePrintShiftDetails = () => {
+    if (!selectedShift) return;
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+
+    const salesRows = selectedShiftSales.map((sale, idx) => `
+      <tr style="${sale.isVoided ? 'opacity: 0.5; text-decoration: line-through;' : ''}">
+        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">#${idx + 1}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${formatDateTime(sale.timestamp).time}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${sale.items.map(i => `${i.quantity}x ${i.productName}`).join(', ')}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${sale.paymentMethod}</td>
+        <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: bold;">${CURRENCY_FORMATTER.format(sale.totalAmount)}</td>
+      </tr>
+    `).join('');
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Shift Report - ${formatDateTime(selectedShift.startTime).date}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+            h1 { color: #1e293b; margin-bottom: 5px; }
+            .subtitle { color: #64748b; margin-bottom: 20px; }
+            .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }
+            .stat-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; }
+            .stat-label { font-size: 12px; color: #64748b; }
+            .stat-value { font-size: 24px; font-weight: bold; color: #1e293b; }
+            .stat-value.green { color: #16a34a; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th { background: #f1f5f9; padding: 10px; text-align: left; font-size: 12px; text-transform: uppercase; color: #64748b; }
+            .total-row { background: #f1f5f9; font-weight: bold; }
+            .total-row td { padding: 12px 8px; }
+          </style>
+        </head>
+        <body>
+          <h1>Shift Report</h1>
+          <p class="subtitle">${selectedShift.cashierName} • ${formatDateTime(selectedShift.startTime).date} • ${formatDateTime(selectedShift.startTime).time} - ${selectedShift.endTime ? formatDateTime(selectedShift.endTime).time : 'Active'}</p>
+          
+          <div class="stats">
+            <div class="stat-card">
+              <div class="stat-label">Total Sales</div>
+              <div class="stat-value">${selectedShiftSales.filter(s => !s.isVoided).length}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Revenue</div>
+              <div class="stat-value green">${CURRENCY_FORMATTER.format(selectedShiftRevenue - voidedTotal)}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Duration</div>
+              <div class="stat-value">${calculateShiftDuration(selectedShift.startTime, selectedShift.endTime)}</div>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Time</th>
+                <th>Items</th>
+                <th>Payment</th>
+                <th style="text-align: right;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${salesRows}
+            </tbody>
+            <tfoot>
+              <tr class="total-row">
+                <td colspan="4" style="text-align: right;">TOTAL:</td>
+                <td style="text-align: right; color: #16a34a;">${CURRENCY_FORMATTER.format(selectedShiftRevenue)}</td>
+              </tr>
+            </tfoot>
+          </table>
+
+          <p style="margin-top: 30px; font-size: 12px; color: #94a3b8; text-align: center;">
+            Generated: ${new Date().toLocaleString()}
+          </p>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.print();
+  };
+
+  const handleExportExcel = () => {
+    if (!selectedShift) return;
+    
+    // Create CSV content
+    const headers = ['#', 'Time', 'Items', 'Payment Method', 'Amount', 'Status'];
+    const rows = selectedShiftSales.map((sale, idx) => [
+      idx + 1,
+      formatDateTime(sale.timestamp).time,
+      sale.items.map(i => `${i.quantity}x ${i.productName}`).join('; '),
+      sale.paymentMethod,
+      sale.totalAmount,
+      sale.isVoided ? 'VOIDED' : 'VALID'
+    ]);
+    
+    // Add summary rows
+    rows.push([]);
+    rows.push(['SUMMARY']);
+    rows.push(['Total Sales', selectedShiftSales.filter(s => !s.isVoided).length]);
+    rows.push(['Gross Revenue', selectedShiftRevenue]);
+    rows.push(['Voided Amount', voidedTotal]);
+    rows.push(['Net Revenue', selectedShiftRevenue - voidedTotal]);
+    rows.push([]);
+    rows.push(['Cash Sales', cashTotal]);
+    rows.push(['Card Sales', cardTotal]);
+    rows.push(['M-Pesa Sales', mobileTotal]);
+    
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.join(','))
+    ].join('\n');
+    
+    // Download file
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `shift-report-${selectedShift.cashierName}-${formatDateTime(selectedShift.startTime).date.replace(/\s/g, '-')}.csv`;
+    link.click();
   };
 
   return (
@@ -261,9 +384,25 @@ const AdminShiftReports = () => {
                   {selectedShift.cashierName} • {formatDateTime(selectedShift.startTime).date}
                 </p>
               </div>
-              <button onClick={() => setSelectedShift(null)} className="p-2 hover:bg-white/20 rounded-lg">
-                <X size={20} className="text-white" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handlePrintShiftDetails}
+                  className="p-2 hover:bg-white/20 rounded-lg text-white"
+                  title="Print Report"
+                >
+                  <Printer size={20} />
+                </button>
+                <button
+                  onClick={handleExportExcel}
+                  className="p-2 hover:bg-white/20 rounded-lg text-white"
+                  title="Export to Excel"
+                >
+                  <Download size={20} />
+                </button>
+                <button type="button" onClick={() => setSelectedShift(null)} className="p-2 hover:bg-white/20 rounded-lg">
+                  <X size={20} className="text-white" />
+                </button>
+              </div>
             </div>
 
             {/* Summary Stats */}
@@ -396,7 +535,7 @@ const AdminShiftReports = () => {
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
                 <FileText size={20} /> Z-Report Preview
               </h2>
-              <button onClick={() => setShowZReport(false)} className="p-2 hover:bg-white/20 rounded-lg">
+              <button type="button" onClick={() => setShowZReport(false)} className="p-2 hover:bg-white/20 rounded-lg">
                 <X size={20} className="text-white" />
               </button>
             </div>

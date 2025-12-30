@@ -476,7 +476,7 @@ const POS = () => {
           <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl max-h-[85vh] flex flex-col">
             <div className="p-4 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-lg font-bold">Cart ({cart.length} items)</h2>
-              <button onClick={() => setMobileCartOpen(false)}>
+              <button type="button" onClick={() => setMobileCartOpen(false)}>
                 <X size={24} />
               </button>
             </div>
@@ -534,7 +534,7 @@ const POS = () => {
           <div className="bg-white w-full lg:rounded-xl lg:max-w-md lg:w-full rounded-t-2xl">
             <div className="p-4 lg:p-6 border-b border-slate-200 flex justify-between items-center">
               <h2 className="text-lg lg:text-xl font-bold">Select Payment</h2>
-              <button onClick={() => setPaymentModalOpen(false)}>
+              <button type="button" onClick={() => setPaymentModalOpen(false)}>
                 <X size={24} />
               </button>
             </div>
@@ -572,7 +572,7 @@ const POS = () => {
               <h2 className="text-lg lg:text-xl font-bold flex items-center gap-2">
                 <Banknote className="text-green-600" /> Cash Payment
               </h2>
-              <button onClick={() => { setShowCashModal(false); setCashTendered(''); }}>
+              <button type="button" onClick={() => { setShowCashModal(false); setCashTendered(''); }}>
                 <X size={24} />
               </button>
             </div>
@@ -662,7 +662,7 @@ const POS = () => {
                 autoFocus
                 required
               />
-              <button className="w-full bg-red-600 hover:bg-red-700 text-white py-4 rounded-lg font-bold text-lg">
+              <button type="submit" className="w-full bg-red-600 hover:bg-red-700 text-white py-4 rounded-lg font-bold text-lg">
                 Confirm & Logout
               </button>
               <button
@@ -733,6 +733,7 @@ const POS = () => {
             {/* Footer */}
             <div className="p-6 pt-0">
               <button
+                type="button"
                 onClick={handleShiftReportOk}
                 className="w-full bg-slate-800 hover:bg-slate-900 text-white py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-2"
               >
@@ -941,6 +942,7 @@ const POS = () => {
                 </div>
               )}
               <button
+                type="button"
                 onClick={() => setShowReceiptModal(false)}
                 className="w-full border-2 border-slate-300 py-2.5 sm:py-3 rounded-lg sm:rounded-xl font-bold text-sm sm:text-base text-slate-700 hover:bg-slate-100 hover:border-slate-400 transition-all active:scale-95"
               >
@@ -961,7 +963,7 @@ const POS = () => {
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
                 <Receipt size={20} /> Sales Dashboard
               </h2>
-              <button onClick={() => setShowRecentSales(false)} className="text-white/80 hover:text-white">
+              <button type="button" onClick={() => setShowRecentSales(false)} className="text-white/80 hover:text-white">
                 <X size={24} />
               </button>
             </div>
@@ -1113,6 +1115,7 @@ const POS = () => {
                 Add to Cart
               </button>
               <button
+                type="button"
                 onClick={() => { setBarcodeInput(''); setShowBarcodeScanner(false); }}
                 className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
               >
@@ -1160,6 +1163,7 @@ const POS = () => {
                 <Ban size={18} /> Submit Request
               </button>
               <button
+                type="button"
                 onClick={() => { setVoidReason(''); setShowVoidModal(false); }}
                 className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
               >
@@ -1208,6 +1212,7 @@ const POS = () => {
                 )}
               </button>
               <button
+                type="button"
                 onClick={() => { setCustomerPhone(''); setShowWhatsAppModal(false); }}
                 className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
               >

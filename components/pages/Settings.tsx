@@ -55,8 +55,8 @@ const Settings = () => {
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 lg:p-6">
           <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Building2 size={18} /> Business Identity</h2>
           <div className="space-y-4">
-            <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Business Name *</label><input type="text" required className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="Port Side Liquor Store" value={formData.businessName} onChange={(e) => handleChange('businessName', e.target.value)} /></div>
-            <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Tagline (Optional)</label><input type="text" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="Your favorite neighborhood liquor store" value={formData.tagline} onChange={(e) => handleChange('tagline', e.target.value)} /></div>
+            <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Business Name *</label><input type="text" required className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="Grab Bottle  Store" value={formData.businessName} onChange={(e) => handleChange('businessName', e.target.value)} /></div>
+            <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Tagline (Optional)</label><input type="text" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="Your favorite neighborhood  store" value={formData.tagline} onChange={(e) => handleChange('tagline', e.target.value)} /></div>
           </div>
         </div>
 

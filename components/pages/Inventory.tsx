@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Product, AlcoholType } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
@@ -48,6 +48,43 @@ const Inventory = () => {
     name: '', type: AlcoholType.WHISKEY, size: '', brand: '', sku: '', barcode: '',
     costPrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5
   });
+  const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
+  const lastKeyTime = useRef<number>(0);
+
+  // Global barcode scanner listener - scan anytime without clicking
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input field
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
+        return;
+      }
+
+      const now = Date.now();
+      // If more than 100ms between keys, start fresh (barcode scanners are fast)
+      if (now - lastKeyTime.current > 100) {
+        setGlobalBarcodeBuffer('');
+      }
+      lastKeyTime.current = now;
+
+      if (e.key === 'Enter' && globalBarcodeBuffer.length > 0) {
+        // Process the scanned barcode
+        const product = products.find(p => p.barcode === globalBarcodeBuffer || p.sku === globalBarcodeBuffer);
+        if (product) {
+          setSelectedProductId(product.id);
+          showSuccess(`✓ Found: ${product.name}`);
+        } else {
+          alert('Product not found for barcode: ' + globalBarcodeBuffer);
+        }
+        setGlobalBarcodeBuffer('');
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        setGlobalBarcodeBuffer(prev => prev + e.key);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [globalBarcodeBuffer, products]);
 
   const filteredProducts = products.filter(p =>
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -608,6 +645,7 @@ const Inventory = () => {
               <form onSubmit={(e) => {
                 e.preventDefault();
                 const { id, ...productData } = newProduct as Product;
+                productData.brand = productData.name;
                 addProduct(productData);
                 showSuccess(`✓ Product "${newProduct.name}" added successfully`);
                 setShowAddProductModal(false);
@@ -669,10 +707,10 @@ const Inventory = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1">SKU *</label>
+                  <label className="block text-sm font-medium mb-1">SKU</label>
                   <input
-                    required
                     type="text"
+                    placeholder="Optional"
                     className="w-full border p-2.5 rounded-lg text-sm"
                     value={newProduct.sku}
                     onChange={(e) =>
@@ -684,30 +722,47 @@ const Inventory = () => {
                   <label className="block text-sm font-medium mb-1 flex items-center gap-1">
                     <Barcode size={14} /> Barcode
                   </label>
-                  <input
-                    type="text"
-                    placeholder="Scan or enter barcode"
-                    className="w-full border p-2.5 rounded-lg text-sm font-mono"
-                    value={newProduct.barcode || ''}
-                    onChange={(e) =>
-                      setNewProduct({
-                        ...newProduct,
-                        barcode: e.target.value,
-                      })
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Brand *</label>
-                  <input
-                    required
-                    type="text"
-                    className="w-full border p-2.5 rounded-lg text-sm"
-                    value={newProduct.brand}
-                    onChange={(e) =>
-                      setNewProduct({ ...newProduct, brand: e.target.value })
-                    }
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Scan or enter barcode"
+                      className="flex-1 border p-2.5 rounded-lg text-sm font-mono"
+                      value={newProduct.barcode || ''}
+                      autoFocus
+                      onChange={(e) =>
+                        setNewProduct({
+                          ...newProduct,
+                          barcode: e.target.value,
+                        })
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.className = 'sr-only';
+                        document.body.appendChild(input);
+                        input.focus();
+                        input.addEventListener('keydown', (e) => {
+                          if (e.key === 'Enter') {
+                            setNewProduct({ ...newProduct, barcode: input.value });
+                            input.remove();
+                          }
+                        });
+                        input.addEventListener('blur', () => {
+                          if (input.value) {
+                            setNewProduct({ ...newProduct, barcode: input.value });
+                          }
+                          input.remove();
+                        });
+                      }}
+                      className="px-3 py-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 flex items-center gap-1 text-sm font-medium"
+                    >
+                      <Barcode size={16} /> Scan
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">Just scan - no need to click</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1 text-red-600">
@@ -722,38 +777,6 @@ const Inventory = () => {
                       setNewProduct({
                         ...newProduct,
                         lowStockThreshold: parseInt(e.target.value) || 0,
-                      })
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Cost Price *</label>
-                  <input
-                    required
-                    type="number"
-                    step="0.01"
-                    className="w-full border p-2.5 rounded-lg text-sm"
-                    value={newProduct.costPrice}
-                    onChange={(e) =>
-                      setNewProduct({
-                        ...newProduct,
-                        costPrice: parseFloat(e.target.value),
-                      })
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Selling Price *</label>
-                  <input
-                    required
-                    type="number"
-                    step="0.01"
-                    className="w-full border p-2.5 rounded-lg text-sm"
-                    value={newProduct.sellingPrice}
-                    onChange={(e) =>
-                      setNewProduct({
-                        ...newProduct,
-                        sellingPrice: parseFloat(e.target.value),
                       })
                     }
                   />

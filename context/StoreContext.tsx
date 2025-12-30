@@ -201,7 +201,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           // Set default settings (no logo by default - user must upload)
           const defaultSettings: BusinessSettings = {
             id: 'default',
-            businessName: 'Port Side Liquor',
+            businessName: 'Grab Bottle ',
             phone: '+254 700 000000',
             email: '',
             location: 'Nairobi, Kenya',

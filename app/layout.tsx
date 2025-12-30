@@ -48,7 +48,7 @@ export default function RootLayout({
       <head>
         <meta charSet="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <title>Port Side Liquor POS</title>
+        <title>Grab Bottle  POS</title>
         <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#0f172a" />
         <meta name="apple-mobile-web-app-capable" content="yes" />

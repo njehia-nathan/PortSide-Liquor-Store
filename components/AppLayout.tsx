@@ -65,7 +65,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           ) : (
             <div className="w-6 h-6 bg-amber-500 rounded flex items-center justify-center text-white font-bold text-xs">PS</div>
           )}
-          <span className="truncate">{businessSettings?.businessName?.split(' ')[0] || 'Port Side'}</span>
+          <span className="truncate">{businessSettings?.businessName?.split(' ')[0] || 'Grab Bottle'}</span>
         </h1>
         <div className="flex items-center gap-2">
           {isSyncing ? (
@@ -103,7 +103,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
               ) : (
                 <div className="w-8 h-8 bg-amber-500 rounded-lg flex items-center justify-center text-white font-bold text-sm">PS</div>
               )}
-              <span className="truncate">{businessSettings?.businessName || 'Port Side Liquor'}</span>
+              <span className="truncate">{businessSettings?.businessName || 'Grab Bottle '}</span>
             </h1>
             <button
               onClick={() => setSidebarOpen(false)}

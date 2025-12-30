@@ -1,5 +1,5 @@
 -- ============================================================================
--- SUPABASE SCHEMA FOR POS LIQUOR SYSTEM
+-- SUPABASE SCHEMA FOR POS  SYSTEM
 -- Run this SQL in your Supabase SQL Editor to create the required tables.
 -- ============================================================================
 
@@ -116,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS business_settings (
     id TEXT PRIMARY KEY DEFAULT 'default',
-    "businessName" TEXT NOT NULL DEFAULT 'Port Side Liquor',
+    "businessName" TEXT NOT NULL DEFAULT 'Port Side ',
     tagline TEXT,
     phone TEXT NOT NULL DEFAULT '+254 700 000000',
     email TEXT,

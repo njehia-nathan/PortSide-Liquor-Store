@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { AlcoholType, Product, CartItem, SaleItem, Sale } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
@@ -23,6 +23,37 @@ const POS = () => {
   const [customerPhone, setCustomerPhone] = useState('');
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
+  const lastKeyTime = useRef<number>(0);
+
+  // Global barcode scanner listener - scan anytime without clicking
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input field or modal is open
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
+        return;
+      }
+
+      const now = Date.now();
+      // If more than 100ms between keys, start fresh (barcode scanners are fast)
+      if (now - lastKeyTime.current > 100) {
+        setGlobalBarcodeBuffer('');
+      }
+      lastKeyTime.current = now;
+
+      if (e.key === 'Enter' && globalBarcodeBuffer.length > 0) {
+        // Process the scanned barcode - add to cart
+        handleBarcodeScanned(globalBarcodeBuffer);
+        setGlobalBarcodeBuffer('');
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        setGlobalBarcodeBuffer(prev => prev + e.key);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [globalBarcodeBuffer, products]);
 
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
@@ -106,7 +137,7 @@ const POS = () => {
 
   const generateReceiptText = (sale: Sale) => {
     const settings = businessSettings;
-    let text = `*${settings?.businessName || 'Port Side Liquor'}*\n`;
+    let text = `*${settings?.businessName || 'Grab Bottle '}*\n`;
     if (settings?.tagline) text += `_${settings.tagline}_\n`;
     text += `📍 ${settings?.location || 'Nairobi, Kenya'}\n`;
     text += `📞 ${settings?.phone || '+254 700 000000'}\n`;
@@ -515,7 +546,7 @@ const POS = () => {
               )}
 
               <h2 className="text-2xl lg:text-3xl font-bold text-slate-900 mb-1 print:text-xl print:mb-0.5">
-                {businessSettings?.businessName || 'Port Side Liquor'}
+                {businessSettings?.businessName || 'Grab Bottle '}
               </h2>
 
               {businessSettings?.tagline && (
@@ -630,7 +661,7 @@ const POS = () => {
                 </p>
                 <div className="pt-2 print:pt-1">
                   <p className="text-xs text-slate-400 print:text-[10px]">
-                    Powered by Port Side POS
+                    Powered by Grab Bottle POS
                   </p>
                 </div>
               </div>

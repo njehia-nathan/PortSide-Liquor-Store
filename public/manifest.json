@@ -1,7 +1,7 @@
 {
-  "name": "Port Side Liquor POS",
-  "short_name": "PortSide POS",
-  "description": "Offline-first Point of Sale system for liquor stores",
+  "name": "Grab Bottle  POS",
+  "short_name": "GrabBottle POS",
+  "description": "Offline-first Point of Sale system for  stores",
   "icons": [
     {
       "src": "icons/icon-48x48.png",

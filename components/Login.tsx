@@ -28,7 +28,7 @@ const Login = () => {
               <Lock className="text-amber-600" size={32} />
             </div>
           )}
-          <h1 className="text-2xl font-bold text-slate-900">{businessSettings?.businessName || 'Port Side Liquor'}</h1>
+          <h1 className="text-2xl font-bold text-slate-900">{businessSettings?.businessName || 'Grab Bottle '}</h1>
           <p className="text-slate-500">Enter your PIN to access the terminal</p>
         </div>
 

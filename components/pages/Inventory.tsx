@@ -102,8 +102,9 @@ const Inventory = () => {
       setSelectedProductId(product.id);
       setBarcodeInput('');
       setShowBarcodeScanner(false);
+      showSuccess(`✓ Found: ${product.name} (Stock: ${product.stock})`);
     } else {
-      alert('Product not found for this barcode');
+      alert('Product not found for barcode: ' + barcode);
     }
   };
 

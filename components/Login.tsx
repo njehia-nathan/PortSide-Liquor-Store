@@ -22,10 +22,10 @@ const Login = () => {
       <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md">
         <div className="text-center mb-8">
           {businessSettings?.logoUrl ? (
-            <img src={businessSettings.logoUrl} alt="Logo" className="w-16 h-16 mx-auto mb-4 rounded-xl object-contain" />
+            <img src={businessSettings.logoUrl} alt="Logo" className="w-32 h-32 mx-auto mb-6 rounded-2xl object-contain" />
           ) : (
-            <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Lock className="text-amber-600" size={32} />
+            <div className="w-32 h-32 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-6">
+              <Lock className="text-amber-600" size={48} />
             </div>
           )}
           <h1 className="text-2xl font-bold text-slate-900">{businessSettings?.businessName || 'Grab Bottle '}</h1>

@@ -70,7 +70,7 @@ input, select, textarea {
     width: 80mm !important;
     max-width: 80mm !important;
     margin: 0 !important;
-    padding: 2mm 3mm !important;
+    padding: 0 3mm 2mm 3mm !important;
     background: white !important;
     box-shadow: none !important;
     border-radius: 0 !important;
@@ -138,12 +138,21 @@ input, select, textarea {
     font-weight: 700 !important;
   }
   
-  /* Remove all borders for clean receipt */
-  [data-receipt-print] .border-dashed,
-  [data-receipt-print] .border-t-2,
-  [data-receipt-print] .border-b,
-  [data-receipt-print] .border-black,
-  [data-receipt-print] .border-slate-100,
+  /* Dashed separator lines - visible on print */
+  [data-receipt-print] .border-dashed {
+    border-style: dashed !important;
+    border-color: #000 !important;
+    border-width: 1px 0 0 0 !important;
+  }
+  
+  [data-receipt-print] .border-t-2 {
+    border-style: solid !important;
+    border-color: #000 !important;
+    border-width: 1px 0 0 0 !important;
+  }
+  
+  /* Remove item borders but keep section separators */
+  [data-receipt-print] .border-b.border-slate-100,
   [data-receipt-print] .border-slate-200,
   [data-receipt-print] .border-slate-300,
   [data-receipt-print] .border-green-200 {

@@ -482,33 +482,51 @@ const POS = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {cart.map(item => (
-                <div key={item.id} className="bg-slate-50 p-3 rounded-lg">
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <div className="font-bold text-sm">{item.name}</div>
-                      <div className="text-xs text-slate-400">{item.size}</div>
-                    </div>
-                    <button onClick={() => removeFromCart(item.id)} className="text-red-400">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => adjustQty(item.id, -1)} className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center">
-                        <Minus size={12} />
-                      </button>
-                      <span className="font-bold w-6 text-center text-sm">{item.quantity}</span>
-                      <button onClick={() => adjustQty(item.id, 1)} className="w-7 h-7 rounded-full bg-amber-500 text-white flex items-center justify-center">
-                        <Plus size={12} />
-                      </button>
-                    </div>
-                    <div className="font-bold text-amber-600 text-sm">
-                      {CURRENCY_FORMATTER.format(item.sellingPrice * item.quantity)}
-                    </div>
-                  </div>
+              {cart.length === 0 ? (
+                <div className="text-center text-slate-400 py-8">
+                  <p>Cart is empty</p>
                 </div>
-              ))}
+              ) : (
+                cart.map(item => (
+                  <div key={item.id} className="bg-slate-50 p-4 rounded-xl">
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="flex-1 min-w-0 pr-3">
+                        <div className="font-bold text-base text-slate-800">{item.name}</div>
+                        <div className="text-xs text-slate-500 mt-0.5">{item.size} • {CURRENCY_FORMATTER.format(item.sellingPrice)} each</div>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => removeFromCart(item.id)} 
+                        className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <button 
+                          type="button"
+                          onClick={() => adjustQty(item.id, -1)} 
+                          className="w-10 h-10 rounded-xl bg-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-300 transition-colors"
+                        >
+                          <Minus size={18} />
+                        </button>
+                        <span className="font-bold w-8 text-center text-lg">{item.quantity}</span>
+                        <button 
+                          type="button"
+                          onClick={() => adjustQty(item.id, 1)} 
+                          className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center hover:bg-amber-600 transition-colors"
+                        >
+                          <Plus size={18} />
+                        </button>
+                      </div>
+                      <div className="font-bold text-amber-600 text-lg">
+                        {CURRENCY_FORMATTER.format(item.sellingPrice * item.quantity)}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
 
             <div className="p-4 border-t border-slate-200 space-y-3">

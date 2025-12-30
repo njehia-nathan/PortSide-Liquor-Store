@@ -75,9 +75,19 @@ const Admin = () => {
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="lg:hidden divide-y divide-slate-100">
               {products.map(p => (
-                <div key={p.id} className="p-3 hover:bg-slate-50">
-                  <div className="flex justify-between items-start mb-2"><div className="flex-1 min-w-0"><h4 className="font-medium text-slate-900 truncate">{p.name}</h4><p className="text-xs text-slate-500">{p.size} • {p.sku}</p></div><span className="ml-2 font-bold text-slate-900">{CURRENCY_FORMATTER.format(p.sellingPrice)}</span></div>
-                  <div className="flex justify-between items-center"><span className="text-xs text-slate-500">Alert: {p.lowStockThreshold || 5}</span><button onClick={() => handleEditProduct(p)} className="text-blue-600 text-sm font-medium px-2 py-1">Edit</button></div>
+                <div key={p.id} className="p-4 hover:bg-slate-50">
+                  <div className="flex justify-between items-start mb-3">
+                    <div className="flex-1 min-w-0 pr-3">
+                      <h4 className="font-bold text-slate-900 text-base">{p.name}</h4>
+                      <p className="text-xs text-slate-500 mt-0.5">{p.type} • {p.size}</p>
+                      {p.barcode && <p className="text-xs text-slate-400 font-mono mt-0.5">{p.barcode}</p>}
+                    </div>
+                    <span className="font-bold text-amber-600 text-lg">{CURRENCY_FORMATTER.format(p.sellingPrice)}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs px-2 py-1 bg-slate-100 rounded-lg text-slate-600">Alert: {p.lowStockThreshold || 5}</span>
+                    <button onClick={() => handleEditProduct(p)} className="px-4 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm font-medium hover:bg-blue-200 transition-colors">Edit</button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -101,9 +111,22 @@ const Admin = () => {
           </div>
           <div className="lg:hidden divide-y divide-slate-100">
             {users.map(u => (
-              <div key={u.id} className="p-3 hover:bg-slate-50">
-                <div className="flex justify-between items-start mb-2"><div><h4 className="font-bold text-slate-800">{u.name}</h4><span className="text-xs px-2 py-0.5 bg-slate-100 border border-slate-200 rounded font-bold text-slate-600">{u.role}</span></div><div className="flex gap-2"><button onClick={() => handleEditUser(u)} className="text-amber-600 text-sm font-medium">Edit</button>{u.id !== currentUser?.id && (<button onClick={() => handleDeleteUser(u.id)} className="text-red-400"><Trash2 size={16} /></button>)}</div></div>
-                <div className="flex flex-wrap gap-1">{u.permissions?.map(p => (<span key={p} className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-100">{p}</span>))}</div>
+              <div key={u.id} className="p-4 hover:bg-slate-50">
+                <div className="flex justify-between items-center mb-3">
+                  <div>
+                    <h4 className="font-bold text-slate-800 text-base">{u.name}</h4>
+                    <span className="text-xs px-2 py-0.5 bg-slate-100 border border-slate-200 rounded font-bold text-slate-600 mt-1 inline-block">{u.role}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => handleEditUser(u)} className="px-3 py-1.5 bg-amber-100 text-amber-700 rounded-lg text-sm font-medium hover:bg-amber-200 transition-colors">Edit</button>
+                    {u.id !== currentUser?.id && (
+                      <button onClick={() => handleDeleteUser(u.id)} className="p-1.5 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors">
+                        <Trash2 size={18} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5">{u.permissions?.map(p => (<span key={p} className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded-lg border border-blue-100 font-medium">{p}</span>))}</div>
               </div>
             ))}
           </div>

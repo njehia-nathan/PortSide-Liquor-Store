@@ -343,21 +343,27 @@ const Inventory = () => {
               {filteredProducts.map(p => {
                 const threshold = p.lowStockThreshold || 5;
                 return (
-                  <div key={p.id} className="p-3 hover:bg-slate-50 flex justify-between items-center">
-                    <div>
-                      <h4 className="font-medium text-slate-900">{p.name}</h4>
-                      <p className="text-xs text-slate-500">{p.type} • {p.size}</p>
+                  <div key={p.id} className="p-4 hover:bg-slate-50">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex-1 min-w-0 pr-3">
+                        <h4 className="font-bold text-slate-900 text-base">{p.name}</h4>
+                        <p className="text-xs text-slate-500 mt-0.5">{p.type} • {p.size}</p>
+                      </div>
+                      <div className="text-right">
+                        <span className={`text-lg font-bold ${p.stock <= threshold ? 'text-red-600' : 'text-green-600'}`}>{p.stock}</span>
+                        <p className="text-[10px] text-slate-400">in stock</p>
+                      </div>
                     </div>
-                    <div>
+                    <div className="flex justify-between items-center">
                       {editingAlertId === p.id ? (
-                        <div className="flex items-center gap-1">
-                          <input type="number" className="w-12 border rounded px-2 py-1 text-xs" value={editAlertValue} onChange={e => setEditAlertValue(e.target.value)} autoFocus />
-                          <button onClick={() => handleUpdateAlert(p)} className="text-green-600 p-1"><Save size={16} /></button>
-                          <button type="button" onClick={() => setEditingAlertId(null)} className="text-slate-400 p-1"><X size={16} /></button>
+                        <div className="flex items-center gap-2">
+                          <input type="number" className="w-16 border-2 border-amber-400 rounded-lg px-3 py-1.5 text-sm font-mono text-center" value={editAlertValue} onChange={e => setEditAlertValue(e.target.value)} autoFocus />
+                          <button onClick={() => handleUpdateAlert(p)} className="p-2 bg-green-100 text-green-600 rounded-lg hover:bg-green-200"><Save size={18} /></button>
+                          <button type="button" onClick={() => setEditingAlertId(null)} className="p-2 bg-slate-100 text-slate-500 rounded-lg hover:bg-slate-200"><X size={18} /></button>
                         </div>
                       ) : (
-                        <button onClick={() => startEditAlert(p)} className="font-mono bg-slate-100 px-2 py-0.5 rounded text-xs flex items-center gap-1">
-                          {threshold} <Edit2 size={10} />
+                        <button onClick={() => startEditAlert(p)} className="px-3 py-1.5 bg-slate-100 rounded-lg text-sm font-medium text-slate-700 flex items-center gap-2 hover:bg-slate-200 transition-colors">
+                          Alert: {threshold} <Edit2 size={14} />
                         </button>
                       )}
                     </div>
@@ -366,7 +372,7 @@ const Inventory = () => {
               })}
             </div>
 
-            {/* Desktop */}
+            {/* Desktop Table View */}
             <div className="hidden lg:block overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold">
@@ -575,14 +581,30 @@ const Inventory = () => {
                     </Select>
                   </div>
 
-                  {/* Quantity Change */}
-                  <div>
+                  {/* Quantity Change with +/- buttons */}
+                  <div className="col-span-2">
                     <label className="block text-xs font-medium text-slate-600 mb-1">Change (+/-) *</label>
-                    <input type="number" className="w-full p-2 border border-slate-300 rounded-lg text-sm font-mono text-center focus:ring-2 focus:ring-orange-500 outline-none" placeholder="-1" value={quantity} onChange={e => setQuantity(e.target.value)} required />
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setQuantity(prev => String((parseInt(prev) || 0) - 1))}
+                        className="w-12 h-12 bg-red-500 text-white rounded-xl flex items-center justify-center text-2xl font-bold hover:bg-red-600 transition-colors shadow-sm"
+                      >
+                        −
+                      </button>
+                      <input type="number" className="flex-1 h-12 p-2 border-2 border-slate-300 rounded-xl text-lg font-mono text-center focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none" placeholder="0" value={quantity} onChange={e => setQuantity(e.target.value)} required />
+                      <button
+                        type="button"
+                        onClick={() => setQuantity(prev => String((parseInt(prev) || 0) + 1))}
+                        className="w-12 h-12 bg-green-500 text-white rounded-xl flex items-center justify-center text-2xl font-bold hover:bg-green-600 transition-colors shadow-sm"
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
 
-                  {/* Barcode Scanner */}
-                  <div>
+                  {/* Barcode Scanner - Hidden on mobile */}
+                  <div className="hidden lg:block">
                     <label className="block text-xs font-medium text-slate-600 mb-1">Scan</label>
                     <button type="button" onClick={() => setShowBarcodeScanner(true)} className="w-full h-9 bg-amber-500 hover:bg-amber-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm font-medium">
                       <Barcode size={14} /> Scan

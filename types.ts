@@ -60,14 +60,11 @@ export interface Sale {
   totalCost: number; // For profit calc
   paymentMethod: 'CASH' | 'CARD' | 'MOBILE';
   items: SaleItem[];
-  shiftId?: string; // Link sale to shift
+  shiftId?: string; // Link to shift
   isVoided?: boolean;
   voidedAt?: string;
   voidedBy?: string;
   voidReason?: string;
-  voidApprovalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
-  voidApprovedBy?: string;
-  voidApprovedAt?: string;
 }
 
 export interface Shift {
@@ -80,11 +77,7 @@ export interface Shift {
   closingCash?: number; // Actual cash counted
   expectedCash?: number; // Calculated from sales
   status: 'OPEN' | 'CLOSED';
-  comments?: string; // User comments for the shift
-  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
-  approvedBy?: string;
-  approvedAt?: string;
-  adminComments?: string; // Admin feedback on shift report
+  comments?: string; // Shift end comments from cashier
 }
 
 export interface AuditLog {
@@ -103,6 +96,21 @@ export interface InventoryAdjustment {
   reason: string;
   userId: string;
   timestamp: string;
+}
+
+export interface VoidRequest {
+  id: string;
+  saleId: string;
+  sale: Sale; // Snapshot of the sale
+  requestedBy: string;
+  requestedByName: string;
+  requestedAt: string;
+  reason: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  reviewedBy?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  reviewNotes?: string;
 }
 
 export interface BusinessSettings {

@@ -282,7 +282,7 @@ const Inventory = () => {
                       </span>
                     </div>
                     <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-500 font-mono text-xs">{p.sku}</span>
+                      <span className="text-slate-500 font-mono text-xs">#{filteredProducts.indexOf(p) + 1}</span>
                       <span className="font-bold text-slate-700">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</span>
                     </div>
                   </div>
@@ -295,7 +295,7 @@ const Inventory = () => {
               <table className="w-full text-left">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold">
                   <tr>
-                    <th className="px-6 py-4">SKU</th>
+                    <th className="px-6 py-4">#</th>
                     <th className="px-6 py-4">Barcode</th>
                     <th className="px-6 py-4">Product</th>
                     <th className="px-6 py-4">Type</th>
@@ -305,9 +305,9 @@ const Inventory = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
-                  {filteredProducts.map(p => (
+                  {filteredProducts.map((p, index) => (
                     <tr key={p.id} className="hover:bg-slate-50">
-                      <td className="px-6 py-4 font-mono text-slate-500">{p.sku}</td>
+                      <td className="px-6 py-4 font-mono text-slate-500">#{index + 1}</td>
                       <td className="px-6 py-4 font-mono text-xs text-slate-400">{p.barcode || '-'}</td>
                       <td className="px-6 py-4 font-medium text-slate-900">{p.name}</td>
                       <td className="px-6 py-4 text-slate-600">{p.type}</td>
@@ -331,7 +331,7 @@ const Inventory = () => {
             <div className="p-3 lg:p-4 border-b border-slate-100 bg-slate-50">
               <input
                 type="text"
-                placeholder="Filter by name or SKU..."
+                placeholder="Filter by name..."
                 className="w-full lg:max-w-md px-3 lg:px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
@@ -371,7 +371,7 @@ const Inventory = () => {
               <table className="w-full text-left">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold">
                   <tr>
-                    <th className="px-6 py-4">SKU</th>
+                    <th className="px-6 py-4">#</th>
                     <th className="px-6 py-4">Product</th>
                     <th className="px-6 py-4">Type</th>
                     <th className="px-6 py-4">Size</th>
@@ -380,11 +380,11 @@ const Inventory = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
-                  {filteredProducts.map(p => {
+                  {filteredProducts.map((p, index) => {
                     const threshold = p.lowStockThreshold || 5;
                     return (
                       <tr key={p.id} className="hover:bg-slate-50">
-                        <td className="px-6 py-4 font-mono text-slate-500">{p.sku}</td>
+                        <td className="px-6 py-4 font-mono text-slate-500">#{index + 1}</td>
                         <td className="px-6 py-4 font-medium text-slate-900">{p.name}</td>
                         <td className="px-6 py-4 text-slate-600">{p.type}</td>
                         <td className="px-6 py-4 text-slate-600">{p.size}</td>

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, PropsWithChildren } from 'react';
 import {
-  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings
+  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings, VoidRequest
 } from '../types';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
 import { dbPromise, addToSyncQueue } from '../db';
@@ -18,6 +18,7 @@ interface StoreContextType {
   sales: Sale[];
   shifts: Shift[];
   auditLogs: AuditLog[];
+  voidRequests: VoidRequest[];
   currentShift: Shift | null;
   businessSettings: BusinessSettings | null;
 
@@ -45,14 +46,11 @@ interface StoreContextType {
   // --- SHIFT ACTIONS ---
   openShift: (openingCash?: number) => Promise<void>;
   closeShift: (closingCash: number, comments?: string) => Promise<void>;
-  updateShiftComments: (shiftId: string, comments: string) => Promise<void>;
 
-  // --- VOID ACTIONS ---
-  requestVoidSale: (saleId: string, reason: string) => Promise<void>;
-  approveVoidSale: (saleId: string, approved: boolean) => Promise<void>;
-
-  // --- APPROVAL ACTIONS ---
-  approveShiftReport: (shiftId: string, approved: boolean, adminComments?: string) => Promise<void>;
+  // --- VOID REQUEST ACTIONS ---
+  requestVoid: (saleId: string, reason: string) => Promise<void>;
+  approveVoid: (requestId: string, notes?: string) => Promise<void>;
+  rejectVoid: (requestId: string, notes?: string) => Promise<void>;
 
   // --- SETTINGS ACTIONS ---
   updateBusinessSettings: (settings: BusinessSettings) => Promise<void>;
@@ -71,7 +69,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   // --- LOCAL STATE ---
   // These hold the data currently displayed on the screen
   const [isLoading, setIsLoading] = useState(true);
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [isSyncing, setIsSyncing] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -80,6 +78,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [sales, setSales] = useState<Sale[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [voidRequests, setVoidRequests] = useState<VoidRequest[]>([]);
   const [businessSettings, setBusinessSettings] = useState<BusinessSettings | null>(null);
   const [lastActivity, setLastActivity] = useState<number>(Date.now());
 
@@ -120,6 +119,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         let loadedSales = await db.getAll('sales');
         let loadedShifts = await db.getAll('shifts');
         const loadedLogs = await db.getAll('auditLogs');
+        let loadedVoidRequests = await db.getAll('voidRequests');
 
         // CLOUD SYNC PULL (On Startup)
         // If we are online, we try to fetch the latest "truth" from the server
@@ -208,6 +208,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         // Sort Data (Newest first for logs/sales)
         loadedSales.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        loadedVoidRequests.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
 
         // Load Business Settings
         const loadedSettings = await db.get('businessSettings', 'default');
@@ -237,6 +238,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         setSales(loadedSales);
         setShifts(loadedShifts);
         setAuditLogs(loadedLogs);
+        setVoidRequests(loadedVoidRequests);
 
         // Restore user session after users are loaded (reuse savedSession from above)
         if (savedSession) {
@@ -461,137 +463,78 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     };
     setUsers(prev => [...prev, newUser]);
     const db = await dbPromise();
-  };
-  setShifts(prev => [...prev, newShift]);
-
-  const db = await dbPromise();
-  await db.put('shifts', newShift);
-
-  const details = openingCash > 0
-    ? `Shift opened with ${CURRENCY_FORMATTER.format(openingCash)}`
-    : `Shift opened (No Float)`;
-
-  await addLog('SHIFT_OPEN', details);
-  await addToSyncQueue('OPEN_SHIFT', newShift);
-};
-
-const closeShift = async (closingCash: number, comments?: string) => {
-  if (!currentShift) return;
-
-  const shiftSales = sales.filter(s =>
-    new Date(s.timestamp) > new Date(currentShift.startTime) &&
-    s.cashierId === currentShift.cashierId &&
-    s.paymentMethod === 'CASH' &&
-    !s.isVoided
-  );
-  const totalCashSales = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
-  const expected = currentShift.openingCash + totalCashSales;
-
-  const updatedShift: Shift = {
-    ...currentShift,
-    endTime: new Date().toISOString(),
-    closingCash,
-    expectedCash: expected,
-    status: 'CLOSED',
-    comments: comments || currentShift.comments,
-    approvalStatus: 'PENDING',
+    await db.put('users', newUser);
+    await addLog('USER_ADD', `Added new user: ${newUser.name} (${newUser.role})`);
+    await addToSyncQueue('ADD_USER', newUser);
   };
 
-  setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
-
-  const db = await dbPromise();
-  await db.put('shifts', updatedShift);
-  await addLog('SHIFT_CLOSE', `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}`);
-  await addToSyncQueue('CLOSE_SHIFT', updatedShift);
-};
-
-const updateShiftComments = async (shiftId: string, comments: string) => {
-  const shift = shifts.find(s => s.id === shiftId);
-  if (!shift) return;
-
-  const updatedShift: Shift = { ...shift, comments };
-  setShifts(prev => prev.map(s => s.id === shiftId ? updatedShift : s));
-
-  const db = await dbPromise();
-  await db.put('shifts', updatedShift);
-  await addLog('SHIFT_COMMENT', `Updated shift comments for shift #${shiftId}`);
-  await addToSyncQueue('UPDATE_SHIFT', updatedShift);
-};
-    const updatedSale: Sale = {
-      ...sale,
-      voidReason: reason,
-      voidedBy: currentUser.name,
-      voidedAt: new Date().toISOString(),
-      voidApprovalStatus: 'PENDING',
-    };
-
-    setSales(prev => prev.map(s => s.id === saleId ? updatedSale : s));
-
-    const db = await dbPromise();
-    await db.put('sales', updatedSale);
-    await addLog('VOID_REQUEST', `Void requested for sale #${saleId}. Reason: ${reason}`);
-    await addToSyncQueue('UPDATE_SALE', updatedSale);
-  };
-
-  const approveVoidSale = async (saleId: string, approved: boolean) => {
-    if (!currentUser) return;
-    const sale = sales.find(s => s.id === saleId);
-    if (!sale) return;
-
-    const updatedSale: Sale = {
-      ...sale,
-      isVoided: approved,
-      voidApprovalStatus: approved ? 'APPROVED' : 'REJECTED',
-      voidApprovedBy: currentUser.name,
-      voidApprovedAt: new Date().toISOString(),
-    };
-
-    setSales(prev => prev.map(s => s.id === saleId ? updatedSale : s));
-
-    // If approved, restore inventory
-    if (approved) {
+  const deleteUser = async (userId: string) => {
+    const user = users.find(u => u.id === userId);
+    if (user) {
+      setUsers(prev => prev.filter(u => u.id !== userId));
       const db = await dbPromise();
-      const updatedProducts = [...products];
-      
-      for (const item of sale.items) {
-        const idx = updatedProducts.findIndex(p => p.id === item.productId);
-        if (idx > -1) {
-          updatedProducts[idx] = {
-            ...updatedProducts[idx],
-            stock: updatedProducts[idx].stock + item.quantity
-          };
-          await db.put('products', updatedProducts[idx]);
-          await addToSyncQueue('UPDATE_PRODUCT', updatedProducts[idx]);
-        }
-      }
-      setProducts(updatedProducts);
+      await db.delete('users', userId);
+      await addLog('USER_DELETE', `Deleted user: ${user.name}`);
+      await addToSyncQueue('DELETE_USER', { id: userId });
     }
-
-    const db = await dbPromise();
-    await db.put('sales', updatedSale);
-    await addLog('VOID_APPROVAL', `Void ${approved ? 'approved' : 'rejected'} for sale #${saleId}`);
-    await addToSyncQueue('UPDATE_SALE', updatedSale);
   };
 
-  const approveShiftReport = async (shiftId: string, approved: boolean, adminComments?: string) => {
+  /**
+   * Shift Management
+   * Controls opening and closing the cash drawer sessions.
+   * Updated: openingCash is now optional (defaults to 0) for businesses without a fixed float.
+   */
+  const openShift = async (openingCash: number = 0) => {
     if (!currentUser) return;
-    const shift = shifts.find(s => s.id === shiftId);
-    if (!shift) return;
+    const newShift: Shift = {
+      id: Date.now().toString(),
+      cashierId: currentUser.id,
+      cashierName: currentUser.name,
+      startTime: new Date().toISOString(),
+      openingCash,
+      status: 'OPEN',
+    };
+    setShifts(prev => [...prev, newShift]);
+
+    const db = await dbPromise();
+    await db.put('shifts', newShift);
+
+    const details = openingCash > 0
+      ? `Shift opened with ${CURRENCY_FORMATTER.format(openingCash)}`
+      : `Shift opened (No Float)`;
+
+    await addLog('SHIFT_OPEN', details);
+    await addToSyncQueue('OPEN_SHIFT', newShift);
+  };
+
+  const closeShift = async (closingCash: number, comments?: string) => {
+    if (!currentShift) return;
+
+    // Calculate how much cash should be in drawer based on sales (exclude voided)
+    const shiftSales = sales.filter(s =>
+      new Date(s.timestamp) > new Date(currentShift.startTime) &&
+      s.cashierId === currentShift.cashierId &&
+      s.paymentMethod === 'CASH' &&
+      !s.isVoided
+    );
+    const totalCashSales = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+    const expected = currentShift.openingCash + totalCashSales;
 
     const updatedShift: Shift = {
-      ...shift,
-      approvalStatus: approved ? 'APPROVED' : 'REJECTED',
-      approvedBy: currentUser.name,
-      approvedAt: new Date().toISOString(),
-      adminComments: adminComments || shift.adminComments,
+      ...currentShift,
+      endTime: new Date().toISOString(),
+      closingCash,
+      expectedCash: expected,
+      status: 'CLOSED',
+      comments,
     };
 
-    setShifts(prev => prev.map(s => s.id === shiftId ? updatedShift : s));
+    setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
 
     const db = await dbPromise();
     await db.put('shifts', updatedShift);
-    await addLog('SHIFT_APPROVAL', `Shift report ${approved ? 'approved' : 'rejected'} for ${shift.cashierName}`);
-    await addToSyncQueue('UPDATE_SHIFT', updatedShift);
+    await addLog('SHIFT_CLOSE', `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}${comments ? `. Comments: ${comments}` : ''}`);
+    await addToSyncQueue('CLOSE_SHIFT', updatedShift);
   };
 
   /**
@@ -718,6 +661,97 @@ const updateShiftComments = async (shiftId: string, comments: string) => {
   };
 
   /**
+   * Void Request Management
+   */
+  const requestVoid = async (saleId: string, reason: string) => {
+    if (!currentUser) return;
+    const sale = sales.find(s => s.id === saleId);
+    if (!sale) return;
+
+    const newRequest: VoidRequest = {
+      id: Date.now().toString(),
+      saleId,
+      sale,
+      requestedBy: currentUser.id,
+      requestedByName: currentUser.name,
+      requestedAt: new Date().toISOString(),
+      reason,
+      status: 'PENDING',
+    };
+
+    setVoidRequests(prev => [newRequest, ...prev]);
+    const db = await dbPromise();
+    await db.put('voidRequests', newRequest);
+    await addLog('VOID_REQUEST', `Requested void for Sale #${saleId}. Reason: ${reason}`);
+    await addToSyncQueue('VOID_REQUEST', newRequest);
+  };
+
+  const approveVoid = async (requestId: string, notes?: string) => {
+    if (!currentUser) return;
+    const request = voidRequests.find(r => r.id === requestId);
+    if (!request || request.status !== 'PENDING') return;
+
+    const updatedRequest: VoidRequest = {
+      ...request,
+      status: 'APPROVED',
+      reviewedBy: currentUser.id,
+      reviewedByName: currentUser.name,
+      reviewedAt: new Date().toISOString(),
+      reviewNotes: notes,
+    };
+
+    const updatedSale: Sale = {
+      ...request.sale,
+      isVoided: true,
+      voidedAt: new Date().toISOString(),
+      voidedBy: currentUser.name,
+      voidReason: request.reason,
+    };
+
+    // Restore inventory for voided sale
+    const updatedProducts = [...products];
+    for (const item of request.sale.items) {
+      const idx = updatedProducts.findIndex(p => p.id === item.productId);
+      if (idx > -1) {
+        updatedProducts[idx] = { ...updatedProducts[idx], stock: updatedProducts[idx].stock + item.quantity };
+      }
+    }
+
+    setVoidRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));
+    setSales(prev => prev.map(s => s.id === request.saleId ? updatedSale : s));
+    setProducts(updatedProducts);
+
+    const db = await dbPromise();
+    await db.put('voidRequests', updatedRequest);
+    await db.put('sales', updatedSale);
+    for (const p of updatedProducts) await db.put('products', p);
+
+    await addLog('VOID_APPROVED', `Approved void for Sale #${request.saleId}${notes ? `. Notes: ${notes}` : ''}`);
+    await addToSyncQueue('VOID_APPROVED', { request: updatedRequest, sale: updatedSale });
+  };
+
+  const rejectVoid = async (requestId: string, notes?: string) => {
+    if (!currentUser) return;
+    const request = voidRequests.find(r => r.id === requestId);
+    if (!request || request.status !== 'PENDING') return;
+
+    const updatedRequest: VoidRequest = {
+      ...request,
+      status: 'REJECTED',
+      reviewedBy: currentUser.id,
+      reviewedByName: currentUser.name,
+      reviewedAt: new Date().toISOString(),
+      reviewNotes: notes,
+    };
+
+    setVoidRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));
+    const db = await dbPromise();
+    await db.put('voidRequests', updatedRequest);
+    await addLog('VOID_REJECTED', `Rejected void for Sale #${request.saleId}${notes ? `. Notes: ${notes}` : ''}`);
+    await addToSyncQueue('VOID_REJECTED', updatedRequest);
+  };
+
+  /**
    * Business Settings
    */
   const updateBusinessSettings = async (settings: BusinessSettings) => {
@@ -762,6 +796,10 @@ const updateShiftComments = async (shiftId: string, comments: string) => {
       receiveStock,
       openShift,
       closeShift,
+      voidRequests,
+      requestVoid,
+      approveVoid,
+      rejectVoid,
       businessSettings,
       updateBusinessSettings,
     }}>

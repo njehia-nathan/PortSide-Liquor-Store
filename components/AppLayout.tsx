@@ -16,7 +16,10 @@ import {
   Save,
   Menu,
   X,
-  Settings
+  Settings,
+  Clock,
+  Users,
+  Ban
 } from 'lucide-react';
 
 const AppLayout = ({ children }: PropsWithChildren) => {
@@ -140,6 +143,27 @@ const AppLayout = ({ children }: PropsWithChildren) => {
             <Link href="/reports" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/reports')}`}>
               <BarChart3 size={20} />
               <span className="font-medium">Reports</span>
+            </Link>
+          )}
+
+          {hasPerm('POS') && (
+            <Link href="/my-shifts" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/my-shifts')}`}>
+              <Clock size={20} />
+              <span className="font-medium">My Shifts</span>
+            </Link>
+          )}
+
+          {hasPerm('ADMIN') && (
+            <Link href="/admin/shift-reports" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/admin/shift-reports')}`}>
+              <Users size={20} />
+              <span className="font-medium">All Shifts</span>
+            </Link>
+          )}
+
+          {hasPerm('ADMIN') && (
+            <Link href="/admin/void-approvals" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/admin/void-approvals')}`}>
+              <Ban size={20} />
+              <span className="font-medium">Void Approvals</span>
             </Link>
           )}
 

@@ -4,16 +4,18 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { AlcoholType, Product, CartItem, SaleItem, Sale } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { Search, Plus, Minus, Trash2, CreditCard, Banknote, Smartphone, LogOut, Receipt, Printer, X, Clock, Barcode, MessageCircle, Send } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, CreditCard, Banknote, Smartphone, LogOut, Receipt, Printer, X, Clock, Barcode, MessageCircle, Send, Ban } from 'lucide-react';
 
 const POS = () => {
-  const { products, sales, processSale, currentShift, openShift, closeShift, logout, businessSettings } = useStore();
+  const { products, sales, processSale, currentShift, openShift, closeShift, logout, businessSettings, requestVoid, voidRequests } = useStore();
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<AlcoholType | 'ALL'>('ALL');
 
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [shiftCashAmount, setShiftCashAmount] = useState('');
+  const [showVoidModal, setShowVoidModal] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [receiptSale, setReceiptSale] = useState<Sale | null>(null);
@@ -806,6 +808,25 @@ const POS = () => {
                   <MessageCircle size={18} /> WhatsApp
                 </button>
               </div>
+              {/* Void Sale Button - Only show if sale is not already voided and no pending void request */}
+              {receiptSale && !receiptSale.isVoided && !voidRequests.find(r => r.saleId === receiptSale.id && r.status === 'PENDING') && (
+                <button
+                  onClick={() => setShowVoidModal(true)}
+                  className="w-full bg-gradient-to-r from-red-500 to-red-600 text-white py-2.5 sm:py-3 rounded-lg sm:rounded-xl font-bold text-sm sm:text-base flex items-center justify-center gap-2 hover:from-red-400 hover:to-red-500 shadow-lg transition-all active:scale-95"
+                >
+                  <Ban size={18} /> Request Void
+                </button>
+              )}
+              {receiptSale?.isVoided && (
+                <div className="w-full bg-red-100 text-red-700 py-2.5 sm:py-3 rounded-lg sm:rounded-xl font-bold text-sm sm:text-base text-center">
+                  This sale has been voided
+                </div>
+              )}
+              {receiptSale && voidRequests.find(r => r.saleId === receiptSale.id && r.status === 'PENDING') && (
+                <div className="w-full bg-amber-100 text-amber-700 py-2.5 sm:py-3 rounded-lg sm:rounded-xl font-bold text-sm sm:text-base text-center">
+                  Void request pending approval
+                </div>
+              )}
               <button
                 onClick={() => setShowReceiptModal(false)}
                 className="w-full border-2 border-slate-300 py-2.5 sm:py-3 rounded-lg sm:rounded-xl font-bold text-sm sm:text-base text-slate-700 hover:bg-slate-100 hover:border-slate-400 transition-all active:scale-95"
@@ -857,6 +878,53 @@ const POS = () => {
               </button>
               <button
                 onClick={() => { setBarcodeInput(''); setShowBarcodeScanner(false); }}
+                className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Void Request Modal */}
+      {showVoidModal && receiptSale && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 print:hidden">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold mb-2 flex items-center gap-2 text-red-600">
+              <Ban size={20} /> Request Void Sale
+            </h3>
+            <p className="text-sm text-slate-500 mb-4">
+              Sale #{receiptSale.id.slice(-8)} • {CURRENCY_FORMATTER.format(receiptSale.totalAmount)}
+            </p>
+            <p className="text-sm text-slate-600 mb-4">
+              Please provide a reason for voiding this sale. This request will be sent to an admin for approval.
+            </p>
+            <textarea
+              autoFocus
+              placeholder="Enter reason for void (required)..."
+              className="w-full border-2 border-red-300 p-3 rounded-lg text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none"
+              rows={3}
+              value={voidReason}
+              onChange={e => setVoidReason(e.target.value)}
+            />
+            <div className="flex gap-3 mt-4">
+              <button
+                onClick={async () => {
+                  if (voidReason.trim() && receiptSale) {
+                    await requestVoid(receiptSale.id, voidReason.trim());
+                    setVoidReason('');
+                    setShowVoidModal(false);
+                    setShowReceiptModal(false);
+                  }
+                }}
+                disabled={!voidReason.trim()}
+                className="flex-1 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2"
+              >
+                <Ban size={18} /> Submit Request
+              </button>
+              <button
+                onClick={() => { setVoidReason(''); setShowVoidModal(false); }}
                 className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
               >
                 Cancel

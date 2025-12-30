@@ -139,16 +139,14 @@ input, select, textarea {
   }
   
   /* Dashed separator lines - visible on print */
-  [data-receipt-print] .border-dashed {
-    border-style: dashed !important;
-    border-color: #000 !important;
-    border-width: 1px 0 0 0 !important;
+  [data-receipt-print] .border-t-2.border-dashed {
+    border-top: 2px dashed #000 !important;
+    margin: 3mm 0 !important;
   }
   
-  [data-receipt-print] .border-t-2 {
-    border-style: solid !important;
-    border-color: #000 !important;
-    border-width: 1px 0 0 0 !important;
+  [data-receipt-print] .border-t-2.border-black {
+    border-top: 2px solid #000 !important;
+    margin: 3mm 0 !important;
   }
   
   /* Remove item borders but keep section separators */

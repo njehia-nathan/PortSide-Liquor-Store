@@ -12,25 +12,25 @@ let products = [
 ];
 
 let customers = [
-    {id: 1, name: 'John Kimani', phone: '+254712345678', email: 'john@email.com', totalSpent: 25000, lastVisit: '2025-08-17', loyaltyPoints: 250, visits: 15},
-    {id: 2, name: 'Mary Wanjiku', phone: '+254723456789', email: 'mary@email.com', totalSpent: 18500, lastVisit: '2025-08-16', loyaltyPoints: 185, visits: 12},
-    {id: 3, name: 'Peter Ochieng', phone: '+254734567890', email: '', totalSpent: 32000, lastVisit: '2025-08-15', loyaltyPoints: 320, visits: 22},
-    {id: 4, name: 'Grace Mutua', phone: '+254745678901', email: 'grace@email.com', totalSpent: 15200, lastVisit: '2025-08-14', loyaltyPoints: 152, visits: 8}
+    // {id: 1, name: 'John Kimani', phone: '+254712345678', email: 'john@email.com', totalSpent: 25000, lastVisit: '2025-08-17', loyaltyPoints: 250, visits: 15},
+    // {id: 2, name: 'Mary Wanjiku', phone: '+254723456789', email: 'mary@email.com', totalSpent: 18500, lastVisit: '2025-08-16', loyaltyPoints: 185, visits: 12},
+    // {id: 3, name: 'Peter Ochieng', phone: '+254734567890', email: '', totalSpent: 32000, lastVisit: '2025-08-15', loyaltyPoints: 320, visits: 22},
+    // {id: 4, name: 'Grace Mutua', phone: '+254745678901', email: 'grace@email.com', totalSpent: 15200, lastVisit: '2025-08-14', loyaltyPoints: 152, visits: 8}
 ];
 
 let staff = [
-    {id: 1, name: 'Alice Mwangi', role: 'manager', phone: '+254756789012', email: 'alice@bar.com', salary: 45000, status: 'working', hoursToday: 7, salesToday: 28500},
-    {id: 2, name: 'David Otieno', role: 'cashier', phone: '+254767890123', email: 'david@bar.com', salary: 28000, status: 'working', hoursToday: 6, salesToday: 19200},
-    {id: 3, name: 'Sarah Njeri', role: 'bartender', phone: '+254778901234', email: 'sarah@bar.com', salary: 32000, status: 'working', hoursToday: 5, salesToday: 15800},
-    {id: 4, name: 'James Kariuki', role: 'security', phone: '+254789012345', email: 'james@bar.com', salary: 25000, status: 'off', hoursToday: 0, salesToday: 0}
+    // {id: 1, name: 'Alice Mwangi', role: 'manager', phone: '+254756789012', email: 'alice@bar.com', salary: 45000, status: 'working', hoursToday: 7, salesToday: 28500},
+    // {id: 2, name: 'David Otieno', role: 'cashier', phone: '+254767890123', email: 'david@bar.com', salary: 28000, status: 'working', hoursToday: 6, salesToday: 19200},
+    // {id: 3, name: 'Sarah Njeri', role: 'bartender', phone: '+254778901234', email: 'sarah@bar.com', salary: 32000, status: 'working', hoursToday: 5, salesToday: 15800},
+    // {id: 4, name: 'James Kariuki', role: 'security', phone: '+254789012345', email: 'james@bar.com', salary: 25000, status: 'off', hoursToday: 0, salesToday: 0}
 ];
 
 let cart = [];
 let sales = [];
 let expenses = [
-    {id: 1, description: 'Electricity Bill', amount: 8500, date: '2025-08-18', addedBy: 'Admin User'},
-    {id: 2, description: 'Stock Purchase - Spirits', amount: 45000, date: '2025-08-17', addedBy: 'Manager'},
-    {id: 3, description: 'Staff Salaries', amount: 85000, date: '2025-08-16', addedBy: 'Admin User'}
+    // {id: 1, description: 'Electricity Bill', amount: 8500, date: '2025-08-18', addedBy: 'Admin User'},
+    // {id: 2, description: 'Stock Purchase - Spirits', amount: 45000, date: '2025-08-17', addedBy: 'Manager'},
+    // {id: 3, description: 'Staff Salaries', amount: 85000, date: '2025-08-16', addedBy: 'Admin User'}
 ];
 
 let currentUser = {name: 'Admin User', role: 'admin'};

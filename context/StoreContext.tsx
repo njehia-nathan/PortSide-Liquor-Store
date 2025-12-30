@@ -44,7 +44,15 @@ interface StoreContextType {
 
   // --- SHIFT ACTIONS ---
   openShift: (openingCash?: number) => Promise<void>;
-  closeShift: (closingCash: number) => Promise<void>;
+  closeShift: (closingCash: number, comments?: string) => Promise<void>;
+  updateShiftComments: (shiftId: string, comments: string) => Promise<void>;
+
+  // --- VOID ACTIONS ---
+  requestVoidSale: (saleId: string, reason: string) => Promise<void>;
+  approveVoidSale: (saleId: string, approved: boolean) => Promise<void>;
+
+  // --- APPROVAL ACTIONS ---
+  approveShiftReport: (shiftId: string, approved: boolean, adminComments?: string) => Promise<void>;
 
   // --- SETTINGS ACTIONS ---
   updateBusinessSettings: (settings: BusinessSettings) => Promise<void>;
@@ -453,76 +461,137 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     };
     setUsers(prev => [...prev, newUser]);
     const db = await dbPromise();
-    await db.put('users', newUser);
-    await addLog('USER_ADD', `Added new user: ${newUser.name} (${newUser.role})`);
-    await addToSyncQueue('ADD_USER', newUser);
+  };
+  setShifts(prev => [...prev, newShift]);
+
+  const db = await dbPromise();
+  await db.put('shifts', newShift);
+
+  const details = openingCash > 0
+    ? `Shift opened with ${CURRENCY_FORMATTER.format(openingCash)}`
+    : `Shift opened (No Float)`;
+
+  await addLog('SHIFT_OPEN', details);
+  await addToSyncQueue('OPEN_SHIFT', newShift);
+};
+
+const closeShift = async (closingCash: number, comments?: string) => {
+  if (!currentShift) return;
+
+  const shiftSales = sales.filter(s =>
+    new Date(s.timestamp) > new Date(currentShift.startTime) &&
+    s.cashierId === currentShift.cashierId &&
+    s.paymentMethod === 'CASH' &&
+    !s.isVoided
+  );
+  const totalCashSales = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+  const expected = currentShift.openingCash + totalCashSales;
+
+  const updatedShift: Shift = {
+    ...currentShift,
+    endTime: new Date().toISOString(),
+    closingCash,
+    expectedCash: expected,
+    status: 'CLOSED',
+    comments: comments || currentShift.comments,
+    approvalStatus: 'PENDING',
   };
 
-  const deleteUser = async (userId: string) => {
-    const user = users.find(u => u.id === userId);
-    if (user) {
-      setUsers(prev => prev.filter(u => u.id !== userId));
-      const db = await dbPromise();
-      await db.delete('users', userId);
-      await addLog('USER_DELETE', `Deleted user: ${user.name}`);
-      await addToSyncQueue('DELETE_USER', { id: userId });
-    }
-  };
+  setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
 
-  /**
-   * Shift Management
-   * Controls opening and closing the cash drawer sessions.
-   * Updated: openingCash is now optional (defaults to 0) for businesses without a fixed float.
-   */
-  const openShift = async (openingCash: number = 0) => {
-    if (!currentUser) return;
-    const newShift: Shift = {
-      id: Date.now().toString(),
-      cashierId: currentUser.id,
-      cashierName: currentUser.name,
-      startTime: new Date().toISOString(),
-      openingCash,
-      status: 'OPEN',
+  const db = await dbPromise();
+  await db.put('shifts', updatedShift);
+  await addLog('SHIFT_CLOSE', `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}`);
+  await addToSyncQueue('CLOSE_SHIFT', updatedShift);
+};
+
+const updateShiftComments = async (shiftId: string, comments: string) => {
+  const shift = shifts.find(s => s.id === shiftId);
+  if (!shift) return;
+
+  const updatedShift: Shift = { ...shift, comments };
+  setShifts(prev => prev.map(s => s.id === shiftId ? updatedShift : s));
+
+  const db = await dbPromise();
+  await db.put('shifts', updatedShift);
+  await addLog('SHIFT_COMMENT', `Updated shift comments for shift #${shiftId}`);
+  await addToSyncQueue('UPDATE_SHIFT', updatedShift);
+};
+    const updatedSale: Sale = {
+      ...sale,
+      voidReason: reason,
+      voidedBy: currentUser.name,
+      voidedAt: new Date().toISOString(),
+      voidApprovalStatus: 'PENDING',
     };
-    setShifts(prev => [...prev, newShift]);
+
+    setSales(prev => prev.map(s => s.id === saleId ? updatedSale : s));
 
     const db = await dbPromise();
-    await db.put('shifts', newShift);
-
-    const details = openingCash > 0
-      ? `Shift opened with ${CURRENCY_FORMATTER.format(openingCash)}`
-      : `Shift opened (No Float)`;
-
-    await addLog('SHIFT_OPEN', details);
-    await addToSyncQueue('OPEN_SHIFT', newShift);
+    await db.put('sales', updatedSale);
+    await addLog('VOID_REQUEST', `Void requested for sale #${saleId}. Reason: ${reason}`);
+    await addToSyncQueue('UPDATE_SALE', updatedSale);
   };
 
-  const closeShift = async (closingCash: number) => {
-    if (!currentShift) return;
+  const approveVoidSale = async (saleId: string, approved: boolean) => {
+    if (!currentUser) return;
+    const sale = sales.find(s => s.id === saleId);
+    if (!sale) return;
 
-    // Calculate how much cash should be in drawer based on sales
-    const shiftSales = sales.filter(s =>
-      new Date(s.timestamp) > new Date(currentShift.startTime) &&
-      s.cashierId === currentShift.cashierId &&
-      s.paymentMethod === 'CASH'
-    );
-    const totalCashSales = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
-    const expected = currentShift.openingCash + totalCashSales;
-
-    const updatedShift: Shift = {
-      ...currentShift,
-      endTime: new Date().toISOString(),
-      closingCash,
-      expectedCash: expected,
-      status: 'CLOSED',
+    const updatedSale: Sale = {
+      ...sale,
+      isVoided: approved,
+      voidApprovalStatus: approved ? 'APPROVED' : 'REJECTED',
+      voidApprovedBy: currentUser.name,
+      voidApprovedAt: new Date().toISOString(),
     };
 
-    setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
+    setSales(prev => prev.map(s => s.id === saleId ? updatedSale : s));
+
+    // If approved, restore inventory
+    if (approved) {
+      const db = await dbPromise();
+      const updatedProducts = [...products];
+      
+      for (const item of sale.items) {
+        const idx = updatedProducts.findIndex(p => p.id === item.productId);
+        if (idx > -1) {
+          updatedProducts[idx] = {
+            ...updatedProducts[idx],
+            stock: updatedProducts[idx].stock + item.quantity
+          };
+          await db.put('products', updatedProducts[idx]);
+          await addToSyncQueue('UPDATE_PRODUCT', updatedProducts[idx]);
+        }
+      }
+      setProducts(updatedProducts);
+    }
+
+    const db = await dbPromise();
+    await db.put('sales', updatedSale);
+    await addLog('VOID_APPROVAL', `Void ${approved ? 'approved' : 'rejected'} for sale #${saleId}`);
+    await addToSyncQueue('UPDATE_SALE', updatedSale);
+  };
+
+  const approveShiftReport = async (shiftId: string, approved: boolean, adminComments?: string) => {
+    if (!currentUser) return;
+    const shift = shifts.find(s => s.id === shiftId);
+    if (!shift) return;
+
+    const updatedShift: Shift = {
+      ...shift,
+      approvalStatus: approved ? 'APPROVED' : 'REJECTED',
+      approvedBy: currentUser.name,
+      approvedAt: new Date().toISOString(),
+      adminComments: adminComments || shift.adminComments,
+    };
+
+    setShifts(prev => prev.map(s => s.id === shiftId ? updatedShift : s));
 
     const db = await dbPromise();
     await db.put('shifts', updatedShift);
-    await addLog('SHIFT_CLOSE', `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}`);
-    await addToSyncQueue('CLOSE_SHIFT', updatedShift);
+    await addLog('SHIFT_APPROVAL', `Shift report ${approved ? 'approved' : 'rejected'} for ${shift.cashierName}`);
+    await addToSyncQueue('UPDATE_SHIFT', updatedShift);
   };
 
   /**

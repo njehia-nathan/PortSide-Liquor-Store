@@ -60,6 +60,14 @@ export interface Sale {
   totalCost: number; // For profit calc
   paymentMethod: 'CASH' | 'CARD' | 'MOBILE';
   items: SaleItem[];
+  shiftId?: string; // Link sale to shift
+  isVoided?: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
+  voidReason?: string;
+  voidApprovalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  voidApprovedBy?: string;
+  voidApprovedAt?: string;
 }
 
 export interface Shift {
@@ -72,6 +80,11 @@ export interface Shift {
   closingCash?: number; // Actual cash counted
   expectedCash?: number; // Calculated from sales
   status: 'OPEN' | 'CLOSED';
+  comments?: string; // User comments for the shift
+  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  approvedBy?: string;
+  approvedAt?: string;
+  adminComments?: string; // Admin feedback on shift report
 }
 
 export interface AuditLog {

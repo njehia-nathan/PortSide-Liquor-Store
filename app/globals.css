@@ -36,18 +36,24 @@ input, select, textarea {
   }
 }
 
-/* Print styles - Only show receipt when printing */
+/* Print styles - Only show receipt when printing on 80mm thermal roll */
 @media print {
-  /* Hide everything by default */
-  body * {
-    visibility: hidden;
+  /* Page setup for 80mm thermal printer - removes headers/footers */
+  @page {
+    size: 80mm auto;
+    margin: 0;
   }
   
-  /* Reset body styles */
-  body {
-    background: white !important;
+  /* Hide everything by default */
+  html, body {
+    width: 80mm !important;
     margin: 0 !important;
     padding: 0 !important;
+    background: white !important;
+  }
+  
+  body * {
+    visibility: hidden;
   }
   
   /* Show only the receipt modal content */
@@ -61,37 +67,79 @@ input, select, textarea {
     position: absolute !important;
     left: 0 !important;
     top: 0 !important;
-    width: 80mm !important;
-    max-width: 80mm !important;
+    width: 72mm !important;
+    max-width: 72mm !important;
     margin: 0 !important;
-    padding: 8px !important;
+    padding: 4mm !important;
     background: white !important;
     box-shadow: none !important;
     border-radius: 0 !important;
   }
   
-  /* Hide action buttons in print */
-  .print\\:hidden {
-    display: none !important;
-  }
+  /* Hide elements with print:hidden class - Tailwind handles this automatically */
   
   /* Ensure proper font sizes for thermal printer */
   [data-receipt-print] h2 {
-    font-size: 14pt !important;
+    font-size: 12pt !important;
+    color: #000 !important;
+    margin: 0 !important;
+  }
+  
+  [data-receipt-print] h3 {
+    font-size: 9pt !important;
+    color: #000 !important;
   }
   
   [data-receipt-print] p,
   [data-receipt-print] span,
   [data-receipt-print] div {
-    font-size: 10pt !important;
+    font-size: 9pt !important;
+    color: #000 !important;
+  }
+  
+  /* Make ALL text black for thermal printing */
+  [data-receipt-print] * {
+    color: #000 !important;
+  }
+  
+  /* Smaller text for details */
+  [data-receipt-print] .text-xs {
+    font-size: 8pt !important;
+  }
+  
+  /* Ensure borders are black */
+  [data-receipt-print] .border-slate-300,
+  [data-receipt-print] .border-slate-100,
+  [data-receipt-print] .border-dashed {
+    border-color: #000 !important;
   }
   
   /* Remove backgrounds for thermal printing */
   [data-receipt-print] .bg-gradient-to-r,
-  [data-receipt-print] .bg-gradient-to-br {
+  [data-receipt-print] .bg-gradient-to-br,
+  [data-receipt-print] .bg-slate-50,
+  [data-receipt-print] .bg-green-50,
+  [data-receipt-print] .bg-green-100 {
+    background: transparent !important;
+  }
+  
+  /* Total box - black background with white text */
+  [data-receipt-print] .from-amber-500 {
     background: #000 !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
+  }
+  
+  [data-receipt-print] .from-amber-500 * {
+    color: #fff !important;
+  }
+  
+  /* Hide logo placeholder on print - just show text */
+  [data-receipt-print] .from-amber-500.rounded-xl,
+  [data-receipt-print] .from-amber-500.rounded-2xl,
+  [data-receipt-print] .from-amber-600.rounded-xl,
+  [data-receipt-print] .from-amber-600.rounded-2xl {
+    display: none !important;
   }
 }
 

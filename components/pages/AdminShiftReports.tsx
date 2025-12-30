@@ -4,12 +4,13 @@ import React, { useState, useMemo } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Shift } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { Clock, Calendar, DollarSign, Users, MessageSquare, X, Eye, Filter } from 'lucide-react';
+import { Clock, Calendar, DollarSign, Users, MessageSquare, X, Eye, Filter, Printer, FileText } from 'lucide-react';
 
 const AdminShiftReports = () => {
-  const { shifts, sales, users } = useStore();
+  const { shifts, sales, users, businessSettings } = useStore();
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null);
   const [filterUser, setFilterUser] = useState<string>('all');
+  const [showZReport, setShowZReport] = useState(false);
 
   const allShifts = useMemo(() => {
     let filtered = [...shifts].sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
@@ -55,7 +56,47 @@ const AdminShiftReports = () => {
   // Get sales for selected shift
   const selectedShiftSales = selectedShift ? getShiftSales(selectedShift.cashierId, selectedShift.startTime, selectedShift.endTime) : [];
   const selectedShiftRevenue = selectedShiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
-  const selectedShiftProfit = selectedShiftSales.reduce((acc, s) => acc + (s.totalAmount - s.totalCost), 0);
+  // Payment method breakdown for Z-Report
+  const selectedShiftCashSales = selectedShiftSales.filter(s => s.paymentMethod === 'CASH' && !s.isVoided);
+  const selectedShiftCardSales = selectedShiftSales.filter(s => s.paymentMethod === 'CARD' && !s.isVoided);
+  const selectedShiftMobileSales = selectedShiftSales.filter(s => s.paymentMethod === 'MOBILE' && !s.isVoided);
+  const selectedShiftVoidedSales = selectedShiftSales.filter(s => s.isVoided);
+  
+  const cashTotal = selectedShiftCashSales.reduce((acc, s) => acc + s.totalAmount, 0);
+  const cardTotal = selectedShiftCardSales.reduce((acc, s) => acc + s.totalAmount, 0);
+  const mobileTotal = selectedShiftMobileSales.reduce((acc, s) => acc + s.totalAmount, 0);
+  const voidedTotal = selectedShiftVoidedSales.reduce((acc, s) => acc + s.totalAmount, 0);
+
+  const handlePrintZReport = () => {
+    const printContent = document.getElementById('z-report-content');
+    if (!printContent) return;
+    
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+    
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Z-Report</title>
+          <style>
+            body { font-family: 'Courier New', monospace; font-size: 12px; padding: 10px; max-width: 300px; margin: 0 auto; }
+            .header { text-align: center; margin-bottom: 10px; }
+            .header h1 { font-size: 16px; margin: 0; }
+            .header p { margin: 2px 0; font-size: 11px; }
+            .divider { border-top: 1px dashed #000; margin: 8px 0; }
+            .row { display: flex; justify-content: space-between; margin: 4px 0; }
+            .row.total { font-weight: bold; font-size: 14px; }
+            .section-title { font-weight: bold; margin-top: 10px; margin-bottom: 5px; text-transform: uppercase; font-size: 11px; }
+            .center { text-align: center; }
+            .bold { font-weight: bold; }
+          </style>
+        </head>
+        <body>${printContent.innerHTML}</body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.print();
+  };
 
   return (
     <div className="p-3 lg:p-6 max-w-6xl mx-auto space-y-4 lg:space-y-6">
@@ -226,18 +267,14 @@ const AdminShiftReports = () => {
             </div>
 
             {/* Summary Stats */}
-            <div className="p-4 bg-slate-50 border-b border-slate-200 grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="p-4 bg-slate-50 border-b border-slate-200 grid grid-cols-2 lg:grid-cols-3 gap-3">
               <div className="bg-white rounded-lg p-3 border border-slate-200">
                 <p className="text-xs text-slate-500">Total Sales</p>
-                <p className="text-xl font-bold text-slate-800">{selectedShiftSales.length}</p>
+                <p className="text-xl font-bold text-slate-800">{selectedShiftSales.filter(s => !s.isVoided).length}</p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-slate-200">
                 <p className="text-xs text-slate-500">Revenue</p>
-                <p className="text-xl font-bold text-green-600">{CURRENCY_FORMATTER.format(selectedShiftRevenue)}</p>
-              </div>
-              <div className="bg-white rounded-lg p-3 border border-slate-200">
-                <p className="text-xs text-slate-500">Profit</p>
-                <p className="text-xl font-bold text-blue-600">{CURRENCY_FORMATTER.format(selectedShiftProfit)}</p>
+                <p className="text-xl font-bold text-green-600">{CURRENCY_FORMATTER.format(selectedShiftRevenue - voidedTotal)}</p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-slate-200">
                 <p className="text-xs text-slate-500">Duration</p>
@@ -332,12 +369,185 @@ const AdminShiftReports = () => {
             </div>
 
             {/* Footer */}
-            <div className="p-4 border-t border-slate-200 bg-slate-50">
+            <div className="p-4 border-t border-slate-200 bg-slate-50 flex gap-3">
+              <button
+                onClick={() => setShowZReport(true)}
+                className="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2"
+              >
+                <FileText size={18} /> Z-Report
+              </button>
               <button
                 onClick={() => setSelectedShift(null)}
-                className="w-full bg-slate-800 text-white py-3 rounded-lg font-bold hover:bg-slate-700"
+                className="flex-1 bg-slate-800 text-white py-3 rounded-lg font-bold hover:bg-slate-700"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Z-Report Preview Modal */}
+      {showZReport && selectedShift && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-800">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <FileText size={20} /> Z-Report Preview
+              </h2>
+              <button onClick={() => setShowZReport(false)} className="p-2 hover:bg-white/20 rounded-lg">
+                <X size={20} className="text-white" />
+              </button>
+            </div>
+
+            {/* Z-Report Content - Receipt Style */}
+            <div className="flex-1 overflow-auto p-4 bg-slate-50">
+              <div id="z-report-content" className="bg-white p-4 rounded-lg shadow-sm font-mono text-xs max-w-[300px] mx-auto">
+                {/* Header */}
+                <div className="header text-center mb-3">
+                  <h1 className="text-base font-bold">{businessSettings?.businessName || 'Grab Bottle'}</h1>
+                  <p className="text-[10px]">{businessSettings?.location || 'Nairobi, Kenya'}</p>
+                  <p className="text-[10px]">{businessSettings?.phone || '+254 700 000000'}</p>
+                </div>
+
+                <div className="divider border-t border-dashed border-black my-2"></div>
+
+                <div className="text-center font-bold text-sm mb-2">Z-REPORT</div>
+                <div className="text-center text-[10px] mb-3">End of Day Summary</div>
+
+                <div className="divider border-t border-dashed border-black my-2"></div>
+
+                {/* Shift Info */}
+                <div className="section-title font-bold text-[10px] uppercase mb-1">Shift Information</div>
+                <div className="row flex justify-between my-1">
+                  <span>Cashier:</span>
+                  <span className="font-bold">{selectedShift.cashierName}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>Date:</span>
+                  <span>{formatDateTime(selectedShift.startTime).date}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>Start Time:</span>
+                  <span>{formatDateTime(selectedShift.startTime).time}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>End Time:</span>
+                  <span>{selectedShift.endTime ? formatDateTime(selectedShift.endTime).time : 'Active'}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>Duration:</span>
+                  <span>{calculateShiftDuration(selectedShift.startTime, selectedShift.endTime)}</span>
+                </div>
+
+                <div className="divider border-t border-dashed border-black my-2"></div>
+
+                {/* Sales Summary */}
+                <div className="section-title font-bold text-[10px] uppercase mb-1">Sales Summary</div>
+                <div className="row flex justify-between my-1">
+                  <span>Total Transactions:</span>
+                  <span className="font-bold">{selectedShiftSales.filter(s => !s.isVoided).length}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>Voided Sales:</span>
+                  <span className="text-red-600">{selectedShiftVoidedSales.length}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>Items Sold:</span>
+                  <span>{selectedShiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.items.reduce((a, i) => a + i.quantity, 0), 0)}</span>
+                </div>
+
+                <div className="divider border-t border-dashed border-black my-2"></div>
+
+                {/* Payment Breakdown */}
+                <div className="section-title font-bold text-[10px] uppercase mb-1">Payment Breakdown</div>
+                <div className="row flex justify-between my-1">
+                  <span>💵 Cash ({selectedShiftCashSales.length}):</span>
+                  <span>{CURRENCY_FORMATTER.format(cashTotal)}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>💳 Card ({selectedShiftCardSales.length}):</span>
+                  <span>{CURRENCY_FORMATTER.format(cardTotal)}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>📱 M-Pesa ({selectedShiftMobileSales.length}):</span>
+                  <span>{CURRENCY_FORMATTER.format(mobileTotal)}</span>
+                </div>
+                {voidedTotal > 0 && (
+                  <div className="row flex justify-between my-1 text-red-600">
+                    <span>❌ Voided ({selectedShiftVoidedSales.length}):</span>
+                    <span>-{CURRENCY_FORMATTER.format(voidedTotal)}</span>
+                  </div>
+                )}
+
+                <div className="divider border-t border-black my-2"></div>
+
+                {/* Gross Sales */}
+                <div className="row total flex justify-between my-1 text-sm font-bold">
+                  <span>GROSS SALES:</span>
+                  <span>{CURRENCY_FORMATTER.format(selectedShiftRevenue)}</span>
+                </div>
+                {voidedTotal > 0 && (
+                  <div className="row flex justify-between my-1 text-red-600">
+                    <span>Less Voids:</span>
+                    <span>-{CURRENCY_FORMATTER.format(voidedTotal)}</span>
+                  </div>
+                )}
+                <div className="row total flex justify-between my-1 text-sm font-bold bg-slate-100 p-1 rounded">
+                  <span>NET SALES:</span>
+                  <span>{CURRENCY_FORMATTER.format(selectedShiftRevenue - voidedTotal)}</span>
+                </div>
+
+                <div className="divider border-t border-dashed border-black my-2"></div>
+
+                {/* Cash Drawer */}
+                <div className="section-title font-bold text-[10px] uppercase mb-1">Cash Drawer</div>
+                <div className="row flex justify-between my-1">
+                  <span>Opening Cash:</span>
+                  <span>{CURRENCY_FORMATTER.format(selectedShift.openingCash)}</span>
+                </div>
+                <div className="row flex justify-between my-1">
+                  <span>+ Cash Sales:</span>
+                  <span className="text-green-600">+{CURRENCY_FORMATTER.format(cashTotal)}</span>
+                </div>
+                <div className="row flex justify-between my-1 font-bold">
+                  <span>Expected Cash:</span>
+                  <span>{CURRENCY_FORMATTER.format(selectedShift.expectedCash || (selectedShift.openingCash + cashTotal))}</span>
+                </div>
+                {selectedShift.status === 'CLOSED' && (
+                  <>
+                    <div className="row flex justify-between my-1">
+                      <span>Closing Cash:</span>
+                      <span>{CURRENCY_FORMATTER.format(selectedShift.closingCash || 0)}</span>
+                    </div>
+                    <div className="row flex justify-between my-1 font-bold">
+                      <span>Difference:</span>
+                      <span className={(selectedShift.closingCash || 0) - (selectedShift.expectedCash || 0) >= 0 ? 'text-green-600' : 'text-red-600'}>
+                        {(selectedShift.closingCash || 0) - (selectedShift.expectedCash || 0) >= 0 ? '+' : ''}
+                        {CURRENCY_FORMATTER.format((selectedShift.closingCash || 0) - (selectedShift.expectedCash || 0))}
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                <div className="divider border-t border-dashed border-black my-2"></div>
+
+                {/* Footer */}
+                <div className="text-center text-[10px] mt-3">
+                  <p>Report Generated: {new Date().toLocaleString()}</p>
+                  <p className="mt-1">*** END OF Z-REPORT ***</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Print Button */}
+            <div className="p-4 border-t border-slate-200 bg-white">
+              <button
+                onClick={handlePrintZReport}
+                className="w-full bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2"
+              >
+                <Printer size={18} /> Print Z-Report
               </button>
             </div>
           </div>

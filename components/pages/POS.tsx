@@ -630,10 +630,10 @@ const POS = () => {
 
       {/* Receipt Modal - World Class Design */}
       {showReceiptModal && receiptSale && (
-        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 print:fixed print:inset-0 print:z-[9999] print:bg-white print:p-0 print:flex print:items-start print:justify-center">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden print:shadow-none print:w-[80mm] print:max-w-none print:rounded-none print:m-0">
-            {/* Receipt Header with Logo */}
-            <div className="p-6 lg:p-8 pb-4 text-center print:p-6 print:pb-3">
+        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-start sm:items-center justify-center p-2 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm sm:max-w-md my-2 sm:my-0 max-h-[95vh] overflow-y-auto">
+            {/* Receipt Content - This is what gets printed */}
+            <div data-receipt-print className="p-4 sm:p-6 lg:p-8 pb-3 sm:pb-4 text-center">
               {businessSettings?.logoUrl ? (
                 <div className="mb-4 print:mb-3">
                   <img
@@ -643,16 +643,16 @@ const POS = () => {
                   />
                 </div>
               ) : (
-                <div className="mb-4 print:mb-3">
-                  <div className="w-24 h-24 mx-auto bg-gradient-to-br from-amber-500 to-amber-600 rounded-2xl flex items-center justify-center shadow-lg print:w-20 print:h-20 print:shadow-none">
-                    <span className="text-white text-3xl font-bold print:text-2xl">
+                <div className="mb-3 sm:mb-4 print:mb-3">
+                  <div className="w-16 h-16 sm:w-24 sm:h-24 mx-auto bg-gradient-to-br from-amber-500 to-amber-600 rounded-xl sm:rounded-2xl flex items-center justify-center shadow-lg print:w-20 print:h-20 print:shadow-none">
+                    <span className="text-white text-2xl sm:text-3xl font-bold print:text-2xl">
                       {businessSettings?.businessName?.charAt(0) || 'P'}
                     </span>
                   </div>
                 </div>
               )}
 
-              <h2 className="text-2xl lg:text-3xl font-bold text-slate-900 mb-1 print:text-xl print:mb-0.5">
+              <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 mb-1 print:text-xl print:mb-0.5">
                 {businessSettings?.businessName || 'Grab Bottle '}
               </h2>
 
@@ -662,7 +662,7 @@ const POS = () => {
                 </p>
               )}
 
-              <div className="text-xs text-slate-600 space-y-0.5 mb-4 print:text-[10px] print:mb-3">
+              <div className="text-xs text-slate-600 space-y-0.5 mb-3 sm:mb-4 print:text-[10px] print:mb-3">
                 <p className="flex items-center justify-center gap-1">
                   <span>📍</span> {businessSettings?.location || 'Nairobi, Kenya'}
                 </p>
@@ -676,10 +676,10 @@ const POS = () => {
                 )}
               </div>
 
-              <div className="border-t-2 border-dashed border-slate-300 my-4 print:my-3"></div>
+              <div className="border-t-2 border-dashed border-slate-300 my-3 sm:my-4 print:my-3"></div>
 
               {/* Transaction Details */}
-              <div className="bg-slate-50 rounded-lg p-3 mb-4 space-y-1.5 text-sm print:bg-transparent print:p-0 print:mb-3 print:text-xs">
+              <div className="bg-slate-50 rounded-lg p-2 sm:p-3 mb-3 sm:mb-4 space-y-1 sm:space-y-1.5 text-xs sm:text-sm print:bg-transparent print:p-0 print:mb-3 print:text-xs">
                 <div className="flex justify-between">
                   <span className="text-slate-600 font-medium">Receipt #</span>
                   <span className="font-mono font-bold text-slate-900">#{receiptSale.id.slice(-8).toUpperCase()}</span>
@@ -705,10 +705,10 @@ const POS = () => {
                 </div>
               </div>
 
-              <div className="border-t-2 border-dashed border-slate-300 my-4 print:my-3"></div>
+              <div className="border-t-2 border-dashed border-slate-300 my-3 sm:my-4 print:my-3"></div>
 
               {/* Items List */}
-              <div className="space-y-3 mb-4 text-left print:space-y-2 print:mb-3">
+              <div className="space-y-2 sm:space-y-3 mb-3 sm:mb-4 text-left print:space-y-2 print:mb-3">
                 <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2 print:text-[10px]">Items Purchased</h3>
                 {receiptSale.items.map((item, idx) => (
                   <div key={idx} className="border-b border-slate-100 pb-2 last:border-0 print:pb-1.5">
@@ -732,11 +732,11 @@ const POS = () => {
                 ))}
               </div>
 
-              <div className="border-t-2 border-slate-300 my-4 print:my-3"></div>
+              <div className="border-t-2 border-slate-300 my-3 sm:my-4 print:my-3"></div>
 
               {/* Subtotal & Total */}
-              <div className="space-y-2 mb-4 print:space-y-1 print:mb-3">
-                <div className="flex justify-between text-sm text-slate-600 print:text-xs">
+              <div className="space-y-1 sm:space-y-2 mb-3 sm:mb-4 print:space-y-1 print:mb-3">
+                <div className="flex justify-between text-xs sm:text-sm text-slate-600 print:text-xs">
                   <span>Subtotal</span>
                   <span className="font-medium">{CURRENCY_FORMATTER.format(receiptSale.totalAmount)}</span>
                 </div>
@@ -747,10 +747,10 @@ const POS = () => {
               </div>
 
               {/* Grand Total */}
-              <div className="bg-gradient-to-r from-amber-500 to-amber-600 rounded-xl p-4 mb-4 print:bg-none print:bg-slate-900 print:rounded-none print:p-3 print:mb-3">
+              <div className="bg-gradient-to-r from-amber-500 to-amber-600 rounded-lg sm:rounded-xl p-3 sm:p-4 mb-3 sm:mb-4 print:bg-none print:bg-slate-900 print:rounded-none print:p-3 print:mb-3">
                 <div className="flex justify-between items-center">
-                  <span className="text-white text-lg font-bold print:text-base">TOTAL</span>
-                  <span className="text-white text-2xl font-bold print:text-xl">
+                  <span className="text-white text-base sm:text-lg font-bold print:text-base">TOTAL</span>
+                  <span className="text-white text-xl sm:text-2xl font-bold print:text-xl">
                     {CURRENCY_FORMATTER.format(receiptSale.totalAmount)}
                   </span>
                 </div>
@@ -758,32 +758,32 @@ const POS = () => {
 
               {/* Cash Payment Details */}
               {receiptSale.paymentMethod === 'CASH' && (receiptSale as any).cashTendered && (
-                <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-4 print:bg-transparent print:border-slate-300 print:p-2 print:mb-3">
+                <div className="bg-green-50 border border-green-200 rounded-lg sm:rounded-xl p-2 sm:p-3 mb-3 sm:mb-4 print:bg-transparent print:border-slate-300 print:p-2 print:mb-3">
                   <div className="space-y-1">
-                    <div className="flex justify-between text-sm">
+                    <div className="flex justify-between text-xs sm:text-sm">
                       <span className="text-slate-600">Cash Received</span>
                       <span className="font-bold text-slate-800">{CURRENCY_FORMATTER.format((receiptSale as any).cashTendered)}</span>
                     </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-green-700 font-medium">Change Given</span>
+                    <div className="flex justify-between text-xs sm:text-sm">
+                      <span className="text-green-700 font-medium">Balance</span>
                       <span className="font-bold text-green-700">{CURRENCY_FORMATTER.format((receiptSale as any).changeGiven)}</span>
                     </div>
                   </div>
                 </div>
               )}
 
-              <div className="border-t-2 border-dashed border-slate-300 my-4 print:my-3"></div>
+              <div className="border-t-2 border-dashed border-slate-300 my-3 sm:my-4 print:my-3"></div>
 
               {/* Footer Message */}
-              <div className="text-center space-y-2 print:space-y-1">
-                <p className="text-sm text-slate-700 font-medium italic print:text-xs">
+              <div className="text-center space-y-1 sm:space-y-2 print:space-y-1">
+                <p className="text-xs sm:text-sm text-slate-700 font-medium italic print:text-xs">
                   {businessSettings?.receiptFooter || 'Thank you for your business!'}
                 </p>
-                <p className="text-xs text-slate-500 print:text-[10px]">
+                <p className="text-[10px] sm:text-xs text-slate-500 print:text-[10px]">
                   Please drink responsibly • Must be 18+
                 </p>
-                <div className="pt-2 print:pt-1">
-                  <p className="text-xs text-slate-400 print:text-[10px]">
+                <div className="pt-1 sm:pt-2 print:pt-1">
+                  <p className="text-[10px] sm:text-xs text-slate-400 print:text-[10px]">
                     Powered by Grab Bottle POS
                   </p>
                 </div>
@@ -791,24 +791,24 @@ const POS = () => {
             </div>
 
             {/* Action Buttons - Hidden on Print */}
-            <div className="bg-slate-50 p-4 border-t border-slate-200 space-y-3 print:hidden">
-              <div className="flex gap-3">
+            <div className="bg-slate-50 p-3 sm:p-4 border-t border-slate-200 space-y-2 sm:space-y-3 print:hidden">
+              <div className="flex gap-2 sm:gap-3">
                 <button
                   onClick={handlePrint}
-                  className="flex-1 bg-gradient-to-r from-slate-800 to-slate-900 text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:from-slate-700 hover:to-slate-800 shadow-lg transition-all active:scale-95"
+                  className="flex-1 bg-gradient-to-r from-slate-800 to-slate-900 text-white py-2.5 sm:py-3.5 rounded-lg sm:rounded-xl font-bold text-sm sm:text-base flex items-center justify-center gap-1 sm:gap-2 hover:from-slate-700 hover:to-slate-800 shadow-lg transition-all active:scale-95"
                 >
-                  <Printer size={20} /> Print
+                  <Printer size={18} /> Print
                 </button>
                 <button
                   onClick={() => setShowWhatsAppModal(true)}
-                  className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:from-green-400 hover:to-green-500 shadow-lg transition-all active:scale-95"
+                  className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-2.5 sm:py-3.5 rounded-lg sm:rounded-xl font-bold text-sm sm:text-base flex items-center justify-center gap-1 sm:gap-2 hover:from-green-400 hover:to-green-500 shadow-lg transition-all active:scale-95"
                 >
-                  <MessageCircle size={20} /> WhatsApp
+                  <MessageCircle size={18} /> WhatsApp
                 </button>
               </div>
               <button
                 onClick={() => setShowReceiptModal(false)}
-                className="w-full border-2 border-slate-300 py-3 rounded-xl font-bold text-slate-700 hover:bg-slate-100 hover:border-slate-400 transition-all active:scale-95"
+                className="w-full border-2 border-slate-300 py-2.5 sm:py-3 rounded-lg sm:rounded-xl font-bold text-sm sm:text-base text-slate-700 hover:bg-slate-100 hover:border-slate-400 transition-all active:scale-95"
               >
                 Close
               </button>

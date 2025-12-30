@@ -36,10 +36,62 @@ input, select, textarea {
   }
 }
 
-/* Print styles - Tailwind handles print:hidden utility */
+/* Print styles - Only show receipt when printing */
 @media print {
+  /* Hide everything by default */
+  body * {
+    visibility: hidden;
+  }
+  
+  /* Reset body styles */
   body {
     background: white !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  
+  /* Show only the receipt modal content */
+  [data-receipt-print],
+  [data-receipt-print] * {
+    visibility: visible !important;
+  }
+  
+  /* Position receipt at top left for thermal printer */
+  [data-receipt-print] {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 80mm !important;
+    max-width: 80mm !important;
+    margin: 0 !important;
+    padding: 8px !important;
+    background: white !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+  
+  /* Hide action buttons in print */
+  .print\\:hidden {
+    display: none !important;
+  }
+  
+  /* Ensure proper font sizes for thermal printer */
+  [data-receipt-print] h2 {
+    font-size: 14pt !important;
+  }
+  
+  [data-receipt-print] p,
+  [data-receipt-print] span,
+  [data-receipt-print] div {
+    font-size: 10pt !important;
+  }
+  
+  /* Remove backgrounds for thermal printing */
+  [data-receipt-print] .bg-gradient-to-r,
+  [data-receipt-print] .bg-gradient-to-br {
+    background: #000 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 }
 

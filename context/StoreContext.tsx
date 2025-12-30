@@ -206,7 +206,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             email: '',
             location: 'Nairobi, Kenya',
             logoUrl: '',
-            receiptFooter: 'Thank you for your business!'
+            receiptFooter: 'Thank you for your business!',
+            evolutionApiUrl: '',
+            evolutionApiKey: '',
+            evolutionInstance: ''
           };
           await db.put('businessSettings', defaultSettings);
           setBusinessSettings(defaultSettings);

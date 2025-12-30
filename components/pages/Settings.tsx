@@ -2,17 +2,17 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { Settings as SettingsIcon, Building2, Phone, Mail, MapPin, Save, Image, FileText, Upload, X } from 'lucide-react';
+import { Settings as SettingsIcon, Building2, Phone, Mail, MapPin, Save, Image, FileText, Upload, X, MessageCircle, Key, Globe, Server } from 'lucide-react';
 
 const Settings = () => {
   const { businessSettings, updateBusinessSettings, currentUser } = useStore();
-  const [formData, setFormData] = useState({ businessName: '', tagline: '', phone: '', email: '', location: '', logoUrl: '', receiptFooter: '' });
+  const [formData, setFormData] = useState({ businessName: '', tagline: '', phone: '', email: '', location: '', logoUrl: '', receiptFooter: '', evolutionApiUrl: '', evolutionApiKey: '', evolutionInstance: '' });
   const [saved, setSaved] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (businessSettings) {
-      setFormData({ businessName: businessSettings.businessName || '', tagline: businessSettings.tagline || '', phone: businessSettings.phone || '', email: businessSettings.email || '', location: businessSettings.location || '', logoUrl: businessSettings.logoUrl || '', receiptFooter: businessSettings.receiptFooter || '' });
+      setFormData({ businessName: businessSettings.businessName || '', tagline: businessSettings.tagline || '', phone: businessSettings.phone || '', email: businessSettings.email || '', location: businessSettings.location || '', logoUrl: businessSettings.logoUrl || '', receiptFooter: businessSettings.receiptFooter || '', evolutionApiUrl: businessSettings.evolutionApiUrl || '', evolutionApiKey: businessSettings.evolutionApiKey || '', evolutionInstance: businessSettings.evolutionInstance || '' });
     }
   }, [businessSettings]);
 
@@ -93,6 +93,31 @@ const Settings = () => {
               )}
             </div>
             <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Receipt Footer Message</label><textarea className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="Thank you for shopping with us!" rows={2} value={formData.receiptFooter} onChange={(e) => handleChange('receiptFooter', e.target.value)} /></div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 lg:p-6">
+          <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><MessageCircle size={18} className="text-green-600" /> WhatsApp Integration (Evolution API)</h2>
+          <p className="text-xs text-slate-500 mb-4">Configure Evolution API to send receipts via WhatsApp. Leave empty to disable.</p>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Globe size={14} /> API URL</label>
+              <input type="url" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-green-500 outline-none font-mono" placeholder="https://your-evolution-api.com" value={formData.evolutionApiUrl} onChange={(e) => handleChange('evolutionApiUrl', e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Key size={14} /> API Key</label>
+              <input type="password" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-green-500 outline-none font-mono" placeholder="Your Evolution API Key" value={formData.evolutionApiKey} onChange={(e) => handleChange('evolutionApiKey', e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Server size={14} /> Instance Name</label>
+              <input type="text" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-green-500 outline-none font-mono" placeholder="e.g. portside-whatsapp" value={formData.evolutionInstance} onChange={(e) => handleChange('evolutionInstance', e.target.value)} />
+            </div>
+            {formData.evolutionApiUrl && formData.evolutionApiKey && formData.evolutionInstance && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex items-center gap-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                <span className="text-sm text-green-700 font-medium">WhatsApp integration configured</span>
+              </div>
+            )}
           </div>
         </div>
 

@@ -4,20 +4,22 @@ import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { AlcoholType, Product, Role, User } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { PlusCircle, UserCog, UserPlus, Trash2 } from 'lucide-react';
+import { PlusCircle, UserCog, UserPlus, Trash2, Barcode, Camera } from 'lucide-react';
 
 const Admin = () => {
   const { products, auditLogs, users, currentUser, addProduct, updateProduct, updateUser, addUser, deleteUser } = useStore();
   const [activeSection, setActiveSection] = useState<'PRODUCTS' | 'LOGS' | 'USERS'>('PRODUCTS');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
-  const [productFormData, setProductFormData] = useState<Partial<Product>>({ name: '', type: AlcoholType.WHISKEY, size: '', brand: '', sku: '', costPrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5 });
+  const [productFormData, setProductFormData] = useState<Partial<Product>>({ name: '', type: AlcoholType.WHISKEY, size: '', brand: '', sku: '', barcode: '', costPrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5 });
+  const [isScanningBarcode, setIsScanningBarcode] = useState(false);
+  const [barcodeInput, setBarcodeInput] = useState('');
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [isUserFormOpen, setIsUserFormOpen] = useState(false);
   const [userFormData, setUserFormData] = useState<Partial<User>>({ name: '', pin: '', role: Role.CASHIER, permissions: [] });
 
   const handleEditProduct = (product: Product) => { setEditingProduct(product); setProductFormData(product); setIsProductFormOpen(true); };
-  const handleCreateProduct = () => { setEditingProduct(null); setProductFormData({ name: '', type: AlcoholType.WHISKEY, size: '', brand: '', sku: '', costPrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5 }); setIsProductFormOpen(true); };
+  const handleCreateProduct = () => { setEditingProduct(null); setProductFormData({ name: '', type: AlcoholType.WHISKEY, size: '', brand: '', sku: '', barcode: '', costPrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5 }); setIsProductFormOpen(true); };
   const handleProductSubmit = (e: React.FormEvent) => { e.preventDefault(); const payload = productFormData as Product; if (editingProduct) { updateProduct(payload); } else { const { id, ...rest } = payload; addProduct(rest); } setIsProductFormOpen(false); };
   const handleEditUser = (user: User) => { setEditingUser(user); setUserFormData({ ...user }); setIsUserFormOpen(true); };
   const handleCreateUser = () => { setEditingUser(null); setUserFormData({ name: '', pin: '', role: Role.CASHIER, permissions: ['POS'] }); setIsUserFormOpen(true); };
@@ -53,9 +55,9 @@ const Admin = () => {
             </div>
             <div className="hidden lg:block overflow-x-auto">
               <table className="w-full text-left">
-                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold"><tr><th className="px-6 py-4">Name</th><th className="px-6 py-4">Size</th><th className="px-6 py-4">SKU</th><th className="px-6 py-4">Alert Level</th><th className="px-6 py-4">Price</th><th className="px-6 py-4">Action</th></tr></thead>
+                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold"><tr><th className="px-6 py-4">Name</th><th className="px-6 py-4">Size</th><th className="px-6 py-4">SKU</th><th className="px-6 py-4">Barcode</th><th className="px-6 py-4">Alert Level</th><th className="px-6 py-4">Price</th><th className="px-6 py-4">Action</th></tr></thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
-                  {products.map(p => (<tr key={p.id} className="hover:bg-slate-50"><td className="px-6 py-4 font-medium">{p.name}</td><td className="px-6 py-4">{p.size}</td><td className="px-6 py-4 font-mono text-slate-500">{p.sku}</td><td className="px-6 py-4 font-bold">{p.lowStockThreshold || 5}</td><td className="px-6 py-4">{CURRENCY_FORMATTER.format(p.sellingPrice)}</td><td className="px-6 py-4"><button onClick={() => handleEditProduct(p)} className="text-blue-600 hover:text-blue-800 font-medium">Edit</button></td></tr>))}
+                  {products.map(p => (<tr key={p.id} className="hover:bg-slate-50"><td className="px-6 py-4 font-medium">{p.name}</td><td className="px-6 py-4">{p.size}</td><td className="px-6 py-4 font-mono text-slate-500">{p.sku}</td><td className="px-6 py-4 font-mono text-xs text-slate-400">{p.barcode || '-'}</td><td className="px-6 py-4 font-bold">{p.lowStockThreshold || 5}</td><td className="px-6 py-4">{CURRENCY_FORMATTER.format(p.sellingPrice)}</td><td className="px-6 py-4"><button onClick={() => handleEditProduct(p)} className="text-blue-600 hover:text-blue-800 font-medium">Edit</button></td></tr>))}
                 </tbody>
               </table>
             </div>
@@ -110,13 +112,58 @@ const Admin = () => {
               <div className="sm:col-span-2"><label className="block text-sm font-medium mb-1">Product Name</label><input required type="text" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.name} onChange={e => setProductFormData({...productFormData, name: e.target.value})} /></div>
               <div><label className="block text-sm font-medium mb-1">Type</label><select className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.type} onChange={e => setProductFormData({...productFormData, type: e.target.value as AlcoholType})}>{Object.values(AlcoholType).map(t => <option key={t} value={t}>{t}</option>)}</select></div>
               <div><label className="block text-sm font-medium mb-1">Size</label><input required type="text" placeholder="e.g. 750ml" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.size} onChange={e => setProductFormData({...productFormData, size: e.target.value})} /></div>
-              <div><label className="block text-sm font-medium mb-1">SKU / Barcode</label><input required type="text" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.sku} onChange={e => setProductFormData({...productFormData, sku: e.target.value})} /></div>
+              <div><label className="block text-sm font-medium mb-1">SKU</label><input required type="text" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.sku} onChange={e => setProductFormData({...productFormData, sku: e.target.value})} /></div>
+              <div><label className="block text-sm font-medium mb-1 flex items-center gap-1"><Barcode size={14} /> Barcode</label><div className="flex gap-2"><input type="text" placeholder="Scan or enter barcode" className="flex-1 border p-2.5 rounded-lg text-sm font-mono" value={productFormData.barcode || ''} onChange={e => setProductFormData({...productFormData, barcode: e.target.value})} /><button type="button" onClick={() => setIsScanningBarcode(true)} className="px-3 py-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 flex items-center gap-1 text-sm"><Camera size={16} /> Scan</button></div></div>
               <div><label className="block text-sm font-medium mb-1">Brand</label><input required type="text" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.brand} onChange={e => setProductFormData({...productFormData, brand: e.target.value})} /></div>
               <div><label className="block text-sm font-medium mb-1 text-red-600">Low Stock Alert</label><input required type="number" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.lowStockThreshold} onChange={e => setProductFormData({...productFormData, lowStockThreshold: parseInt(e.target.value) || 0})} /></div>
               <div><label className="block text-sm font-medium mb-1">Cost Price</label><input required type="number" step="0.01" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.costPrice} onChange={e => setProductFormData({...productFormData, costPrice: parseFloat(e.target.value)})} /></div>
               <div><label className="block text-sm font-medium mb-1">Selling Price</label><input required type="number" step="0.01" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.sellingPrice} onChange={e => setProductFormData({...productFormData, sellingPrice: parseFloat(e.target.value)})} /></div>
               <div className="sm:col-span-2 flex gap-3 mt-4 lg:mt-6"><button type="submit" className="flex-1 bg-slate-900 text-white py-3 rounded-lg font-bold text-sm">Save Product</button><button type="button" onClick={() => setIsProductFormOpen(false)} className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500 text-sm">Cancel</button></div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {isScanningBarcode && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Barcode size={20} /> Scan Barcode</h3>
+            <p className="text-sm text-slate-500 mb-4">Use a barcode scanner or manually enter the barcode number below.</p>
+            <input
+              type="text"
+              autoFocus
+              placeholder="Scan barcode here..."
+              className="w-full border-2 border-amber-400 p-4 rounded-lg text-lg font-mono text-center focus:ring-2 focus:ring-amber-500 outline-none"
+              value={barcodeInput}
+              onChange={e => setBarcodeInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && barcodeInput.trim()) {
+                  setProductFormData({...productFormData, barcode: barcodeInput.trim()});
+                  setBarcodeInput('');
+                  setIsScanningBarcode(false);
+                }
+              }}
+            />
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  if (barcodeInput.trim()) {
+                    setProductFormData({...productFormData, barcode: barcodeInput.trim()});
+                  }
+                  setBarcodeInput('');
+                  setIsScanningBarcode(false);
+                }}
+                className="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-3 rounded-lg font-bold"
+              >
+                {barcodeInput.trim() ? 'Use Barcode' : 'Close'}
+              </button>
+              <button
+                onClick={() => { setBarcodeInput(''); setIsScanningBarcode(false); }}
+                className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

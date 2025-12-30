@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS products (
     size TEXT NULL,
     brand TEXT NULL,
     sku TEXT NULL,
+    barcode TEXT NULL,
     "costPrice" NUMERIC(10, 2) NULL,
     "sellingPrice" NUMERIC(10, 2) NULL,
     supplier TEXT NULL,
@@ -45,8 +46,9 @@ CREATE TABLE IF NOT EXISTS products (
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow all for anon" ON products FOR ALL USING (true);
 
--- IF YOUR TABLE ALREADY EXISTS, RUN THIS TO ADD THE MISSING COLUMN:
+-- IF YOUR TABLE ALREADY EXISTS, RUN THIS TO ADD THE MISSING COLUMNS:
 ALTER TABLE products ADD COLUMN IF NOT EXISTS "lowStockThreshold" INTEGER NULL DEFAULT 5;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS barcode TEXT NULL;
 
 -- ============================================================================
 -- SALES TABLE

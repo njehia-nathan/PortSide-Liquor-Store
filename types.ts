@@ -30,6 +30,7 @@ export interface Product {
   size: string; // e.g., "750ml"
   brand: string;
   sku: string;
+  barcode?: string; // Product barcode for scanning
   costPrice: number;
   sellingPrice: number;
   supplier?: string;
@@ -100,4 +101,8 @@ export interface BusinessSettings {
   location: string;
   logoUrl?: string; // Path to logo image
   receiptFooter?: string; // Custom message at bottom of receipt
+  // Evolution API WhatsApp settings
+  evolutionApiUrl?: string;
+  evolutionApiKey?: string;
+  evolutionInstance?: string;
 }

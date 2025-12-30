@@ -4,7 +4,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { AlcoholType, Product, CartItem, SaleItem, Sale } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { Search, Plus, Minus, Trash2, CreditCard, Banknote, Smartphone, LogOut, Receipt, Printer, X, Clock } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, CreditCard, Banknote, Smartphone, LogOut, Receipt, Printer, X, Clock, Barcode, MessageCircle, Send } from 'lucide-react';
 
 const POS = () => {
   const { products, sales, processSale, currentShift, openShift, closeShift, logout, businessSettings } = useStore();
@@ -18,10 +18,15 @@ const POS = () => {
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [receiptSale, setReceiptSale] = useState<Sale | null>(null);
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [barcodeInput, setBarcodeInput] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
+  const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
 
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.includes(search);
+      const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.includes(search) || (p.barcode && p.barcode.includes(search));
       const matchesType = filter === 'ALL' || p.type === filter;
       return matchesSearch && matchesType;
     });
@@ -84,6 +89,88 @@ const POS = () => {
     window.print();
   };
 
+  const handleBarcodeScanned = (barcode: string) => {
+    const product = products.find(p => p.barcode === barcode || p.sku === barcode);
+    if (product) {
+      if (product.stock > 0) {
+        addToCart(product);
+        setBarcodeInput('');
+        setShowBarcodeScanner(false);
+      } else {
+        alert(`${product.name} is out of stock!`);
+      }
+    } else {
+      alert('Product not found for this barcode');
+    }
+  };
+
+  const generateReceiptText = (sale: Sale) => {
+    const settings = businessSettings;
+    let text = `*${settings?.businessName || 'Port Side Liquor'}*\n`;
+    if (settings?.tagline) text += `_${settings.tagline}_\n`;
+    text += `📍 ${settings?.location || 'Nairobi, Kenya'}\n`;
+    text += `📞 ${settings?.phone || '+254 700 000000'}\n`;
+    text += `\n━━━━━━━━━━━━━━━━━━━━\n`;
+    text += `*Receipt #${sale.id.slice(-8).toUpperCase()}*\n`;
+    text += `Date: ${new Date(sale.timestamp).toLocaleDateString('en-GB')}\n`;
+    text += `Time: ${new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n`;
+    text += `Cashier: ${sale.cashierName}\n`;
+    text += `Payment: ${sale.paymentMethod}\n`;
+    text += `\n━━━━━━━━━━━━━━━━━━━━\n`;
+    text += `*Items Purchased:*\n`;
+    sale.items.forEach(item => {
+      text += `• ${item.productName} (${item.size})\n`;
+      text += `  ${item.quantity} x ${CURRENCY_FORMATTER.format(item.priceAtSale)} = ${CURRENCY_FORMATTER.format(item.quantity * item.priceAtSale)}\n`;
+    });
+    text += `\n━━━━━━━━━━━━━━━━━━━━\n`;
+    text += `*TOTAL: ${CURRENCY_FORMATTER.format(sale.totalAmount)}*\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+    text += `_${settings?.receiptFooter || 'Thank you for your business!'}_\n`;
+    text += `Please drink responsibly • Must be 18+`;
+    return text;
+  };
+
+  const sendWhatsAppReceipt = async () => {
+    if (!receiptSale || !customerPhone) return;
+    
+    const settings = businessSettings;
+    if (!settings?.evolutionApiUrl || !settings?.evolutionApiKey || !settings?.evolutionInstance) {
+      alert('WhatsApp API not configured. Please configure Evolution API in Settings.');
+      return;
+    }
+
+    setSendingWhatsApp(true);
+    try {
+      const receiptText = generateReceiptText(receiptSale);
+      const phone = customerPhone.replace(/[^0-9]/g, '');
+      
+      const response = await fetch(`${settings.evolutionApiUrl}/message/sendText/${settings.evolutionInstance}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': settings.evolutionApiKey,
+        },
+        body: JSON.stringify({
+          number: phone,
+          text: receiptText,
+        }),
+      });
+
+      if (response.ok) {
+        alert('Receipt sent successfully via WhatsApp!');
+        setShowWhatsAppModal(false);
+        setCustomerPhone('');
+      } else {
+        const error = await response.text();
+        alert(`Failed to send: ${error}`);
+      }
+    } catch (error) {
+      alert(`Error sending WhatsApp: ${error}`);
+    } finally {
+      setSendingWhatsApp(false);
+    }
+  };
+
   const handleOpenShift = () => {
     openShift(0);
     setShowShiftModal(false);
@@ -130,15 +217,29 @@ const POS = () => {
       <div className="flex-1 p-3 lg:p-6 pb-20 lg:pb-6 overflow-y-auto">
         {/* Search & Filters */}
         <div className="mb-4 lg:mb-6 space-y-3 lg:space-y-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-            <input
-              type="text"
-              placeholder="Search products or scan barcode..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 lg:py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-sm lg:text-base"
-            />
+          <div className="relative flex gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+              <input
+                type="text"
+                placeholder="Search products or scan barcode..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && search.trim()) {
+                    handleBarcodeScanned(search.trim());
+                  }
+                }}
+                className="w-full pl-10 pr-4 py-2.5 lg:py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-sm lg:text-base"
+              />
+            </div>
+            <button
+              onClick={() => setShowBarcodeScanner(true)}
+              className="px-4 py-2.5 lg:py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-lg flex items-center gap-2 font-medium text-sm"
+            >
+              <Barcode size={20} />
+              <span className="hidden sm:inline">Scan</span>
+            </button>
           </div>
 
           <div className="flex gap-2 overflow-x-auto pb-2 -mx-3 px-3 lg:mx-0 lg:px-0">
@@ -536,18 +637,116 @@ const POS = () => {
             </div>
 
             {/* Action Buttons - Hidden on Print */}
-            <div className="bg-slate-50 p-4 border-t border-slate-200 flex gap-3 print:hidden">
-              <button
-                onClick={handlePrint}
-                className="flex-1 bg-gradient-to-r from-slate-800 to-slate-900 text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:from-slate-700 hover:to-slate-800 shadow-lg transition-all active:scale-95"
-              >
-                <Printer size={20} /> Print Receipt
-              </button>
+            <div className="bg-slate-50 p-4 border-t border-slate-200 space-y-3 print:hidden">
+              <div className="flex gap-3">
+                <button
+                  onClick={handlePrint}
+                  className="flex-1 bg-gradient-to-r from-slate-800 to-slate-900 text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:from-slate-700 hover:to-slate-800 shadow-lg transition-all active:scale-95"
+                >
+                  <Printer size={20} /> Print
+                </button>
+                <button
+                  onClick={() => setShowWhatsAppModal(true)}
+                  className="flex-1 bg-gradient-to-r from-green-500 to-green-600 text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:from-green-400 hover:to-green-500 shadow-lg transition-all active:scale-95"
+                >
+                  <MessageCircle size={20} /> WhatsApp
+                </button>
+              </div>
               <button
                 onClick={() => setShowReceiptModal(false)}
-                className="flex-1 border-2 border-slate-300 py-3.5 rounded-xl font-bold text-slate-700 hover:bg-slate-100 hover:border-slate-400 transition-all active:scale-95"
+                className="w-full border-2 border-slate-300 py-3 rounded-xl font-bold text-slate-700 hover:bg-slate-100 hover:border-slate-400 transition-all active:scale-95"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Barcode Scanner Modal */}
+      {showBarcodeScanner && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 print:hidden">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Barcode size={20} /> Scan Barcode</h3>
+            <p className="text-sm text-slate-500 mb-4">Use a barcode scanner or manually enter the barcode. Press Enter to add to cart.</p>
+            <input
+              type="text"
+              autoFocus
+              placeholder="Scan barcode here..."
+              className="w-full border-2 border-amber-400 p-4 rounded-lg text-lg font-mono text-center focus:ring-2 focus:ring-amber-500 outline-none"
+              value={barcodeInput}
+              onChange={e => setBarcodeInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && barcodeInput.trim()) {
+                  handleBarcodeScanned(barcodeInput.trim());
+                }
+              }}
+            />
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  if (barcodeInput.trim()) {
+                    handleBarcodeScanned(barcodeInput.trim());
+                  }
+                }}
+                disabled={!barcodeInput.trim()}
+                className="flex-1 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-300 text-white py-3 rounded-lg font-bold"
+              >
+                Add to Cart
+              </button>
+              <button
+                onClick={() => { setBarcodeInput(''); setShowBarcodeScanner(false); }}
+                className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp Send Modal */}
+      {showWhatsAppModal && receiptSale && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 print:hidden">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><MessageCircle size={20} className="text-green-600" /> Send Receipt via WhatsApp</h3>
+            <p className="text-sm text-slate-500 mb-4">Enter customer's phone number to send the receipt.</p>
+            <input
+              type="tel"
+              autoFocus
+              placeholder="e.g. 254712345678"
+              className="w-full border-2 border-green-400 p-4 rounded-lg text-lg font-mono text-center focus:ring-2 focus:ring-green-500 outline-none"
+              value={customerPhone}
+              onChange={e => setCustomerPhone(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && customerPhone.trim()) {
+                  sendWhatsAppReceipt();
+                }
+              }}
+            />
+            <p className="text-xs text-slate-400 mt-2 text-center">Include country code without + (e.g. 254 for Kenya)</p>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={sendWhatsAppReceipt}
+                disabled={!customerPhone.trim() || sendingWhatsApp}
+                className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-slate-300 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2"
+              >
+                {sendingWhatsApp ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <Send size={18} /> Send Receipt
+                  </>
+                )}
+              </button>
+              <button
+                onClick={() => { setCustomerPhone(''); setShowWhatsAppModal(false); }}
+                className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
+              >
+                Cancel
               </button>
             </div>
           </div>

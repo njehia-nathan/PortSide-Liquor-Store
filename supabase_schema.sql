@@ -122,7 +122,10 @@ CREATE TABLE IF NOT EXISTS business_settings (
     email TEXT,
     location TEXT NOT NULL DEFAULT 'Nairobi, Kenya',
     "logoUrl" TEXT,
-    "receiptFooter" TEXT DEFAULT 'Thank you for your business!'
+    "receiptFooter" TEXT DEFAULT 'Thank you for your business!',
+    "evolutionApiUrl" TEXT,
+    "evolutionApiKey" TEXT,
+    "evolutionInstance" TEXT
 );
 
 ALTER TABLE business_settings ENABLE ROW LEVEL SECURITY;
@@ -130,6 +133,11 @@ CREATE POLICY "Allow all for anon" ON business_settings FOR ALL USING (true);
 
 -- Insert default settings if not exists
 INSERT INTO business_settings (id) VALUES ('default') ON CONFLICT (id) DO NOTHING;
+
+-- IF YOUR TABLE ALREADY EXISTS, RUN THIS TO ADD THE MISSING COLUMNS:
+ALTER TABLE business_settings ADD COLUMN IF NOT EXISTS "evolutionApiUrl" TEXT;
+ALTER TABLE business_settings ADD COLUMN IF NOT EXISTS "evolutionApiKey" TEXT;
+ALTER TABLE business_settings ADD COLUMN IF NOT EXISTS "evolutionInstance" TEXT;
 
 -- ============================================================================
 -- HELPFUL QUERIES

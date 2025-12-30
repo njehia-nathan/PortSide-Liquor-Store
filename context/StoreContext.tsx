@@ -153,6 +153,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               loadedShifts = mergedShifts;
             }
 
+            // 5. Business Settings (cloud takes precedence)
+            const { data: cloudSettings } = await supabase.from('business_settings').select('*').eq('id', 'default').single();
+            if (cloudSettings) {
+              await db.put('businessSettings', cloudSettings);
+              setBusinessSettings(cloudSettings);
+              console.log('☁️ Business settings loaded from cloud');
+            }
+
             console.log('☁️ Cloud sync pull complete');
           } catch (cloudErr) {
             console.warn("Could not fetch initial cloud data, using local.", cloudErr);

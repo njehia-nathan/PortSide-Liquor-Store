@@ -138,12 +138,27 @@ input, select, textarea {
     font-weight: 700 !important;
   }
   
-  /* Borders - thick black */
+  /* Remove all borders for clean receipt */
   [data-receipt-print] .border-dashed,
   [data-receipt-print] .border-t-2,
-  [data-receipt-print] .border-b {
-    border-color: #000 !important;
-    border-width: 1px !important;
+  [data-receipt-print] .border-b,
+  [data-receipt-print] .border-black,
+  [data-receipt-print] .border-slate-100,
+  [data-receipt-print] .border-slate-200,
+  [data-receipt-print] .border-slate-300,
+  [data-receipt-print] .border-green-200 {
+    border: none !important;
+  }
+  
+  /* Logo - Make it bigger */
+  [data-receipt-print] img {
+    width: 35mm !important;
+    height: 35mm !important;
+    max-width: 35mm !important;
+    max-height: 35mm !important;
+    object-fit: contain !important;
+    margin: 0 auto 4mm auto !important;
+    display: block !important;
   }
   
   /* Remove all backgrounds */

@@ -700,7 +700,7 @@ const POS = () => {
                     {receiptSale.paymentMethod === 'CASH' && '💵'}
                     {receiptSale.paymentMethod === 'CARD' && '💳'}
                     {receiptSale.paymentMethod === 'MOBILE' && '📱'}
-                    {receiptSale.paymentMethod}
+                    {receiptSale.paymentMethod === 'MOBILE' ? 'M-PESA' : receiptSale.paymentMethod}
                   </span>
                 </div>
               </div>

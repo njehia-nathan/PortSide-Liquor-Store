@@ -63,6 +63,24 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
       case 'UPDATE_SETTINGS':
         table = 'business_settings';
         break;
+      case 'VOID_REQUEST':
+      case 'VOID_REJECTED':
+        table = 'void_requests';
+        break;
+      case 'VOID_APPROVED':
+        // For approved voids, we need to sync both the void request and the updated sale
+        try {
+          // Sync void request
+          const { error: voidError } = await supabase.from('void_requests').upsert(payload.request);
+          if (voidError) throw voidError;
+          // Sync updated sale (marked as voided)
+          const { error: saleError } = await supabase.from('sales').upsert(payload.sale);
+          if (saleError) throw saleError;
+          return true;
+        } catch (error) {
+          console.error('[Cloud Error] Failed to sync VOID_APPROVED:', error);
+          return false;
+        }
       default:
         console.warn('Unknown sync type:', type);
         return true; // Skip unknown types to clear queue

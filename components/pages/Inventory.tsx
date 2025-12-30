@@ -456,34 +456,57 @@ const Inventory = () => {
                     <input type="number" step="0.01" className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none" placeholder="Optional" value={newCost} onChange={e => setNewCost(e.target.value)} />
                   </div>
 
-                  {/* Barcode - Assigns to product */}
+                  {/* Barcode - Scan to find OR assign */}
                   <div className="col-span-2">
-                    <label className="block text-xs font-medium text-amber-700 mb-1 flex items-center gap-1">
-                      <Barcode size={12} /> Assign Barcode
+                    <label className="block text-xs font-medium text-green-700 mb-1 flex items-center gap-1">
+                      <Barcode size={12} /> Scan Barcode (Find or Assign)
                     </label>
                     <input
                       type="text"
-                      placeholder="Scan barcode to assign to selected product..."
-                      className="w-full p-2 border-2 border-amber-300 rounded-lg bg-amber-50 text-sm font-mono focus:ring-2 focus:ring-amber-500 outline-none"
+                      placeholder="Scan barcode to find product or assign new..."
+                      className="w-full p-2 border-2 border-green-400 rounded-lg bg-green-50 text-sm font-mono focus:ring-2 focus:ring-green-500 outline-none"
                       value={barcodeInput}
-                      onChange={e => setBarcodeInput(e.target.value)}
+                      onChange={e => {
+                        setBarcodeInput(e.target.value);
+                        // Auto-find product as user types/scans
+                        const scanned = e.target.value.trim();
+                        if (scanned) {
+                          const found = products.find(p => p.barcode === scanned);
+                          if (found) {
+                            setSelectedProductId(found.id);
+                          }
+                        }
+                      }}
                       onKeyDown={e => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
-                          if (barcodeInput.trim() && selectedProductId) {
-                            const product = products.find(p => p.id === selectedProductId);
-                            if (product) {
-                              updateProduct({ ...product, barcode: barcodeInput.trim() });
-                              showSuccess(`Barcode assigned to ${product.name}`);
+                          const scanned = barcodeInput.trim();
+                          if (scanned) {
+                            // First try to find product by barcode
+                            const found = products.find(p => p.barcode === scanned);
+                            if (found) {
+                              setSelectedProductId(found.id);
+                              showSuccess(`Found: ${found.name}`);
                               setBarcodeInput('');
+                            } else if (selectedProductId) {
+                              // If no match and product selected, offer to assign
+                              const product = products.find(p => p.id === selectedProductId);
+                              if (product) {
+                                updateProduct({ ...product, barcode: scanned });
+                                showSuccess(`Barcode assigned to ${product.name}`);
+                                setBarcodeInput('');
+                              }
+                            } else {
+                              alert('No product found with this barcode. Select a product first to assign.');
                             }
                           }
                         }
                       }}
                     />
+                    <p className="text-[10px] text-slate-500 mt-1">Scan to auto-select product, or select product first then scan to assign barcode</p>
                   </div>
 
-                  {/* Assign Button */}
+                  {/* Buttons */}
                   <div className="col-span-2 flex gap-2">
                     <button
                       type="button"

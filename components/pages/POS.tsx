@@ -23,6 +23,8 @@ const POS = () => {
   const [customerPhone, setCustomerPhone] = useState('');
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const [cashTendered, setCashTendered] = useState('');
+  const [showCashModal, setShowCashModal] = useState(false);
   const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
   const lastKeyTime = useRef<number>(0);
 
@@ -88,7 +90,7 @@ const POS = () => {
 
   const cartTotal = cart.reduce((sum, item) => sum + (item.sellingPrice * item.quantity), 0);
 
-  const handlePayment = async (method: 'CASH' | 'CARD' | 'MOBILE') => {
+  const handlePayment = async (method: 'CASH' | 'CARD' | 'MOBILE', cashAmount?: number) => {
     const saleItems: SaleItem[] = cart.map(c => ({
       productId: c.id,
       productName: c.name,
@@ -101,12 +103,37 @@ const POS = () => {
     const newSale = await processSale(saleItems, method);
 
     if (newSale) {
+      // Store cash tendered and change for receipt
+      if (method === 'CASH' && cashAmount) {
+        (newSale as any).cashTendered = cashAmount;
+        (newSale as any).changeGiven = cashAmount - newSale.totalAmount;
+      }
       setReceiptSale(newSale);
-      setShowReceiptModal(true);
       setCart([]);
       setPaymentModalOpen(false);
+      setShowCashModal(false);
+      setCashTendered('');
       setMobileCartOpen(false);
+      // Auto-print receipt
+      setTimeout(() => {
+        setShowReceiptModal(true);
+        setTimeout(() => window.print(), 500);
+      }, 100);
     }
+  };
+
+  const handleCashPayment = () => {
+    setPaymentModalOpen(false);
+    setShowCashModal(true);
+  };
+
+  const confirmCashPayment = () => {
+    const tendered = parseFloat(cashTendered);
+    if (isNaN(tendered) || tendered < cartTotal) {
+      alert('Cash tendered must be at least ' + CURRENCY_FORMATTER.format(cartTotal));
+      return;
+    }
+    handlePayment('CASH', tendered);
   };
 
   const viewLastTransaction = () => {
@@ -470,7 +497,7 @@ const POS = () => {
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-3">
-                <button onClick={() => handlePayment('CASH')} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-green-50 rounded-xl hover:bg-green-100 border-2 border-green-200">
+                <button onClick={handleCashPayment} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-green-50 rounded-xl hover:bg-green-100 border-2 border-green-200">
                   <Banknote size={28} className="text-green-600" />
                   <span className="font-bold text-green-800 text-sm lg:text-base">Cash</span>
                 </button>
@@ -481,6 +508,86 @@ const POS = () => {
                 <button onClick={() => handlePayment('MOBILE')} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-purple-50 rounded-xl hover:bg-purple-100 border-2 border-purple-200">
                   <Smartphone size={28} className="text-purple-600" />
                   <span className="font-bold text-purple-800 text-sm lg:text-base">M-Pesa</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cash Payment Modal */}
+      {showCashModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-end lg:items-center justify-center print:hidden">
+          <div className="bg-white w-full lg:rounded-xl lg:max-w-md lg:w-full rounded-t-2xl">
+            <div className="p-4 lg:p-6 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-lg lg:text-xl font-bold flex items-center gap-2">
+                <Banknote className="text-green-600" /> Cash Payment
+              </h2>
+              <button onClick={() => { setShowCashModal(false); setCashTendered(''); }}>
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-4 lg:p-6">
+              <div className="text-center mb-6">
+                <div className="text-slate-500 text-sm">Amount Due</div>
+                <div className="text-3xl lg:text-4xl font-bold text-amber-600">
+                  {CURRENCY_FORMATTER.format(cartTotal)}
+                </div>
+              </div>
+              
+              <div className="mb-4">
+                <label className="block text-sm font-bold text-slate-700 mb-2">Cash Received</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  autoFocus
+                  placeholder="Enter amount..."
+                  className="w-full border-2 border-green-400 p-4 rounded-lg text-2xl font-mono text-center focus:ring-2 focus:ring-green-500 outline-none"
+                  value={cashTendered}
+                  onChange={(e) => setCashTendered(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      confirmCashPayment();
+                    }
+                  }}
+                />
+              </div>
+
+              {cashTendered && parseFloat(cashTendered) >= cartTotal && (
+                <div className="bg-green-50 border-2 border-green-200 rounded-xl p-4 mb-4">
+                  <div className="text-center">
+                    <div className="text-green-600 text-sm font-medium">Change to Give</div>
+                    <div className="text-3xl font-bold text-green-700">
+                      {CURRENCY_FORMATTER.format(parseFloat(cashTendered) - cartTotal)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {cashTendered && parseFloat(cashTendered) < cartTotal && (
+                <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4 mb-4">
+                  <div className="text-center">
+                    <div className="text-red-600 text-sm font-medium">Insufficient Amount</div>
+                    <div className="text-xl font-bold text-red-700">
+                      Need {CURRENCY_FORMATTER.format(cartTotal - parseFloat(cashTendered))} more
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => { setShowCashModal(false); setCashTendered(''); }}
+                  className="py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmCashPayment}
+                  disabled={!cashTendered || parseFloat(cashTendered) < cartTotal}
+                  className="py-3 bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center justify-center gap-2"
+                >
+                  <Banknote size={18} /> Complete Sale
                 </button>
               </div>
             </div>
@@ -648,6 +755,22 @@ const POS = () => {
                   </span>
                 </div>
               </div>
+
+              {/* Cash Payment Details */}
+              {receiptSale.paymentMethod === 'CASH' && (receiptSale as any).cashTendered && (
+                <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-4 print:bg-transparent print:border-slate-300 print:p-2 print:mb-3">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-600">Cash Received</span>
+                      <span className="font-bold text-slate-800">{CURRENCY_FORMATTER.format((receiptSale as any).cashTendered)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-green-700 font-medium">Change Given</span>
+                      <span className="font-bold text-green-700">{CURRENCY_FORMATTER.format((receiptSale as any).changeGiven)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="border-t-2 border-dashed border-slate-300 my-4 print:my-3"></div>
 

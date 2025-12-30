@@ -60,7 +60,7 @@
 ## Data Storage
 
 ### Local Storage (IndexedDB)
-- **Database Name**: `PortSidePOS_DB`
+- **Database Name**: `GrabBottlePOS_DB`
 - **Stores**: users, products, sales, shifts, auditLogs, businessSettings, syncQueue
 - **Persistent**: Data survives app restarts and browser refreshes
 - **Capacity**: Typically 50MB+ on mobile devices

@@ -45,7 +45,7 @@ export interface SyncQueueItem {
 }
 
 // Name of the database in the browser's developer tools
-const DB_NAME = 'PortSidePOS_DB';
+const DB_NAME = 'GrabBottlePOS_DB';
 const DB_VERSION = 2; // Bumped for businessSettings store
 
 /**

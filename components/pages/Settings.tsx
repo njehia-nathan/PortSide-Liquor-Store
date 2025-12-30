@@ -64,7 +64,7 @@ const Settings = () => {
           <h2 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Phone size={18} /> Contact Information</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div><label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Phone size={14} /> Phone Number *</label><input type="tel" required className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="+254 700 000000" value={formData.phone} onChange={(e) => handleChange('phone', e.target.value)} /></div>
-            <div><label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Mail size={14} /> Email Address</label><input type="email" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="hello@portside.co.ke" value={formData.email} onChange={(e) => handleChange('email', e.target.value)} /></div>
+            <div><label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Mail size={14} /> Email Address</label><input type="email" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="hello@GrabBottle.co.ke" value={formData.email} onChange={(e) => handleChange('email', e.target.value)} /></div>
             <div className="sm:col-span-2"><label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><MapPin size={14} /> Location / Address *</label><input type="text" required className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-amber-500 outline-none" placeholder="Westlands, Nairobi, Kenya" value={formData.location} onChange={(e) => handleChange('location', e.target.value)} /></div>
           </div>
         </div>
@@ -110,7 +110,7 @@ const Settings = () => {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1"><Server size={14} /> Instance Name</label>
-              <input type="text" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-green-500 outline-none font-mono" placeholder="e.g. portside-whatsapp" value={formData.evolutionInstance} onChange={(e) => handleChange('evolutionInstance', e.target.value)} />
+              <input type="text" className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-green-500 outline-none font-mono" placeholder="e.g. GrabBottle-whatsapp" value={formData.evolutionInstance} onChange={(e) => handleChange('evolutionInstance', e.target.value)} />
             </div>
             {formData.evolutionApiUrl && formData.evolutionApiKey && formData.evolutionInstance && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex items-center gap-2">

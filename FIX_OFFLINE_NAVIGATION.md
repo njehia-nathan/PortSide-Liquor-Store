@@ -171,10 +171,10 @@ If navigation still shows offline messages:
 1. **Check browser console** (F12) for errors
 2. **Verify service worker version**:
    - DevTools → Application → Service Workers
-   - Should show `portside-pos-v3`
+   - Should show `GrabBottle-pos-v3`
 3. **Check cache**:
    - DevTools → Application → Cache Storage
-   - Should show `portside-pos-v3`
+   - Should show `GrabBottle-pos-v3`
 4. **Try different browser** to isolate issue
 5. **Check if you're in production mode** - run `npm run build && npm start`
 

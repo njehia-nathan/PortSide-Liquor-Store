@@ -1,4 +1,4 @@
-const CACHE_NAME = 'portside-pos-v3';
+const CACHE_NAME = 'GrabBottle-pos-v3';
 const STATIC_ASSETS = [
   '/',
   '/inventory',

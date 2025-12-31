@@ -118,7 +118,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         let loadedProducts = await db.getAll('products');
         let loadedSales = await db.getAll('sales');
         let loadedShifts = await db.getAll('shifts');
-        const loadedLogs = await db.getAll('auditLogs');
+        let loadedLogs = await db.getAll('auditLogs');
         let loadedVoidRequests = await db.getAll('voidRequests');
 
         // CLOUD SYNC PULL (On Startup)
@@ -161,7 +161,27 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               loadedShifts = mergedShifts;
             }
 
-            // 5. Business Settings (cloud takes precedence)
+            // 5. Audit Logs (merge cloud logs with local - cloud is source of truth for existing IDs)
+            const { data: cloudLogs } = await supabase.from('audit_logs').select('*');
+            if (cloudLogs && cloudLogs.length > 0) {
+              const cloudLogIds = new Set(cloudLogs.map((l: AuditLog) => l.id));
+              const localOnlyLogs = loadedLogs.filter(l => !cloudLogIds.has(l.id));
+              const mergedLogs = [...cloudLogs, ...localOnlyLogs];
+              for (const l of cloudLogs) await db.put('auditLogs', l);
+              loadedLogs = mergedLogs;
+            }
+
+            // 6. Void Requests (merge cloud with local)
+            const { data: cloudVoidRequests } = await supabase.from('void_requests').select('*');
+            if (cloudVoidRequests && cloudVoidRequests.length > 0) {
+              const cloudVoidIds = new Set(cloudVoidRequests.map((v: VoidRequest) => v.id));
+              const localOnlyVoids = loadedVoidRequests.filter(v => !cloudVoidIds.has(v.id));
+              const mergedVoids = [...cloudVoidRequests, ...localOnlyVoids];
+              for (const v of cloudVoidRequests) await db.put('voidRequests', v);
+              loadedVoidRequests = mergedVoids;
+            }
+
+            // 7. Business Settings (cloud takes precedence)
             const { data: cloudSettings } = await supabase.from('business_settings').select('*').eq('id', 'default').single();
             if (cloudSettings) {
               await db.put('businessSettings', cloudSettings);
@@ -169,7 +189,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               console.log('☁️ Business settings loaded from cloud');
             }
 
-            console.log('☁️ Cloud sync pull complete');
+            console.log('☁️ Cloud sync pull complete (users, products, sales, shifts, audit_logs, void_requests, settings)');
           } catch (cloudErr) {
             console.warn("Could not fetch initial cloud data, using local.", cloudErr);
           }

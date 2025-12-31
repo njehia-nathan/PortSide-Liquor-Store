@@ -62,7 +62,11 @@ CREATE TABLE IF NOT EXISTS sales (
     "totalAmount" NUMERIC(10, 2) NOT NULL,
     "totalCost" NUMERIC(10, 2) NOT NULL,
     "paymentMethod" TEXT NOT NULL CHECK ("paymentMethod" IN ('CASH', 'CARD', 'MOBILE')),
-    items JSONB NOT NULL DEFAULT '[]'
+    items JSONB NOT NULL DEFAULT '[]',
+    "isVoided" BOOLEAN DEFAULT FALSE,
+    "voidedAt" TIMESTAMPTZ,
+    "voidedBy" TEXT,
+    "voidReason" TEXT
 );
 
 ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
@@ -71,6 +75,12 @@ CREATE POLICY "Allow all for anon" ON sales FOR ALL USING (true);
 -- Index for common queries
 CREATE INDEX IF NOT EXISTS idx_sales_timestamp ON sales(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_sales_cashier ON sales("cashierId");
+
+-- IF YOUR TABLE ALREADY EXISTS, RUN THIS TO ADD VOID COLUMNS:
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS "isVoided" BOOLEAN DEFAULT FALSE;
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS "voidedAt" TIMESTAMPTZ;
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS "voidedBy" TEXT;
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS "voidReason" TEXT;
 
 -- ============================================================================
 -- SHIFTS TABLE
@@ -85,11 +95,15 @@ CREATE TABLE IF NOT EXISTS shifts (
     "openingCash" NUMERIC(10, 2) NOT NULL DEFAULT 0,
     "closingCash" NUMERIC(10, 2),
     "expectedCash" NUMERIC(10, 2),
-    status TEXT NOT NULL CHECK (status IN ('OPEN', 'CLOSED'))
+    status TEXT NOT NULL CHECK (status IN ('OPEN', 'CLOSED')),
+    comments TEXT
 );
 
 ALTER TABLE shifts ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow all for anon" ON shifts FOR ALL USING (true);
+
+-- IF YOUR TABLE ALREADY EXISTS, RUN THIS TO ADD COMMENTS COLUMN:
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS comments TEXT;
 
 -- ============================================================================
 -- AUDIT_LOGS TABLE
@@ -109,6 +123,32 @@ CREATE POLICY "Allow all for anon" ON audit_logs FOR ALL USING (true);
 
 -- Index for recent logs
 CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
+
+-- ============================================================================
+-- VOID_REQUESTS TABLE
+-- Tracks void requests for sales that need admin approval
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS void_requests (
+    id TEXT PRIMARY KEY,
+    "saleId" TEXT NOT NULL,
+    sale JSONB NOT NULL,
+    "requestedBy" TEXT NOT NULL,
+    "requestedByName" TEXT NOT NULL,
+    "requestedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    "reviewedBy" TEXT,
+    "reviewedByName" TEXT,
+    "reviewedAt" TIMESTAMPTZ,
+    "reviewNotes" TEXT
+);
+
+ALTER TABLE void_requests ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all for anon" ON void_requests FOR ALL USING (true);
+
+-- Index for pending requests
+CREATE INDEX IF NOT EXISTS idx_void_requests_status ON void_requests(status);
+CREATE INDEX IF NOT EXISTS idx_void_requests_requested_at ON void_requests("requestedAt" DESC);
 
 -- ============================================================================
 -- BUSINESS_SETTINGS TABLE

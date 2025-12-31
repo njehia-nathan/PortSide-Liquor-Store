@@ -40,6 +40,7 @@ interface StoreContextType {
   // --- INVENTORY ACTIONS ---
   addProduct: (product: Omit<Product, 'id'>) => Promise<void>;
   updateProduct: (product: Product) => Promise<void>;
+  deleteProduct: (productId: string) => Promise<void>;
   adjustStock: (productId: string, change: number, reason: string) => Promise<void>;
   receiveStock: (productId: string, quantity: number, newCost?: number) => Promise<void>;
 
@@ -649,6 +650,18 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     await addToSyncQueue('UPDATE_PRODUCT', product);
   };
 
+  const deleteProduct = async (productId: string) => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+
+    setProducts(prev => prev.filter(p => p.id !== productId));
+
+    const db = await dbPromise();
+    await db.delete('products', productId);
+    await addLog('PRODUCT_DELETE', `Deleted product: ${product.name} (${product.size})`);
+    await addToSyncQueue('DELETE_PRODUCT', { id: productId });
+  };
+
   const adjustStock = async (productId: string, change: number, reason: string) => {
     const product = products.find(p => p.id === productId);
     if (!product) return;
@@ -812,6 +825,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       processSale,
       addProduct,
       updateProduct,
+      deleteProduct,
       adjustStock,
       receiveStock,
       openShift,

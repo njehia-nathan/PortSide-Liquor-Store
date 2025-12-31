@@ -75,3 +75,18 @@ CREATE TABLE public.users (
   permissions ARRAY,
   CONSTRAINT users_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.void_requests (
+  id text NOT NULL,
+  saleId text NOT NULL,
+  sale jsonb NOT NULL,
+  requestedBy text NOT NULL,
+  requestedByName text NOT NULL,
+  requestedAt text NOT NULL,
+  reason text NOT NULL,
+  status text NOT NULL,
+  reviewedBy text,
+  reviewedByName text,
+  reviewedAt text,
+  reviewNotes text,
+  CONSTRAINT void_requests_pkey PRIMARY KEY (id)
+);

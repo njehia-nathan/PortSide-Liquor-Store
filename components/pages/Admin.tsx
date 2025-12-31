@@ -7,7 +7,7 @@ import { CURRENCY_FORMATTER } from '../../constants';
 import { PlusCircle, UserCog, UserPlus, Trash2, Barcode, Camera, Search, Filter, ArrowUpDown, Clock, User as UserIcon, Activity } from 'lucide-react';
 
 const Admin = () => {
-  const { products, auditLogs, users, currentUser, addProduct, updateProduct, updateUser, addUser, deleteUser } = useStore();
+  const { products, auditLogs, users, currentUser, addProduct, updateProduct, deleteProduct, updateUser, addUser, deleteUser } = useStore();
   const [activeSection, setActiveSection] = useState<'PRODUCTS' | 'LOGS' | 'USERS'>('PRODUCTS');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
@@ -21,6 +21,7 @@ const Admin = () => {
   const [logFilterAction, setLogFilterAction] = useState<string>('ALL');
   const [logFilterUser, setLogFilterUser] = useState<string>('ALL');
   const [logSortOrder, setLogSortOrder] = useState<'newest' | 'oldest'>('newest');
+  const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'product' | 'user'; id: string; name: string } | null>(null);
 
   const uniqueActions = useMemo(() => {
     const actions = new Set(auditLogs.map(l => l.action));
@@ -52,7 +53,9 @@ const Admin = () => {
   const handleEditUser = (user: User) => { setEditingUser(user); setUserFormData({ ...user }); setIsUserFormOpen(true); };
   const handleCreateUser = () => { setEditingUser(null); setUserFormData({ name: '', pin: '', role: Role.CASHIER, permissions: ['POS'] }); setIsUserFormOpen(true); };
   const handleUserSubmit = (e: React.FormEvent) => { e.preventDefault(); if (!userFormData.name || !userFormData.pin) { alert('Name and PIN are required'); return; } if (editingUser) { updateUser({ ...editingUser, ...userFormData } as User); } else { addUser(userFormData as Omit<User, 'id'>); } setIsUserFormOpen(false); };
-  const handleDeleteUser = (id: string) => { if (confirm('Are you sure you want to delete this user?')) { deleteUser(id); } };
+  const handleDeleteUser = (id: string) => { const user = users.find(u => u.id === id); if (user) setDeleteConfirm({ type: 'user', id, name: user.name }); };
+  const handleDeleteProduct = (id: string) => { const product = products.find(p => p.id === id); if (product) setDeleteConfirm({ type: 'product', id, name: product.name }); };
+  const confirmDelete = () => { if (!deleteConfirm) return; if (deleteConfirm.type === 'product') deleteProduct(deleteConfirm.id); else deleteUser(deleteConfirm.id); setDeleteConfirm(null); };
   const handleRoleChange = (newRole: Role) => { let perms: string[] = []; if (newRole === Role.ADMIN) perms = ['POS', 'INVENTORY', 'REPORTS', 'ADMIN']; else if (newRole === Role.MANAGER) perms = ['POS', 'INVENTORY', 'REPORTS']; else perms = ['POS']; setUserFormData({ ...userFormData, role: newRole, permissions: perms }); };
   const togglePermission = (perm: string) => { const currentPerms = userFormData.permissions || []; if (currentPerms.includes(perm)) { setUserFormData({ ...userFormData, permissions: currentPerms.filter(p => p !== perm) }); } else { setUserFormData({ ...userFormData, permissions: [...currentPerms, perm] }); } };
 
@@ -86,16 +89,19 @@ const Admin = () => {
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-xs px-2 py-1 bg-slate-100 rounded-lg text-slate-600">Alert: {p.lowStockThreshold || 5}</span>
-                    <button onClick={() => handleEditProduct(p)} className="px-4 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm font-medium hover:bg-blue-200 transition-colors">Edit</button>
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => handleEditProduct(p)} className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors shadow-sm">Edit</button>
+                      <button onClick={() => handleDeleteProduct(p.id)} className="px-3 py-2 bg-red-500 text-white rounded-lg text-sm font-medium hover:bg-red-600 transition-colors shadow-sm flex items-center gap-1.5"><Trash2 size={16} /> Delete</button>
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
             <div className="hidden lg:block overflow-x-auto">
               <table className="w-full text-left">
-                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold"><tr><th className="px-6 py-4">Name</th><th className="px-6 py-4">Size</th><th className="px-6 py-4">SKU</th><th className="px-6 py-4">Barcode</th><th className="px-6 py-4">Alert Level</th><th className="px-6 py-4">Price</th><th className="px-6 py-4">Action</th></tr></thead>
+                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold"><tr><th className="px-4 py-4">#</th><th className="px-6 py-4">Name</th><th className="px-6 py-4">Size</th><th className="px-6 py-4">SKU</th><th className="px-6 py-4">Barcode</th><th className="px-6 py-4">Alert Level</th><th className="px-6 py-4">Price</th><th className="px-6 py-4">Action</th></tr></thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
-                  {products.map(p => (<tr key={p.id} className="hover:bg-slate-50"><td className="px-6 py-4 font-medium">{p.name}</td><td className="px-6 py-4">{p.size}</td><td className="px-6 py-4 font-mono text-slate-500">{p.sku}</td><td className="px-6 py-4 font-mono text-xs text-slate-400">{p.barcode || '-'}</td><td className="px-6 py-4 font-bold">{p.lowStockThreshold || 5}</td><td className="px-6 py-4">{CURRENCY_FORMATTER.format(p.sellingPrice)}</td><td className="px-6 py-4"><button onClick={() => handleEditProduct(p)} className="text-blue-600 hover:text-blue-800 font-medium">Edit</button></td></tr>))}
+                  {products.map((p, index) => (<tr key={p.id} className="hover:bg-slate-50"><td className="px-4 py-4 font-mono text-slate-400">#{index + 1}</td><td className="px-6 py-4 font-medium">{p.name}</td><td className="px-6 py-4">{p.size}</td><td className="px-6 py-4 font-mono text-slate-500">{p.sku}</td><td className="px-6 py-4 font-mono text-xs text-slate-400">{p.barcode || '-'}</td><td className="px-6 py-4 font-bold">{p.lowStockThreshold || 5}</td><td className="px-6 py-4">{CURRENCY_FORMATTER.format(p.sellingPrice)}</td><td className="px-6 py-4"><div className="flex items-center gap-3"><button onClick={() => handleEditProduct(p)} className="px-3 py-1.5 bg-blue-500 text-white rounded-md text-sm font-medium hover:bg-blue-600 transition-colors">Edit</button><button onClick={() => handleDeleteProduct(p.id)} className="px-3 py-1.5 bg-red-500 text-white rounded-md text-sm font-medium hover:bg-red-600 transition-colors flex items-center gap-1" title="Delete Product"><Trash2 size={14} /> Delete</button></div></td></tr>))}
                 </tbody>
               </table>
             </div>
@@ -368,6 +374,34 @@ const Admin = () => {
               <div><label className="block text-sm font-bold text-slate-700 mb-2">Access Privileges</label><div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">{['POS', 'INVENTORY', 'REPORTS', 'ADMIN'].map(perm => (<label key={perm} className="flex items-center gap-2 cursor-pointer hover:bg-slate-100 p-2 rounded"><input type="checkbox" checked={userFormData.permissions?.includes(perm)} onChange={() => togglePermission(perm)} className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500" /><span className="text-sm font-medium text-slate-700">{perm}</span></label>))}</div></div>
               <div className="flex gap-3 pt-3"><button type="submit" className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-3 rounded-lg font-bold text-sm">Save User</button><button type="button" onClick={() => setIsUserFormOpen(false)} className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500 text-sm">Cancel</button></div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <div className="flex items-center justify-center w-14 h-14 bg-red-100 rounded-full mx-auto mb-4">
+              <Trash2 size={28} className="text-red-600" />
+            </div>
+            <h3 className="text-lg font-bold text-center text-slate-800 mb-2">Delete {deleteConfirm.type === 'product' ? 'Product' : 'User'}?</h3>
+            <p className="text-sm text-slate-500 text-center mb-6">
+              Are you sure you want to delete <span className="font-bold text-slate-700">{deleteConfirm.name}</span>? This action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="flex-1 px-4 py-3 border border-slate-300 rounded-lg font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="flex-1 px-4 py-3 bg-red-500 text-white rounded-lg font-bold hover:bg-red-600 transition-colors flex items-center justify-center gap-2"
+              >
+                <Trash2 size={18} /> Delete
+              </button>
+            </div>
           </div>
         </div>
       )}

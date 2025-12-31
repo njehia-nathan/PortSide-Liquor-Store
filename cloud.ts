@@ -53,6 +53,10 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
         table = 'users';
         action = 'delete';
         break;
+      case 'DELETE_PRODUCT':
+        table = 'products';
+        action = 'delete';
+        break;
       case 'OPEN_SHIFT':
       case 'CLOSE_SHIFT':
         table = 'shifts';

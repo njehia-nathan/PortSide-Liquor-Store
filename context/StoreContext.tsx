@@ -230,6 +230,9 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           // Save seeds to DB
           for (const u of finalSeedUsers) await db.put('users', u);
           loadedUsers = finalSeedUsers;
+          console.log('✅ Seeded users to IndexedDB:', loadedUsers.length);
+        } else {
+          console.log('✅ Loaded users from IndexedDB:', loadedUsers.length);
         }
 
         // Seed Products if empty

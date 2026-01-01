@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 
 const Inventory = () => {
   const { products, receiveStock, adjustStock, updateProduct, addProduct, requestStockChange } = useStore();
@@ -90,7 +91,13 @@ const Inventory = () => {
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (p.barcode && p.barcode.includes(searchTerm))
-  );
+  ).sort((a, b) => a.name.localeCompare(b.name));
+
+  const sortedProducts = [...products].sort((a, b) => a.name.localeCompare(b.name));
+  const productOptions = sortedProducts.map(p => ({
+    value: p.id,
+    label: `${p.name} - ${p.size} (Stock: ${p.stock})`
+  }));
 
   const lowStockProducts = products.filter(p => p.stock <= (p.lowStockThreshold || 5));
   const totalInventoryValue = products.reduce((sum, p) => sum + (p.costPrice * p.stock), 0);
@@ -438,16 +445,12 @@ const Inventory = () => {
                   {/* Product Selection */}
                   <div className="col-span-2">
                     <label className="block text-xs font-medium text-slate-600 mb-1">Product *</label>
-                    <Select value={selectedProductId} onValueChange={setSelectedProductId}>
-                      <SelectTrigger className="h-9 text-sm">
-                        <SelectValue placeholder="-- Select Product --" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {products.map(p => (
-                          <SelectItem key={p.id} value={p.id}>{p.name} ({p.size}) - Stock: {p.stock}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <SearchableSelect
+                      options={products.map(p => ({ value: p.id, label: `${p.name} (${p.size}) - Stock: ${p.stock}` }))}
+                      value={selectedProductId}
+                      onChange={setSelectedProductId}
+                      placeholder="Search and select a product..."
+                    />
                   </div>
 
                   {/* Quantity */}
@@ -569,16 +572,12 @@ const Inventory = () => {
                   {/* Product Selection */}
                   <div className="col-span-2">
                     <label className="block text-xs font-medium text-slate-600 mb-1">Product *</label>
-                    <Select value={selectedProductId} onValueChange={setSelectedProductId}>
-                      <SelectTrigger className="h-9 text-sm">
-                        <SelectValue placeholder="-- Select Product --" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {products.map(p => (
-                          <SelectItem key={p.id} value={p.id}>{p.name} ({p.size}) - Stock: {p.stock}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <SearchableSelect
+                      options={products.map(p => ({ value: p.id, label: `${p.name} (${p.size}) - Stock: ${p.stock}` }))}
+                      value={selectedProductId}
+                      onChange={setSelectedProductId}
+                      placeholder="Search and select a product..."
+                    />
                   </div>
 
                   {/* Quantity Change with +/- buttons */}

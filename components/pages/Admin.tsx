@@ -17,11 +17,23 @@ const Admin = () => {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [isUserFormOpen, setIsUserFormOpen] = useState(false);
   const [userFormData, setUserFormData] = useState<Partial<User>>({ name: '', pin: '', role: Role.CASHIER, permissions: [] });
+  const [productSearch, setProductSearch] = useState('');
   const [logSearch, setLogSearch] = useState('');
   const [logFilterAction, setLogFilterAction] = useState<string>('ALL');
   const [logFilterUser, setLogFilterUser] = useState<string>('ALL');
   const [logSortOrder, setLogSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'product' | 'user'; id: string; name: string } | null>(null);
+
+  const filteredProducts = useMemo(() => {
+    if (!productSearch) return products;
+    const search = productSearch.toLowerCase();
+    return products.filter(p => 
+      p.name.toLowerCase().includes(search) ||
+      p.sku.toLowerCase().includes(search) ||
+      (p.barcode && p.barcode.toLowerCase().includes(search)) ||
+      p.type.toLowerCase().includes(search)
+    );
+  }, [products, productSearch]);
 
   const uniqueActions = useMemo(() => {
     const actions = new Set(auditLogs.map(l => l.action));
@@ -72,12 +84,22 @@ const Admin = () => {
 
       {activeSection === 'PRODUCTS' && (
         <>
-          <div className="mb-3 lg:mb-4 flex justify-end">
-            <button onClick={handleCreateProduct} className="flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-3 lg:px-4 py-2 rounded-lg font-medium text-sm"><PlusCircle size={16} /> <span className="hidden sm:inline">Add New</span> Product</button>
+          <div className="mb-3 lg:mb-4 flex flex-col sm:flex-row gap-3 justify-between">
+            <div className="relative flex-1 max-w-md">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search products by name, SKU, barcode, or type..."
+                className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+                value={productSearch}
+                onChange={e => setProductSearch(e.target.value)}
+              />
+            </div>
+            <button onClick={handleCreateProduct} className="flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-3 lg:px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"><PlusCircle size={16} /> <span className="hidden sm:inline">Add New</span> Product</button>
           </div>
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="lg:hidden divide-y divide-slate-100">
-              {products.map(p => (
+              {filteredProducts.map(p => (
                 <div key={p.id} className="p-4 hover:bg-slate-50">
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex-1 min-w-0 pr-3">
@@ -101,7 +123,7 @@ const Admin = () => {
               <table className="w-full text-left">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold"><tr><th className="px-4 py-4">#</th><th className="px-6 py-4">Name</th><th className="px-6 py-4">Size</th><th className="px-6 py-4">SKU</th><th className="px-6 py-4">Barcode</th><th className="px-6 py-4">Alert Level</th><th className="px-6 py-4">Price</th><th className="px-6 py-4">Action</th></tr></thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
-                  {products.map((p, index) => (<tr key={p.id} className="hover:bg-slate-50"><td className="px-4 py-4 font-mono text-slate-400">#{index + 1}</td><td className="px-6 py-4 font-medium">{p.name}</td><td className="px-6 py-4">{p.size}</td><td className="px-6 py-4 font-mono text-slate-500">{p.sku}</td><td className="px-6 py-4 font-mono text-xs text-slate-400">{p.barcode || '-'}</td><td className="px-6 py-4 font-bold">{p.lowStockThreshold || 5}</td><td className="px-6 py-4">{CURRENCY_FORMATTER.format(p.sellingPrice)}</td><td className="px-6 py-4"><div className="flex items-center gap-3"><button onClick={() => handleEditProduct(p)} className="px-3 py-1.5 bg-blue-500 text-white rounded-md text-sm font-medium hover:bg-blue-600 transition-colors">Edit</button><button onClick={() => handleDeleteProduct(p.id)} className="px-3 py-1.5 bg-red-500 text-white rounded-md text-sm font-medium hover:bg-red-600 transition-colors flex items-center gap-1" title="Delete Product"><Trash2 size={14} /> Delete</button></div></td></tr>))}
+                  {filteredProducts.map((p, index) => (<tr key={p.id} className="hover:bg-slate-50"><td className="px-4 py-4 font-mono text-slate-400">#{index + 1}</td><td className="px-6 py-4 font-medium">{p.name}</td><td className="px-6 py-4">{p.size}</td><td className="px-6 py-4 font-mono text-slate-500">{p.sku}</td><td className="px-6 py-4 font-mono text-xs text-slate-400">{p.barcode || '-'}</td><td className="px-6 py-4 font-bold">{p.lowStockThreshold || 5}</td><td className="px-6 py-4">{CURRENCY_FORMATTER.format(p.sellingPrice)}</td><td className="px-6 py-4"><div className="flex items-center gap-3"><button onClick={() => handleEditProduct(p)} className="px-3 py-1.5 bg-blue-500 text-white rounded-md text-sm font-medium hover:bg-blue-600 transition-colors">Edit</button><button onClick={() => handleDeleteProduct(p.id)} className="px-3 py-1.5 bg-red-500 text-white rounded-md text-sm font-medium hover:bg-red-600 transition-colors flex items-center gap-1" title="Delete Product"><Trash2 size={14} /> Delete</button></div></td></tr>))}
                 </tbody>
               </table>
             </div>

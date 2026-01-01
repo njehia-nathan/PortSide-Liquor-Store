@@ -19,7 +19,8 @@ import {
   Settings,
   Clock,
   Users,
-  Ban
+  Ban,
+  CheckSquare
 } from 'lucide-react';
 
 const AppLayout = ({ children }: PropsWithChildren) => {
@@ -164,6 +165,13 @@ const AppLayout = ({ children }: PropsWithChildren) => {
             <Link href="/admin/void-approvals" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/admin/void-approvals')}`}>
               <Ban size={20} />
               <span className="font-medium">Void Approvals</span>
+            </Link>
+          )}
+
+          {hasPerm('ADMIN') && (
+            <Link href="/admin/stock-approvals" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/admin/stock-approvals')}`}>
+              <CheckSquare size={20} />
+              <span className="font-medium">Stock Approvals</span>
             </Link>
           )}
 

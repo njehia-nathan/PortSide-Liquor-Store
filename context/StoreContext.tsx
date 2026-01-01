@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, PropsWithChildren } from 'react';
 import {
-  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings, VoidRequest
+  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings, VoidRequest, StockChangeRequest
 } from '../types';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
 import { dbPromise, addToSyncQueue } from '../db';
@@ -19,6 +19,7 @@ interface StoreContextType {
   shifts: Shift[];
   auditLogs: AuditLog[];
   voidRequests: VoidRequest[];
+  stockChangeRequests: StockChangeRequest[];
   currentShift: Shift | null;
   businessSettings: BusinessSettings | null;
 
@@ -43,6 +44,9 @@ interface StoreContextType {
   deleteProduct: (productId: string) => Promise<void>;
   adjustStock: (productId: string, change: number, reason: string) => Promise<void>;
   receiveStock: (productId: string, quantity: number, newCost?: number) => Promise<void>;
+  requestStockChange: (productId: string, changeType: 'ADJUST' | 'RECEIVE', quantityChange: number, reason?: string, newCost?: number) => Promise<void>;
+  approveStockChange: (requestId: string, notes?: string) => Promise<void>;
+  rejectStockChange: (requestId: string, notes?: string) => Promise<void>;
 
   // --- SHIFT ACTIONS ---
   openShift: (openingCash?: number) => Promise<void>;
@@ -80,6 +84,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [voidRequests, setVoidRequests] = useState<VoidRequest[]>([]);
+  const [stockChangeRequests, setStockChangeRequests] = useState<StockChangeRequest[]>([]);
   const [businessSettings, setBusinessSettings] = useState<BusinessSettings | null>(null);
   const [lastActivity, setLastActivity] = useState<number>(Date.now());
 
@@ -121,6 +126,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         let loadedShifts = await db.getAll('shifts');
         let loadedLogs = await db.getAll('auditLogs');
         let loadedVoidRequests = await db.getAll('voidRequests');
+        let loadedStockChangeRequests = await db.getAll('stockChangeRequests');
 
         // CLOUD SYNC PULL (On Startup)
         // If we are online, we try to fetch the latest "truth" from the server
@@ -182,15 +188,23 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               loadedVoidRequests = mergedVoids;
             }
 
-            // 7. Business Settings (cloud takes precedence)
+            // 7. Stock Change Requests (merge cloud with local)
+            const { data: cloudStockRequests } = await supabase.from('stock_change_requests').select('*');
+            if (cloudStockRequests && cloudStockRequests.length > 0) {
+              const cloudStockIds = new Set(cloudStockRequests.map((s: StockChangeRequest) => s.id));
+              const localOnlyStockRequests = loadedStockChangeRequests.filter(s => !cloudStockIds.has(s.id));
+              const mergedStockRequests = [...cloudStockRequests, ...localOnlyStockRequests];
+              for (const s of cloudStockRequests) await db.put('stockChangeRequests', s);
+              loadedStockChangeRequests = mergedStockRequests;
+            }
+
+            // 8. Business Settings (cloud takes precedence)
             const { data: cloudSettings } = await supabase.from('business_settings').select('*').eq('id', 'default').single();
             if (cloudSettings) {
               await db.put('businessSettings', cloudSettings);
               setBusinessSettings(cloudSettings);
               console.log('☁️ Business settings loaded from cloud');
             }
-
-            console.log('☁️ Cloud sync pull complete (users, products, sales, shifts, audit_logs, void_requests, settings)');
           } catch (cloudErr) {
             console.warn("Could not fetch initial cloud data, using local.", cloudErr);
           }
@@ -230,6 +244,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         loadedSales.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         loadedVoidRequests.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
+        loadedStockChangeRequests.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
 
         // Load Business Settings
         const loadedSettings = await db.get('businessSettings', 'default');
@@ -260,6 +275,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         setShifts(loadedShifts);
         setAuditLogs(loadedLogs);
         setVoidRequests(loadedVoidRequests);
+        setStockChangeRequests(loadedStockChangeRequests);
 
         // Restore user session after users are loaded (reuse savedSession from above)
         if (savedSession) {
@@ -785,6 +801,97 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   };
 
   /**
+   * Stock Change Request Management
+   */
+  const requestStockChange = async (
+    productId: string,
+    changeType: 'ADJUST' | 'RECEIVE',
+    quantityChange: number,
+    reason?: string,
+    newCost?: number
+  ) => {
+    if (!currentUser) return;
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+
+    const newRequest: StockChangeRequest = {
+      id: Date.now().toString(),
+      productId,
+      productName: product.name,
+      changeType,
+      quantityChange,
+      reason,
+      newCost,
+      requestedBy: currentUser.id,
+      requestedByName: currentUser.name,
+      requestedAt: new Date().toISOString(),
+      status: 'PENDING',
+      currentStock: product.stock,
+    };
+
+    setStockChangeRequests(prev => [newRequest, ...prev]);
+    const db = await dbPromise();
+    await db.put('stockChangeRequests', newRequest);
+    await addLog('STOCK_CHANGE_REQUEST', `Requested ${changeType.toLowerCase()} for ${product.name}: ${quantityChange > 0 ? '+' : ''}${quantityChange}${reason ? `. Reason: ${reason}` : ''}`);
+    await addToSyncQueue('STOCK_CHANGE_REQUEST', newRequest);
+  };
+
+  const approveStockChange = async (requestId: string, notes?: string) => {
+    if (!currentUser) return;
+    const request = stockChangeRequests.find(r => r.id === requestId);
+    if (!request || request.status !== 'PENDING') return;
+
+    const updatedRequest: StockChangeRequest = {
+      ...request,
+      status: 'APPROVED',
+      reviewedBy: currentUser.id,
+      reviewedByName: currentUser.name,
+      reviewedAt: new Date().toISOString(),
+      reviewNotes: notes,
+    };
+
+    const product = products.find(p => p.id === request.productId);
+    if (!product) return;
+
+    const updatedProduct = {
+      ...product,
+      stock: product.stock + request.quantityChange,
+      costPrice: request.newCost !== undefined ? request.newCost : product.costPrice
+    };
+
+    setStockChangeRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));
+    setProducts(prev => prev.map(p => p.id === request.productId ? updatedProduct : p));
+
+    const db = await dbPromise();
+    await db.put('stockChangeRequests', updatedRequest);
+    await db.put('products', updatedProduct);
+
+    await addLog('STOCK_CHANGE_APPROVED', `Approved ${request.changeType.toLowerCase()} for ${request.productName}: ${request.quantityChange > 0 ? '+' : ''}${request.quantityChange}${notes ? `. Notes: ${notes}` : ''}`);
+    await addToSyncQueue('STOCK_CHANGE_APPROVED', { request: updatedRequest, product: updatedProduct });
+  };
+
+  const rejectStockChange = async (requestId: string, notes?: string) => {
+    if (!currentUser) return;
+    const request = stockChangeRequests.find(r => r.id === requestId);
+    if (!request || request.status !== 'PENDING') return;
+
+    const updatedRequest: StockChangeRequest = {
+      ...request,
+      status: 'REJECTED',
+      reviewedBy: currentUser.id,
+      reviewedByName: currentUser.name,
+      reviewedAt: new Date().toISOString(),
+      reviewNotes: notes,
+    };
+
+    setStockChangeRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));
+    const db = await dbPromise();
+    await db.put('stockChangeRequests', updatedRequest);
+    await addLog('STOCK_CHANGE_REJECTED', `Rejected ${request.changeType.toLowerCase()} for ${request.productName}${notes ? `. Notes: ${notes}` : ''}`);
+    await addToSyncQueue('STOCK_CHANGE_REJECTED', updatedRequest);
+  };
+
+  /**
    * Business Settings
    */
   const updateBusinessSettings = async (settings: BusinessSettings) => {
@@ -834,6 +941,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       requestVoid,
       approveVoid,
       rejectVoid,
+      stockChangeRequests,
+      requestStockChange,
+      approveStockChange,
+      rejectStockChange,
       businessSettings,
       updateBusinessSettings,
     }}>

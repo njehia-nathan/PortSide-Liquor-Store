@@ -7,6 +7,7 @@ export enum Role {
 export enum AlcoholType {
   WHISKEY = 'Whiskey',
   VODKA = 'Vodka',
+  CIDERS = 'Ciders',
   GIN = 'Gin',
   RUM = 'Rum',
   WINE = 'Wine',
@@ -119,6 +120,25 @@ export interface VoidRequest {
   reviewedByName?: string;
   reviewedAt?: string;
   reviewNotes?: string;
+}
+
+export interface StockChangeRequest {
+  id: string;
+  productId: string;
+  productName: string;
+  changeType: 'ADJUST' | 'RECEIVE';
+  quantityChange: number;
+  reason?: string;
+  newCost?: number;
+  requestedBy: string;
+  requestedByName: string;
+  requestedAt: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  reviewedBy?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  reviewNotes?: string;
+  currentStock: number;
 }
 
 export interface BusinessSettings {

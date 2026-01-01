@@ -1,5 +1,5 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
-import { User, Product, Sale, Shift, AuditLog, BusinessSettings, VoidRequest } from './types';
+import { User, Product, Sale, Shift, AuditLog, BusinessSettings, VoidRequest, StockChangeRequest } from './types';
 
 /**
  * DATABASE SCHEMA DEFINITION
@@ -29,6 +29,9 @@ export interface POSDB extends DBSchema {
   // Store for Void Requests (pending admin approval)
   voidRequests: { key: string; value: VoidRequest };
 
+  // Store for Stock Change Requests (pending admin approval)
+  stockChangeRequests: { key: string; value: StockChangeRequest };
+
   // SYNC QUEUE
   // This is the most important part for "Offline-First".
   // When we do an action, we store it here.
@@ -49,7 +52,7 @@ export interface SyncQueueItem {
 
 // Name of the database in the browser's developer tools
 const DB_NAME = 'GrabBottlePOS_DB';
-const DB_VERSION = 3; // Bumped for voidRequests store
+const DB_VERSION = 5; // Bumped for stockChangeRequests store
 
 /**
  * INITIALIZE DATABASE
@@ -80,6 +83,9 @@ export const initDB = async (): Promise<IDBPDatabase<POSDB>> => {
 
       // Create 'voidRequests' table
       if (!db.objectStoreNames.contains('voidRequests')) db.createObjectStore('voidRequests', { keyPath: 'id' });
+
+      // Create 'stockChangeRequests' table
+      if (!db.objectStoreNames.contains('stockChangeRequests')) db.createObjectStore('stockChangeRequests', { keyPath: 'id' });
 
       // Create 'syncQueue' table with auto-incrementing numbers for keys
       if (!db.objectStoreNames.contains('syncQueue')) db.createObjectStore('syncQueue', { keyPath: 'key', autoIncrement: true });

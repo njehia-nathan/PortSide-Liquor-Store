@@ -30,7 +30,7 @@ import {
 } from '@/components/ui/select';
 
 const Inventory = () => {
-  const { products, receiveStock, adjustStock, updateProduct, addProduct } = useStore();
+  const { products, receiveStock, adjustStock, updateProduct, addProduct, requestStockChange } = useStore();
 
   const [activeTab, setActiveTab] = useState<'VIEW' | 'RECEIVE' | 'ADJUST' | 'ALERTS'>('VIEW');
   const [searchTerm, setSearchTerm] = useState('');
@@ -123,12 +123,12 @@ const Inventory = () => {
     const product = products.find(p => p.id === selectedProductId);
     if (activeTab === 'RECEIVE') {
       const cost = newCost ? parseFloat(newCost) : undefined;
-      receiveStock(selectedProductId, qty, cost);
-      showSuccess(`✓ Received ${qty} units of ${product?.name}`);
+      requestStockChange(selectedProductId, 'RECEIVE', qty, 'Stock receipt', cost);
+      showSuccess(`✓ Stock change request submitted for ${product?.name} - Awaiting approval`);
     } else if (activeTab === 'ADJUST') {
       if (!reason) return;
-      adjustStock(selectedProductId, qty, reason);
-      showSuccess(`✓ Adjusted ${product?.name} by ${qty > 0 ? '+' : ''}${qty}`);
+      requestStockChange(selectedProductId, 'ADJUST', qty, reason);
+      showSuccess(`✓ Stock adjustment request submitted for ${product?.name} - Awaiting approval`);
     }
 
     setQuantity('');

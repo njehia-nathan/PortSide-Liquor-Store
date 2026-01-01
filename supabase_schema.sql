@@ -151,6 +151,36 @@ CREATE INDEX IF NOT EXISTS idx_void_requests_status ON void_requests(status);
 CREATE INDEX IF NOT EXISTS idx_void_requests_requested_at ON void_requests("requestedAt" DESC);
 
 -- ============================================================================
+-- STOCK_CHANGE_REQUESTS TABLE
+-- Tracks inventory stock change requests that need admin approval
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS stock_change_requests (
+    id TEXT PRIMARY KEY,
+    "productId" TEXT NOT NULL,
+    "productName" TEXT NOT NULL,
+    "changeType" TEXT NOT NULL CHECK ("changeType" IN ('ADJUST', 'RECEIVE')),
+    "quantityChange" INTEGER NOT NULL,
+    reason TEXT,
+    "newCost" NUMERIC(10, 2),
+    "requestedBy" TEXT NOT NULL,
+    "requestedByName" TEXT NOT NULL,
+    "requestedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    "reviewedBy" TEXT,
+    "reviewedByName" TEXT,
+    "reviewedAt" TIMESTAMPTZ,
+    "reviewNotes" TEXT,
+    "currentStock" INTEGER NOT NULL
+);
+
+ALTER TABLE stock_change_requests ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all for anon" ON stock_change_requests FOR ALL USING (true);
+
+-- Index for pending requests
+CREATE INDEX IF NOT EXISTS idx_stock_change_requests_status ON stock_change_requests(status);
+CREATE INDEX IF NOT EXISTS idx_stock_change_requests_requested_at ON stock_change_requests("requestedAt" DESC);
+
+-- ============================================================================
 -- BUSINESS_SETTINGS TABLE
 -- Store business configuration (single row with id='default')
 -- ============================================================================

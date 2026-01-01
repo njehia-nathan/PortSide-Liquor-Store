@@ -85,6 +85,24 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
           console.error('[Cloud Error] Failed to sync VOID_APPROVED:', error);
           return false;
         }
+      case 'STOCK_CHANGE_REQUEST':
+      case 'STOCK_CHANGE_REJECTED':
+        table = 'stock_change_requests';
+        break;
+      case 'STOCK_CHANGE_APPROVED':
+        // For approved stock changes, we need to sync both the request and the updated product
+        try {
+          // Sync stock change request
+          const { error: requestError } = await supabase.from('stock_change_requests').upsert(payload.request);
+          if (requestError) throw requestError;
+          // Sync updated product
+          const { error: productError } = await supabase.from('products').upsert(payload.product);
+          if (productError) throw productError;
+          return true;
+        } catch (error) {
+          console.error('[Cloud Error] Failed to sync STOCK_CHANGE_APPROVED:', error);
+          return false;
+        }
       default:
         console.warn('Unknown sync type:', type);
         return true; // Skip unknown types to clear queue

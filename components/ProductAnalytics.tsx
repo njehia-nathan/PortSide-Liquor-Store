@@ -634,7 +634,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                       <tfoot className="bg-gray-200 border-t-2 border-black">
                         <tr className="font-bold">
                           <td colSpan={5} className="px-2 py-2 text-right text-gray-900 text-xs uppercase border-r border-black">TOTALS:</td>
-                          <td className="px-2 py-2 text-center text-gray-900 border-r border-black">{analytics.totalUnitsSold}</td>
+                          <td className="px-2 py-2 text-center text-gray-900 border-r border-black">{analytics.periodUnitsSold}</td>
                           <td className="px-2 py-2 border-r border-black"></td>
                           <td className="px-2 py-2 border-r border-black"></td>
                           <td className="px-2 py-2 text-right text-gray-900 border-r border-black">{CURRENCY_FORMATTER.format(analytics.totalCost)}</td>

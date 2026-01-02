@@ -13,16 +13,7 @@ export default function ReportsPage() {
   }
 
   if (!currentUser.permissions?.includes('REPORTS')) {
-    return (
-      <AppLayout>
-        <div className="flex h-full items-center justify-center p-8">
-          <div className="text-center">
-            <h2 className="text-2xl font-bold text-red-500 mb-2">Access Denied</h2>
-            <p className="text-slate-600">You do not have Reports access.</p>
-          </div>
-        </div>
-      </AppLayout>
-    );
+    return <Login />;
   }
 
   return (

@@ -206,42 +206,83 @@ const Reports = () => {
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="px-4 lg:px-6 py-3 lg:py-4 border-b border-slate-100 bg-slate-50">
-              <h3 className="font-bold text-slate-800 text-sm lg:text-base">Recent Transactions</h3>
+              <h3 className="font-bold text-slate-800 text-sm lg:text-base">Recent Transactions ({filteredSales.length})</h3>
             </div>
-            <div className="lg:hidden divide-y divide-slate-100 max-h-80 overflow-y-auto">
-              {filteredSales.map((sale) => (
-                <div key={sale.id} className="p-3 hover:bg-slate-50">
-                  <div className="flex justify-between items-start mb-1">
-                    <span className="font-medium text-slate-900 text-sm">{sale.cashierName}</span>
-                    <span className="font-bold text-slate-900">{CURRENCY_FORMATTER.format(sale.totalAmount)}</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-slate-500">{new Date(sale.timestamp).toLocaleString()}</span>
-                    <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-xs font-bold">{sale.paymentMethod}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="hidden lg:block max-h-96 overflow-y-auto">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold sticky top-0">
-                  <tr>
-                    <th className="px-6 py-3">Time</th>
-                    <th className="px-6 py-3">Cashier</th>
-                    <th className="px-6 py-3">Method</th>
-                    <th className="px-6 py-3 text-right">Amount</th>
+            <div className="max-h-[500px] overflow-y-auto overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead className="bg-gray-100 sticky top-0 z-10">
+                  <tr className="border-b-2 border-black">
+                    <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase sticky left-0 bg-gray-100 border-r border-black z-20">#</th>
+                    <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Transaction ID</th>
+                    <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Date</th>
+                    <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Time</th>
+                    <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Cashier</th>
+                    <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Items</th>
+                    <th className="px-2 py-1.5 text-center text-[10px] font-bold text-gray-700 uppercase border-r border-black">Qty</th>
+                    <th className="px-2 py-1.5 text-right text-[10px] font-bold text-gray-700 uppercase border-r border-black">Total Cost</th>
+                    <th className="px-2 py-1.5 text-right text-[10px] font-bold text-gray-700 uppercase border-r border-black">Total Sale</th>
+                    <th className="px-2 py-1.5 text-right text-[10px] font-bold text-gray-700 uppercase border-r border-black">Profit</th>
+                    <th className="px-2 py-1.5 text-right text-[10px] font-bold text-gray-700 uppercase border-r border-black">Margin %</th>
+                    <th className="px-2 py-1.5 text-center text-[10px] font-bold text-gray-700 uppercase">Payment</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 text-sm">
-                  {filteredSales.map((sale) => (
-                    <tr key={sale.id} className="hover:bg-slate-50">
-                      <td className="px-6 py-3 text-slate-500">{new Date(sale.timestamp).toLocaleString()}</td>
-                      <td className="px-6 py-3 font-medium">{sale.cashierName}</td>
-                      <td className="px-6 py-3"><span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs font-bold">{sale.paymentMethod}</span></td>
-                      <td className="px-6 py-3 text-right font-bold text-slate-900">{CURRENCY_FORMATTER.format(sale.totalAmount)}</td>
-                    </tr>
-                  ))}
+                <tbody>
+                  {filteredSales.map((sale, idx) => {
+                    const totalQty = sale.items.reduce((sum, item) => sum + item.quantity, 0);
+                    const profit = sale.totalAmount - sale.totalCost;
+                    const margin = sale.totalAmount > 0 ? (profit / sale.totalAmount) * 100 : 0;
+                    const saleDate = new Date(sale.timestamp);
+                    const itemsDisplay = sale.items.map(i => `${i.quantity}x ${i.productName} (${i.size})`).join(', ');
+                    
+                    return (
+                      <tr key={sale.id} className="hover:bg-gray-100 border-b border-black">
+                        <td className="px-2 py-1.5 text-gray-500 font-mono text-xs sticky left-0 bg-white border-r border-black">{idx + 1}</td>
+                        <td className="px-2 py-1.5 text-gray-700 font-mono text-[10px] border-r border-black">#{sale.id.slice(-8)}</td>
+                        <td className="px-2 py-1.5 text-gray-800 text-xs whitespace-nowrap border-r border-black">
+                          {saleDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        </td>
+                        <td className="px-2 py-1.5 text-gray-800 text-xs whitespace-nowrap border-r border-black">
+                          {saleDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </td>
+                        <td className="px-2 py-1.5 text-gray-800 text-xs font-medium border-r border-black">{sale.cashierName}</td>
+                        <td className="px-2 py-1.5 text-gray-700 text-xs border-r border-black max-w-xs truncate" title={itemsDisplay}>{itemsDisplay}</td>
+                        <td className="px-2 py-1.5 text-center font-bold text-gray-900 border-r border-black">{totalQty}</td>
+                        <td className="px-2 py-1.5 text-right text-gray-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(sale.totalCost)}</td>
+                        <td className="px-2 py-1.5 text-right font-bold text-gray-900 border-r border-black">{CURRENCY_FORMATTER.format(sale.totalAmount)}</td>
+                        <td className="px-2 py-1.5 text-right font-bold text-green-700 border-r border-black">{CURRENCY_FORMATTER.format(profit)}</td>
+                        <td className="px-2 py-1.5 text-right text-xs border-r border-black">
+                          <span className={`font-bold ${margin >= 30 ? 'text-green-700' : margin >= 15 ? 'text-amber-700' : 'text-red-700'}`}>
+                            {margin.toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-center">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                            sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-800 border-green-800' :
+                            sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-800 border-blue-800' : 
+                            'bg-purple-100 text-purple-800 border-purple-800'
+                          }`}>
+                            {sale.paymentMethod}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
+                <tfoot className="bg-gray-200 border-t-2 border-black">
+                  <tr className="font-bold">
+                    <td colSpan={6} className="px-2 py-2 text-right text-gray-900 text-xs uppercase border-r border-black">TOTALS:</td>
+                    <td className="px-2 py-2 text-center text-gray-900 border-r border-black">
+                      {filteredSales.reduce((sum, sale) => sum + sale.items.reduce((s, i) => s + i.quantity, 0), 0)}
+                    </td>
+                    <td className="px-2 py-2 text-right text-gray-900 border-r border-black">{CURRENCY_FORMATTER.format(totalCost)}</td>
+                    <td className="px-2 py-2 text-right text-gray-900 border-r border-black">{CURRENCY_FORMATTER.format(totalRevenue)}</td>
+                    <td className="px-2 py-2 text-right text-green-800 border-r border-black">{CURRENCY_FORMATTER.format(grossProfit)}</td>
+                    <td className="px-2 py-2 text-right text-xs border-r border-black">
+                      <span className="font-bold text-gray-900">{totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0.0'}%</span>
+                    </td>
+                    <td className="px-2 py-2"></td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>

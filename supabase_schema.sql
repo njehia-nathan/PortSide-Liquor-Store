@@ -235,6 +235,14 @@ INSERT INTO business_settings (id) VALUES ('default') ON CONFLICT (id) DO NOTHIN
 ALTER TABLE business_settings ADD COLUMN IF NOT EXISTS "evolutionApiUrl" TEXT;
 ALTER TABLE business_settings ADD COLUMN IF NOT EXISTS "evolutionApiKey" TEXT;
 ALTER TABLE business_settings ADD COLUMN IF NOT EXISTS "evolutionInstance" TEXT;
+ALTER TABLE business_settings ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+
+-- Create triggers to automatically update updatedAt on record updates
+DROP TRIGGER IF EXISTS update_business_settings_updated_at ON business_settings;
+CREATE TRIGGER update_business_settings_updated_at 
+    BEFORE UPDATE ON business_settings
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
 -- HELPFUL QUERIES

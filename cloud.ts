@@ -132,6 +132,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
 
   } catch (error) {
     console.error(`[Cloud Error] Failed to sync ${type}:`, error);
+    console.error(`[Cloud Error] Payload that failed:`, JSON.stringify(payload, null, 2));
     return false; // Failed, keep in queue
   }
 };

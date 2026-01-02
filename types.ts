@@ -45,6 +45,7 @@ export interface Product {
   supplier?: string;
   stock: number;
   lowStockThreshold?: number; // Custom alert level
+  unitsSold?: number; // Total units sold (for analytics)
 }
 
 export interface CartItem extends Product {
@@ -139,6 +140,19 @@ export interface StockChangeRequest {
   reviewedAt?: string;
   reviewNotes?: string;
   currentStock: number;
+}
+
+export interface ProductSaleLog {
+  id: string;
+  productId: string;
+  productName: string;
+  saleId: string;
+  quantity: number;
+  priceAtSale: number;
+  costAtSale: number;
+  timestamp: string;
+  cashierId: string;
+  cashierName: string;
 }
 
 export interface BusinessSettings {

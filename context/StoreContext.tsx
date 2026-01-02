@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, PropsWithChildren } from 'react';
 import {
-  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings, VoidRequest, StockChangeRequest
+  User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings, VoidRequest, StockChangeRequest, ProductSaleLog
 } from '../types';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
 import { dbPromise, addToSyncQueue } from '../db';
@@ -20,6 +20,7 @@ interface StoreContextType {
   auditLogs: AuditLog[];
   voidRequests: VoidRequest[];
   stockChangeRequests: StockChangeRequest[];
+  productSaleLogs: ProductSaleLog[];
   currentShift: Shift | null;
   businessSettings: BusinessSettings | null;
 
@@ -85,6 +86,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [voidRequests, setVoidRequests] = useState<VoidRequest[]>([]);
   const [stockChangeRequests, setStockChangeRequests] = useState<StockChangeRequest[]>([]);
+  const [productSaleLogs, setProductSaleLogs] = useState<ProductSaleLog[]>([]);
   const [businessSettings, setBusinessSettings] = useState<BusinessSettings | null>(null);
   const [lastActivity, setLastActivity] = useState<number>(Date.now());
 
@@ -119,94 +121,137 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           }
         }
 
-        // Fetch all data from local stores
-        let loadedUsers = await db.getAll('users');
-        let loadedProducts = await db.getAll('products');
-        let loadedSales = await db.getAll('sales');
-        let loadedShifts = await db.getAll('shifts');
-        let loadedLogs = await db.getAll('auditLogs');
-        let loadedVoidRequests = await db.getAll('voidRequests');
-        let loadedStockChangeRequests = await db.getAll('stockChangeRequests');
+        // PRIORITY: Load from Supabase FIRST (Cloud as Source of Truth)
+        // Then fall back to local storage if offline or cloud fails
+        let loadedUsers: User[] = [];
+        let loadedProducts: Product[] = [];
+        let loadedSales: Sale[] = [];
+        let loadedShifts: Shift[] = [];
+        let loadedLogs: AuditLog[] = [];
+        let loadedVoidRequests: VoidRequest[] = [];
+        let loadedStockChangeRequests: StockChangeRequest[] = [];
+        let loadedProductSaleLogs: ProductSaleLog[] = [];
+        let cloudLoadSuccess = false;
 
-        // CLOUD SYNC PULL (On Startup)
-        // If we are online, we try to fetch the latest "truth" from the server
-        // for all data stores to ensure multi-device consistency.
+        // STEP 1: Try to load from Supabase FIRST
         if (navigator.onLine) {
           try {
-            // 1. Users
+            console.log('🌐 Loading data from Supabase (cloud first)...');
+            
+            // 1. Users from cloud
             const { data: cloudUsers } = await supabase.from('users').select('*');
             if (cloudUsers && cloudUsers.length > 0) {
-              for (const u of cloudUsers) await db.put('users', u);
               loadedUsers = cloudUsers;
+              for (const u of cloudUsers) await db.put('users', u);
+              console.log('✅ Loaded', cloudUsers.length, 'users from cloud');
             }
 
-            // 2. Products
+            // 2. Products from cloud (with unitsSold field)
             const { data: cloudProducts } = await supabase.from('products').select('*');
             if (cloudProducts && cloudProducts.length > 0) {
-              for (const p of cloudProducts) await db.put('products', p);
               loadedProducts = cloudProducts;
+              for (const p of cloudProducts) await db.put('products', p);
+              console.log('✅ Loaded', cloudProducts.length, 'products from cloud');
             }
 
-            // 3. Sales (merge cloud sales with local - cloud is source of truth for existing IDs)
+            // 3. Sales from cloud
             const { data: cloudSales } = await supabase.from('sales').select('*');
             if (cloudSales && cloudSales.length > 0) {
-              // Merge: Cloud sales take precedence, but keep local-only sales
-              const cloudSaleIds = new Set(cloudSales.map((s: Sale) => s.id));
-              const localOnlySales = loadedSales.filter(s => !cloudSaleIds.has(s.id));
-              const mergedSales = [...cloudSales, ...localOnlySales];
+              loadedSales = cloudSales;
               for (const s of cloudSales) await db.put('sales', s);
-              loadedSales = mergedSales;
+              console.log('✅ Loaded', cloudSales.length, 'sales from cloud');
             }
 
-            // 4. Shifts (same merge strategy)
+            // 4. Shifts from cloud
             const { data: cloudShifts } = await supabase.from('shifts').select('*');
             if (cloudShifts && cloudShifts.length > 0) {
-              const cloudShiftIds = new Set(cloudShifts.map((s: Shift) => s.id));
-              const localOnlyShifts = loadedShifts.filter(s => !cloudShiftIds.has(s.id));
-              const mergedShifts = [...cloudShifts, ...localOnlyShifts];
+              loadedShifts = cloudShifts;
               for (const s of cloudShifts) await db.put('shifts', s);
-              loadedShifts = mergedShifts;
+              console.log('✅ Loaded', cloudShifts.length, 'shifts from cloud');
             }
 
-            // 5. Audit Logs (merge cloud logs with local - cloud is source of truth for existing IDs)
+            // 5. Audit Logs from cloud
             const { data: cloudLogs } = await supabase.from('audit_logs').select('*');
             if (cloudLogs && cloudLogs.length > 0) {
-              const cloudLogIds = new Set(cloudLogs.map((l: AuditLog) => l.id));
-              const localOnlyLogs = loadedLogs.filter(l => !cloudLogIds.has(l.id));
-              const mergedLogs = [...cloudLogs, ...localOnlyLogs];
+              loadedLogs = cloudLogs;
               for (const l of cloudLogs) await db.put('auditLogs', l);
-              loadedLogs = mergedLogs;
+              console.log('✅ Loaded', cloudLogs.length, 'audit logs from cloud');
             }
 
-            // 6. Void Requests (merge cloud with local)
+            // 6. Void Requests from cloud
             const { data: cloudVoidRequests } = await supabase.from('void_requests').select('*');
             if (cloudVoidRequests && cloudVoidRequests.length > 0) {
-              const cloudVoidIds = new Set(cloudVoidRequests.map((v: VoidRequest) => v.id));
-              const localOnlyVoids = loadedVoidRequests.filter(v => !cloudVoidIds.has(v.id));
-              const mergedVoids = [...cloudVoidRequests, ...localOnlyVoids];
+              loadedVoidRequests = cloudVoidRequests;
               for (const v of cloudVoidRequests) await db.put('voidRequests', v);
-              loadedVoidRequests = mergedVoids;
+              console.log('✅ Loaded', cloudVoidRequests.length, 'void requests from cloud');
             }
 
-            // 7. Stock Change Requests (merge cloud with local)
+            // 7. Stock Change Requests from cloud
             const { data: cloudStockRequests } = await supabase.from('stock_change_requests').select('*');
             if (cloudStockRequests && cloudStockRequests.length > 0) {
-              const cloudStockIds = new Set(cloudStockRequests.map((s: StockChangeRequest) => s.id));
-              const localOnlyStockRequests = loadedStockChangeRequests.filter(s => !cloudStockIds.has(s.id));
-              const mergedStockRequests = [...cloudStockRequests, ...localOnlyStockRequests];
+              loadedStockChangeRequests = cloudStockRequests;
               for (const s of cloudStockRequests) await db.put('stockChangeRequests', s);
-              loadedStockChangeRequests = mergedStockRequests;
+              console.log('✅ Loaded', cloudStockRequests.length, 'stock change requests from cloud');
             }
 
-            // 8. Business Settings (cloud takes precedence)
+            // 8. Product Sale Logs from cloud
+            const { data: cloudProductSaleLogs } = await supabase.from('product_sale_logs').select('*');
+            if (cloudProductSaleLogs && cloudProductSaleLogs.length > 0) {
+              loadedProductSaleLogs = cloudProductSaleLogs;
+              for (const l of cloudProductSaleLogs) await db.put('productSaleLogs', l);
+              console.log('✅ Loaded', cloudProductSaleLogs.length, 'product sale logs from cloud');
+            }
+
+            // 9. Business Settings from cloud
             const { data: cloudSettings } = await supabase.from('business_settings').select('*').eq('id', 'default').single();
             if (cloudSettings) {
               await db.put('businessSettings', cloudSettings);
               setBusinessSettings(cloudSettings);
-              console.log('☁️ Business settings loaded from cloud');
+              console.log('✅ Business settings loaded from cloud');
             }
+
+            cloudLoadSuccess = true;
+            console.log('✅ All data loaded from Supabase successfully');
           } catch (cloudErr) {
-            console.warn("Could not fetch initial cloud data, using local.", cloudErr);
+            console.warn("⚠️ Could not fetch from Supabase, falling back to local storage.", cloudErr);
+            cloudLoadSuccess = false;
+          }
+        }
+
+        // STEP 2: If cloud load failed or we're offline, load from local IndexedDB
+        if (!cloudLoadSuccess || !navigator.onLine) {
+          console.log('💾 Loading data from local IndexedDB...');
+          if (loadedUsers.length === 0) loadedUsers = await db.getAll('users');
+          if (loadedProducts.length === 0) loadedProducts = await db.getAll('products');
+          if (loadedSales.length === 0) loadedSales = await db.getAll('sales');
+          if (loadedShifts.length === 0) loadedShifts = await db.getAll('shifts');
+          if (loadedLogs.length === 0) loadedLogs = await db.getAll('auditLogs');
+          if (loadedVoidRequests.length === 0) loadedVoidRequests = await db.getAll('voidRequests');
+          if (loadedStockChangeRequests.length === 0) loadedStockChangeRequests = await db.getAll('stockChangeRequests');
+          if (loadedProductSaleLogs.length === 0) loadedProductSaleLogs = await db.getAll('productSaleLogs');
+          console.log('✅ Loaded data from local storage');
+        }
+
+        // STEP 3: Merge any local-only data (data that exists locally but not in cloud)
+        if (cloudLoadSuccess && navigator.onLine) {
+          try {
+            const localSales = await db.getAll('sales');
+            const cloudSaleIds = new Set(loadedSales.map(s => s.id));
+            const localOnlySales = localSales.filter(s => !cloudSaleIds.has(s.id));
+            if (localOnlySales.length > 0) {
+              loadedSales = [...loadedSales, ...localOnlySales];
+              console.log('📤 Found', localOnlySales.length, 'local-only sales to sync');
+            }
+
+            const localProducts = await db.getAll('products');
+            const cloudProductIds = new Set(loadedProducts.map(p => p.id));
+            const localOnlyProducts = localProducts.filter(p => !cloudProductIds.has(p.id));
+            if (localOnlyProducts.length > 0) {
+              loadedProducts = [...loadedProducts, ...localOnlyProducts];
+              console.log('📤 Found', localOnlyProducts.length, 'local-only products to sync');
+            }
+          } catch (mergeErr) {
+            console.warn('⚠️ Error merging local-only data:', mergeErr);
           }
         }
 
@@ -248,6 +293,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         loadedVoidRequests.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
         loadedStockChangeRequests.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
+        loadedProductSaleLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
         // Load Business Settings
         const loadedSettings = await db.get('businessSettings', 'default');
@@ -279,6 +325,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         setAuditLogs(loadedLogs);
         setVoidRequests(loadedVoidRequests);
         setStockChangeRequests(loadedStockChangeRequests);
+        setProductSaleLogs(loadedProductSaleLogs);
 
         // Restore user session after users are loaded (reuse savedSession from above)
         if (savedSession) {
@@ -580,9 +627,21 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   /**
    * PROCESS SALE
    * The core function of the POS. Handles money and inventory deduction.
+   * CRITICAL FIX: Added stock validation, unitsSold tracking, and product sale logs.
    */
   const processSale = async (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE') => {
     if (!currentUser) return undefined;
+
+    // CRITICAL: Validate stock availability BEFORE processing sale
+    for (const item of items) {
+      const product = products.find(p => p.id === item.productId);
+      if (!product) {
+        throw new Error(`Product not found: ${item.productName}`);
+      }
+      if (product.stock < item.quantity) {
+        throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
+      }
+    }
 
     const totalAmount = items.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
     const totalCost = items.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
@@ -598,50 +657,89 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       items,
     };
 
-    // DB Transaction: We need to update Products AND save Sale together
+    // DB Transaction: We need to update Products, save Sale, AND create product sale logs atomically
     const db = await dbPromise();
-    const tx = db.transaction(['products', 'sales', 'syncQueue'], 'readwrite');
+    const tx = db.transaction(['products', 'sales', 'productSaleLogs', 'syncQueue'], 'readwrite');
 
-    // 1. Update Inventory locally (Optimistic)
-    const updatedProducts = [...products];
+    try {
+      // 1. Update Inventory locally (with stock deduction AND unitsSold increment)
+      const updatedProducts = [...products];
+      const newProductSaleLogs: ProductSaleLog[] = [];
 
-    for (const item of items) {
-      const idx = updatedProducts.findIndex(p => p.id === item.productId);
-      if (idx > -1) {
-        updatedProducts[idx] = {
-          ...updatedProducts[idx],
-          stock: updatedProducts[idx].stock - item.quantity
-        };
-        // Update product in DB
-        await tx.objectStore('products').put(updatedProducts[idx]);
+      for (const item of items) {
+        const idx = updatedProducts.findIndex(p => p.id === item.productId);
+        if (idx > -1) {
+          const currentProduct = updatedProducts[idx];
+          
+          // CRITICAL FIX: Update both stock AND unitsSold
+          updatedProducts[idx] = {
+            ...currentProduct,
+            stock: currentProduct.stock - item.quantity,
+            unitsSold: (currentProduct.unitsSold || 0) + item.quantity
+          };
+          
+          // Update product in DB
+          await tx.objectStore('products').put(updatedProducts[idx]);
 
-        // Queue the product update so Cloud inventory matches
-        await tx.objectStore('syncQueue').add({
-          type: 'UPDATE_PRODUCT',
-          payload: updatedProducts[idx],
-          timestamp: Date.now()
-        });
+          // Queue the product update so Cloud inventory matches
+          await tx.objectStore('syncQueue').add({
+            type: 'UPDATE_PRODUCT',
+            payload: updatedProducts[idx],
+            timestamp: Date.now()
+          });
+
+          // CRITICAL FIX: Create product sale log for analytics
+          const saleLog: ProductSaleLog = {
+            id: `${newSale.id}-${item.productId}-${Date.now()}`,
+            productId: item.productId,
+            productName: item.productName,
+            saleId: newSale.id,
+            quantity: item.quantity,
+            priceAtSale: item.priceAtSale,
+            costAtSale: item.costAtSale,
+            timestamp: newSale.timestamp,
+            cashierId: currentUser.id,
+            cashierName: currentUser.name
+          };
+          
+          newProductSaleLogs.push(saleLog);
+          
+          // Save sale log to DB
+          await tx.objectStore('productSaleLogs').put(saleLog);
+          
+          // Queue sale log for cloud sync
+          await tx.objectStore('syncQueue').add({
+            type: 'PRODUCT_SALE_LOG',
+            payload: saleLog,
+            timestamp: Date.now()
+          });
+        }
       }
+
+      // 2. Save Sale to DB
+      await tx.objectStore('sales').put(newSale);
+      await tx.objectStore('syncQueue').add({
+        type: 'SALE',
+        payload: newSale,
+        timestamp: Date.now()
+      });
+
+      // Commit transaction atomically
+      await tx.done;
+
+      // Update React State only after successful transaction
+      setProducts(updatedProducts);
+      setSales(prev => [newSale, ...prev]);
+      setProductSaleLogs(prev => [...newProductSaleLogs, ...prev]);
+
+      await addLog('SALE', `Sale #${newSale.id} processed for ${CURRENCY_FORMATTER.format(totalAmount)} via ${paymentMethod}`);
+
+      return newSale;
+    } catch (error) {
+      // Transaction will auto-rollback on error
+      console.error('Sale processing failed:', error);
+      throw error;
     }
-
-    // Update React State
-    setProducts(updatedProducts);
-    setSales(prev => [newSale, ...prev]);
-
-    // 2. Save Sale to DB
-    await tx.objectStore('sales').put(newSale);
-    await tx.objectStore('syncQueue').add({
-      type: 'SALE',
-      payload: newSale,
-      timestamp: Date.now()
-    });
-
-    // Commit transaction
-    await tx.done;
-
-    await addLog('SALE', `Sale #${newSale.id} processed for ${CURRENCY_FORMATTER.format(totalAmount)} via ${paymentMethod}`);
-
-    return newSale;
   };
 
   /**
@@ -948,6 +1046,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       requestStockChange,
       approveStockChange,
       rejectStockChange,
+      productSaleLogs,
       businessSettings,
       updateBusinessSettings,
     }}>

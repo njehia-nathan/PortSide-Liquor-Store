@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS products (
     "sellingPrice" NUMERIC(10, 2) NULL,
     supplier TEXT NULL,
     stock INTEGER NULL DEFAULT 0,
-    "lowStockThreshold" INTEGER NULL DEFAULT 5
+    "lowStockThreshold" INTEGER NULL DEFAULT 5,
+    "unitsSold" INTEGER NULL DEFAULT 0
 );
 
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
@@ -49,6 +50,7 @@ CREATE POLICY "Allow all for anon" ON products FOR ALL USING (true);
 -- IF YOUR TABLE ALREADY EXISTS, RUN THIS TO ADD THE MISSING COLUMNS:
 ALTER TABLE products ADD COLUMN IF NOT EXISTS "lowStockThreshold" INTEGER NULL DEFAULT 5;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS barcode TEXT NULL;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS "unitsSold" INTEGER NULL DEFAULT 0;
 
 -- ============================================================================
 -- SALES TABLE
@@ -179,6 +181,31 @@ CREATE POLICY "Allow all for anon" ON stock_change_requests FOR ALL USING (true)
 -- Index for pending requests
 CREATE INDEX IF NOT EXISTS idx_stock_change_requests_status ON stock_change_requests(status);
 CREATE INDEX IF NOT EXISTS idx_stock_change_requests_requested_at ON stock_change_requests("requestedAt" DESC);
+
+-- ============================================================================
+-- PRODUCT_SALE_LOGS TABLE
+-- Tracks individual product sales for analytics
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS product_sale_logs (
+    id TEXT PRIMARY KEY,
+    "productId" TEXT NOT NULL,
+    "productName" TEXT NOT NULL,
+    "saleId" TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    "priceAtSale" NUMERIC(10, 2) NOT NULL,
+    "costAtSale" NUMERIC(10, 2) NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    "cashierId" TEXT NOT NULL,
+    "cashierName" TEXT NOT NULL
+);
+
+ALTER TABLE product_sale_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all for anon" ON product_sale_logs FOR ALL USING (true);
+
+-- Indexes for product analytics queries
+CREATE INDEX IF NOT EXISTS idx_product_sale_logs_product_id ON product_sale_logs("productId");
+CREATE INDEX IF NOT EXISTS idx_product_sale_logs_timestamp ON product_sale_logs(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_product_sale_logs_sale_id ON product_sale_logs("saleId");
 
 -- ============================================================================
 -- BUSINESS_SETTINGS TABLE

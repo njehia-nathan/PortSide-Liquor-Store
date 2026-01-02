@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Product, AlcoholType } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
+import { ProductAnalytics } from '../ProductAnalytics';
 import {
   AlertCircle,
   ArrowDown,
@@ -16,10 +17,12 @@ import {
   Barcode,
   Package,
   TrendingDown,
+  TrendingUp,
   DollarSign,
   CheckCircle2,
   PlusCircle,
   Camera,
+  Calendar,
 } from 'lucide-react';
 import {
   Select,
@@ -29,9 +32,17 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { SearchableSelect } from '@/components/ui/searchable-select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 const Inventory = () => {
-  const { products, receiveStock, adjustStock, updateProduct, addProduct, requestStockChange } = useStore();
+  const { products, receiveStock, adjustStock, updateProduct, addProduct, requestStockChange, auditLogs, sales } = useStore();
 
   const [activeTab, setActiveTab] = useState<'VIEW' | 'RECEIVE' | 'ADJUST' | 'ALERTS'>('VIEW');
   const [searchTerm, setSearchTerm] = useState('');
@@ -51,6 +62,12 @@ const Inventory = () => {
   });
   const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
   const lastKeyTime = useRef<number>(0);
+  const [selectedProductForAnalytics, setSelectedProductForAnalytics] = useState<Product | null>(null);
+  const [sortField, setSortField] = useState<'name' | 'type' | 'stock' | 'unitsSold' | 'value'>('name');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month' | 'year' | 'custom'>('all');
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
 
   // Global barcode scanner listener - scan anytime without clicking
   useEffect(() => {
@@ -87,11 +104,85 @@ const Inventory = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [globalBarcodeBuffer, products]);
 
-  const filteredProducts = products.filter(p =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (p.barcode && p.barcode.includes(searchTerm))
-  ).sort((a, b) => a.name.localeCompare(b.name));
+  const handleSort = (field: typeof sortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const filteredProducts = products.filter(p => {
+    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (p.barcode && p.barcode.includes(searchTerm));
+    
+    if (!matchesSearch) return false;
+    
+    // Date filtering - filter products that had activity in the date range
+    if (dateFilter !== 'all') {
+      const now = new Date();
+      let startDate: Date | null = null;
+      
+      switch (dateFilter) {
+        case 'today':
+          startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          break;
+        case 'week':
+          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case 'month':
+          startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          break;
+        case 'year':
+          startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+          break;
+        case 'custom':
+          if (customStartDate) startDate = new Date(customStartDate);
+          break;
+      }
+      
+      if (startDate) {
+        const endDate = dateFilter === 'custom' && customEndDate ? new Date(customEndDate) : now;
+        endDate.setHours(23, 59, 59, 999);
+        
+        // Check if product had any sales in this date range
+        const hadActivity = sales.some(sale => {
+          const saleDate = new Date(sale.timestamp);
+          return !sale.isVoided && 
+                 sale.items.some(item => item.productId === p.id) &&
+                 saleDate >= startDate! && saleDate <= endDate;
+        });
+        
+        if (!hadActivity) return false;
+      }
+    }
+    
+    return true;
+  }).sort((a, b) => {
+    let comparison = 0;
+    
+    switch (sortField) {
+      case 'name':
+        comparison = a.name.localeCompare(b.name);
+        break;
+      case 'type':
+        comparison = a.type.localeCompare(b.type);
+        break;
+      case 'stock':
+        comparison = a.stock - b.stock;
+        break;
+      case 'unitsSold':
+        comparison = (a.unitsSold || 0) - (b.unitsSold || 0);
+        break;
+      case 'value':
+        comparison = (a.costPrice * a.stock) - (b.costPrice * b.stock);
+        break;
+    }
+    
+    return sortDirection === 'asc' ? comparison : -comparison;
+  });
 
   const sortedProducts = [...products].sort((a, b) => a.name.localeCompare(b.name));
   const productOptions = sortedProducts.map(p => ({
@@ -102,6 +193,15 @@ const Inventory = () => {
   const lowStockProducts = products.filter(p => p.stock <= (p.lowStockThreshold || 5));
   const totalInventoryValue = products.reduce((sum, p) => sum + (p.costPrice * p.stock), 0);
   const totalItems = products.reduce((sum, p) => sum + p.stock, 0);
+
+  // Debug: Log products to check unitsSold values
+  useEffect(() => {
+    if (products.length > 0) {
+      console.log('📦 Products loaded:', products.length);
+      console.log('📊 Sample product with unitsSold:', products.find(p => p.unitsSold && p.unitsSold > 0));
+      console.log('📊 All products unitsSold:', products.map(p => ({ name: p.name, unitsSold: p.unitsSold })));
+    }
+  }, [products]);
 
   const handleBarcodeScanned = (barcode: string) => {
     const product = products.find(p => p.barcode === barcode || p.sku === barcode);
@@ -256,79 +356,142 @@ const Inventory = () => {
 
         {activeTab === 'VIEW' && (
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="p-3 lg:p-4 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row gap-2 justify-between">
-              <input
-                type="text"
-                placeholder="Filter by name, SKU, or barcode..."
-                className="w-full lg:max-w-md px-3 lg:px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-              />
-              <button
-                onClick={() => setShowAddProductModal(true)}
-                className="flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"
-              >
-                <PlusCircle size={16} /> Add Product
-              </button>
+            <div className="p-3 lg:p-4 border-b border-slate-100 bg-slate-50 flex flex-col gap-3">
+              <div className="flex flex-col sm:flex-row gap-2 justify-between">
+                <input
+                  type="text"
+                  placeholder="Filter by name, SKU, or barcode..."
+                  className="w-full lg:max-w-md px-3 lg:px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+                  value={searchTerm}
+                  onChange={e => setSearchTerm(e.target.value)}
+                />
+                 {/* Date Range Filter */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Calendar size={14} className="text-slate-500" />
+                <span className="text-xs font-medium text-slate-600">Period:</span>
+                {(['all', 'today', 'week', 'month', 'year', 'custom'] as const).map(range => (
+                  <button
+                    key={range}
+                    onClick={() => setDateFilter(range)}
+                    className={`px-2.5 py-1 rounded text-xs font-medium transition ${
+                      dateFilter === range ? 'bg-blue-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                    }`}
+                  >
+                    {range === 'all' ? 'All Time' : range === 'today' ? 'Today' : range === 'week' ? '7 Days' : range === 'month' ? '30 Days' : range === 'year' ? 'Year' : 'Custom'}
+                  </button>
+                ))}
+                {dateFilter === 'custom' && (
+                  <div className="flex items-center gap-2 ml-2">
+                    <input
+                      type="date"
+                      value={customStartDate}
+                      onChange={(e) => setCustomStartDate(e.target.value)}
+                      className="px-2 py-1 text-xs border border-slate-200 rounded"
+                    />
+                    <span className="text-slate-400">to</span>
+                    <input
+                      type="date"
+                      value={customEndDate}
+                      onChange={(e) => setCustomEndDate(e.target.value)}
+                      className="px-2 py-1 text-xs border border-slate-200 rounded"
+                    />
+                  </div>
+                )}
+              </div>
+                <button
+                  onClick={() => setShowAddProductModal(true)}
+                  className="flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"
+                >
+                  <PlusCircle size={16} /> Add Product
+                </button>
+              </div>
+              
+             
             </div>
 
             {/* Mobile Card View */}
             <div className="lg:hidden divide-y divide-slate-100">
-              {filteredProducts.map(p => {
-                const threshold = p.lowStockThreshold || 5;
-                const isLow = p.stock <= threshold;
-                return (
-                  <div key={p.id} className="p-3 hover:bg-slate-50">
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-medium text-slate-900 truncate">{p.name}</h4>
-                        <p className="text-xs text-slate-500">{p.type} • {p.size}</p>
-                      </div>
-                      <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${isLow ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
-                        {p.stock} in stock
-                      </span>
+              {filteredProducts.map(p => (
+                <div 
+                  key={p.id} 
+                  className="p-3 hover:bg-slate-50 cursor-pointer active:bg-slate-100"
+                  onClick={() => setSelectedProductForAnalytics(p)}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-medium text-slate-900 truncate">{p.name}</h4>
+                      <p className="text-xs text-slate-500">{p.type} • {p.size}</p>
                     </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-500 font-mono text-xs">#{filteredProducts.indexOf(p) + 1}</span>
-                      <span className="font-bold text-slate-700">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</span>
-                    </div>
+                    <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${p.stock <= (p.lowStockThreshold || 5) ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                      {p.stock} in stock
+                    </span>
                   </div>
-                );
-              })}
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-slate-500 font-mono text-xs">#{filteredProducts.indexOf(p) + 1}</span>
+                    <span className="font-bold text-slate-700">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</span>
+                  </div>
+                </div>
+              ))}
             </div>
 
             {/* Desktop Table View */}
-            <div className="hidden lg:block overflow-x-auto">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold">
-                  <tr>
-                    <th className="px-6 py-4">#</th>
-                    <th className="px-6 py-4">Barcode</th>
-                    <th className="px-6 py-4">Product</th>
-                    <th className="px-6 py-4">Type</th>
-                    <th className="px-6 py-4">Size</th>
-                    <th className="px-6 py-4">Stock</th>
-                    <th className="px-6 py-4">Value</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-sm">
-                  {filteredProducts.map((p, index) => (
-                    <tr key={p.id} className="hover:bg-slate-50">
-                      <td className="px-6 py-4 font-mono text-slate-500">#{index + 1}</td>
-                      <td className="px-6 py-4 font-mono text-xs text-slate-400">{p.barcode || '-'}</td>
-                      <td className="px-6 py-4 font-medium text-slate-900">{p.name}</td>
-                      <td className="px-6 py-4 text-slate-600">{p.type}</td>
-                      <td className="px-6 py-4 text-slate-600">{p.size}</td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${p.stock <= (p.lowStockThreshold || 5) ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
-                          {p.stock}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 font-bold text-slate-700">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="hidden lg:block max-h-[600px] overflow-y-auto overflow-x-auto border-t border-slate-200">
+              <Table className="border-collapse">
+                <TableHeader className="bg-blue-600 sticky top-0 z-10">
+                  <TableRow className="border-b-2 border-black hover:bg-blue-600">
+                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">#</TableHead>
+                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">Barcode</TableHead>
+                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('name')}>
+                      Product {sortField === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
+                    </TableHead>
+                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('type')}>
+                      Type {sortField === 'type' && (sortDirection === 'asc' ? '↑' : '↓')}
+                    </TableHead>
+                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">Size</TableHead>
+                    <TableHead className="px-3 py-2 text-center text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('stock')}>
+                      Stock {sortField === 'stock' && (sortDirection === 'asc' ? '↑' : '↓')}
+                    </TableHead>
+                    <TableHead className="px-3 py-2 text-center text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('unitsSold')}>
+                      Units Sold {sortField === 'unitsSold' && (sortDirection === 'asc' ? '↑' : '↓')}
+                    </TableHead>
+                    <TableHead className="px-3 py-2 text-right text-[10px] font-bold text-white uppercase cursor-pointer hover:bg-blue-700" onClick={() => handleSort('value')}>
+                      Value {sortField === 'value' && (sortDirection === 'asc' ? '↑' : '↓')}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredProducts.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center py-8 text-slate-500">
+                        No products found
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    filteredProducts.map((p, index) => (
+                      <TableRow 
+                        key={p.id} 
+                        className="hover:bg-blue-50 cursor-pointer border-b border-black"
+                        onClick={() => setSelectedProductForAnalytics(p)}
+                      >
+                        <TableCell className="px-3 py-1.5 font-mono text-slate-500 text-xs border-r border-black">#{index + 1}</TableCell>
+                        <TableCell className="px-3 py-1.5 font-mono text-xs text-slate-600 border-r border-black">{p.barcode || '-'}</TableCell>
+                        <TableCell className="px-3 py-1.5 font-semibold text-slate-900 text-xs border-r border-black">{p.name}</TableCell>
+                        <TableCell className="px-3 py-1.5 text-slate-700 text-xs border-r border-black">{p.type}</TableCell>
+                        <TableCell className="px-3 py-1.5 text-slate-700 text-xs border-r border-black">{p.size}</TableCell>
+                        <TableCell className="px-3 py-1.5 text-center border-r border-black">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${p.stock <= (p.lowStockThreshold || 5) ? 'bg-red-100 text-red-800 border border-red-800' : 'bg-green-100 text-green-800 border border-green-800'}`}>
+                            {p.stock}
+                          </span>
+                        </TableCell>
+                        <TableCell className="px-3 py-1.5 text-center font-bold text-blue-700 text-xs border-r border-black">
+                          {p.unitsSold !== undefined && p.unitsSold !== null ? p.unitsSold : 0}
+                        </TableCell>
+                        <TableCell className="px-3 py-1.5 text-right font-bold text-slate-900 text-xs">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
             </div>
           </div>
         )}
@@ -861,6 +1024,16 @@ const Inventory = () => {
           </div>
         )}
       </div>
+
+      {/* Product Analytics Modal */}
+      {selectedProductForAnalytics && (
+        <ProductAnalytics
+          product={selectedProductForAnalytics}
+          auditLogs={auditLogs}
+          sales={sales}
+          onClose={() => setSelectedProductForAnalytics(null)}
+        />
+      )}
     </div>
   );
 };

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Migrate Units Sold - POS Database</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #d97706;
+      margin-bottom: 10px;
+    }
+    .warning {
+      background: #fef3c7;
+      border-left: 4px solid #f59e0b;
+      padding: 15px;
+      margin: 20px 0;
+    }
+    .success {
+      background: #d1fae5;
+      border-left: 4px solid #10b981;
+      padding: 15px;
+      margin: 20px 0;
+    }
+    .error {
+      background: #fee2e2;
+      border-left: 4px solid #ef4444;
+      padding: 15px;
+      margin: 20px 0;
+    }
+    button {
+      background: #d97706;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:hover {
+      background: #b45309;
+    }
+    button:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+    #log {
+      background: #1f2937;
+      color: #f3f4f6;
+      padding: 15px;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      max-height: 400px;
+      overflow-y: auto;
+      margin-top: 20px;
+      white-space: pre-wrap;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 15px;
+      margin: 20px 0;
+    }
+    .stat-card {
+      background: #f9fafb;
+      padding: 15px;
+      border-radius: 6px;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 32px;
+      font-weight: bold;
+      color: #d97706;
+    }
+    .stat-label {
+      color: #6b7280;
+      font-size: 14px;
+      margin-top: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔧 Database Migration Tool</h1>
+    <p>This tool will calculate and update the <code>unitsSold</code> field for all products based on existing sales data.</p>
+    
+    <div class="warning">
+      <strong>⚠️ Important:</strong> This migration will:
+      <ul>
+        <li>Read all sales from your local IndexedDB</li>
+        <li>Calculate total units sold per product</li>
+        <li>Update the <code>unitsSold</code> field for each product</li>
+        <li>Initialize <code>unitsSold = 0</code> for products with no sales</li>
+      </ul>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-value" id="productCount">-</div>
+        <div class="stat-label">Products</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="salesCount">-</div>
+        <div class="stat-label">Sales</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="updatedCount">-</div>
+        <div class="stat-label">Updated</div>
+      </div>
+    </div>
+
+    <button id="migrateBtn" onclick="runMigration()">Start Migration</button>
+    <button id="checkBtn" onclick="checkDatabase()" style="background: #6366f1; margin-left: 10px;">Check Database</button>
+
+    <div id="log"></div>
+  </div>
+
+  <script>
+    const DB_NAME = 'GrabBottlePOS_DB';
+    const DB_VERSION = 6;
+
+    function log(message, type = 'info') {
+      const logEl = document.getElementById('log');
+      const timestamp = new Date().toLocaleTimeString();
+      const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
+      logEl.textContent += `[${timestamp}] ${prefix} ${message}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    async function openDatabase() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+        
+        request.onupgradeneeded = (event) => {
+          const db = event.target.result;
+          log('Database upgrade needed - creating stores if missing');
+          
+          if (!db.objectStoreNames.contains('products')) {
+            db.createObjectStore('products', { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains('sales')) {
+            db.createObjectStore('sales', { keyPath: 'id' });
+          }
+        };
+      });
+    }
+
+    async function checkDatabase() {
+      const logEl = document.getElementById('log');
+      logEl.textContent = '';
+      log('Checking database...');
+
+      try {
+        const db = await openDatabase();
+        
+        // Get products
+        const productTx = db.transaction('products', 'readonly');
+        const products = await new Promise((resolve, reject) => {
+          const request = productTx.objectStore('products').getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+
+        // Get sales
+        const salesTx = db.transaction('sales', 'readonly');
+        const sales = await new Promise((resolve, reject) => {
+          const request = salesTx.objectStore('sales').getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+
+        document.getElementById('productCount').textContent = products.length;
+        document.getElementById('salesCount').textContent = sales.length;
+
+        log(`Found ${products.length} products`);
+        log(`Found ${sales.length} sales`);
+
+        // Check which products have unitsSold
+        const withUnitsSold = products.filter(p => p.unitsSold !== undefined && p.unitsSold !== null);
+        const withoutUnitsSold = products.filter(p => p.unitsSold === undefined || p.unitsSold === null);
+
+        log(`Products with unitsSold: ${withUnitsSold.length}`);
+        log(`Products without unitsSold: ${withoutUnitsSold.length}`);
+
+        if (withoutUnitsSold.length > 0) {
+          log('⚠️ Migration needed!', 'error');
+        } else {
+          log('✅ All products have unitsSold field', 'success');
+        }
+
+        db.close();
+      } catch (error) {
+        log(`Error: ${error.message}`, 'error');
+      }
+    }
+
+    async function runMigration() {
+      const migrateBtn = document.getElementById('migrateBtn');
+      const logEl = document.getElementById('log');
+      
+      migrateBtn.disabled = true;
+      logEl.textContent = '';
+      
+      log('Starting migration...');
+
+      try {
+        const db = await openDatabase();
+        
+        // Step 1: Get all products
+        log('Loading products...');
+        const productTx = db.transaction('products', 'readonly');
+        const products = await new Promise((resolve, reject) => {
+          const request = productTx.objectStore('products').getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        
+        log(`Found ${products.length} products`);
+        document.getElementById('productCount').textContent = products.length;
+
+        // Step 2: Get all sales
+        log('Loading sales...');
+        const salesTx = db.transaction('sales', 'readonly');
+        const sales = await new Promise((resolve, reject) => {
+          const request = salesTx.objectStore('sales').getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        
+        log(`Found ${sales.length} sales`);
+        document.getElementById('salesCount').textContent = sales.length;
+
+        // Step 3: Calculate units sold per product
+        log('Calculating units sold...');
+        const unitsSoldMap = new Map();
+
+        // Initialize all products with 0
+        products.forEach(product => {
+          unitsSoldMap.set(product.id, 0);
+        });
+
+        // Count from sales
+        sales.forEach(sale => {
+          if (sale.items && Array.isArray(sale.items)) {
+            sale.items.forEach(item => {
+              const currentCount = unitsSoldMap.get(item.productId) || 0;
+              unitsSoldMap.set(item.productId, currentCount + item.quantity);
+            });
+          }
+        });
+
+        log(`Calculated units sold for ${unitsSoldMap.size} products`);
+
+        // Step 4: Update products
+        log('Updating products...');
+        const updateTx = db.transaction('products', 'readwrite');
+        const productStore = updateTx.objectStore('products');
+        
+        let updatedCount = 0;
+        
+        for (const product of products) {
+          const unitsSold = unitsSoldMap.get(product.id) || 0;
+          
+          // Only update if different
+          if (product.unitsSold !== unitsSold) {
+            product.unitsSold = unitsSold;
+            await new Promise((resolve, reject) => {
+              const request = productStore.put(product);
+              request.onsuccess = () => resolve();
+              request.onerror = () => reject(request.error);
+            });
+            updatedCount++;
+            log(`Updated ${product.name}: ${unitsSold} units sold`);
+          }
+        }
+
+        await new Promise((resolve, reject) => {
+          updateTx.oncomplete = () => resolve();
+          updateTx.onerror = () => reject(updateTx.error);
+        });
+
+        document.getElementById('updatedCount').textContent = updatedCount;
+        log(`✅ Migration complete! Updated ${updatedCount} products`, 'success');
+
+        // Show summary
+        const totalUnitsSold = Array.from(unitsSoldMap.values()).reduce((sum, count) => sum + count, 0);
+        log(`Total units sold across all products: ${totalUnitsSold}`, 'success');
+
+        db.close();
+      } catch (error) {
+        log(`❌ Migration failed: ${error.message}`, 'error');
+        console.error(error);
+      } finally {
+        migrateBtn.disabled = false;
+      }
+    }
+
+    // Auto-check on load
+    window.addEventListener('load', checkDatabase);
+  </script>
+</body>
+</html>

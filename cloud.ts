@@ -103,6 +103,9 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
           console.error('[Cloud Error] Failed to sync STOCK_CHANGE_APPROVED:', error);
           return false;
         }
+      case 'PRODUCT_SALE_LOG':
+        table = 'product_sale_logs';
+        break;
       default:
         console.warn('Unknown sync type:', type);
         return true; // Skip unknown types to clear queue

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { Product, AlcoholType } from '../../types';
+import { Product, AlcoholType, Role } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
 import { ProductAnalytics } from '@/components/ProductAnalytics';
 import {
@@ -42,7 +42,7 @@ import {
 } from '@/components/ui/table';
 
 const Inventory = () => {
-  const { products, receiveStock, adjustStock, updateProduct, addProduct, requestStockChange, auditLogs, sales } = useStore();
+  const { products, receiveStock, adjustStock, updateProduct, addProduct, requestStockChange, auditLogs, sales, currentUser } = useStore();
 
   const [activeTab, setActiveTab] = useState<'VIEW' | 'RECEIVE' | 'ADJUST' | 'ALERTS'>('VIEW');
   const [searchTerm, setSearchTerm] = useState('');
@@ -257,6 +257,18 @@ const Inventory = () => {
     setEditingAlertId(null);
   };
 
+  const canViewAnalytics = () => {
+    return currentUser?.role === Role.ADMIN || currentUser?.role === Role.MANAGER;
+  };
+
+  const handleProductClick = (product: Product) => {
+    if (canViewAnalytics()) {
+      setSelectedProductForAnalytics(product);
+    } else {
+      alert('Access Denied: Only Admins and Managers can view product analytics.');
+    }
+  };
+
   return (
     <div className="p-3 lg:p-6 max-w-7xl mx-auto">
       {/* Success Toast */}
@@ -415,7 +427,7 @@ const Inventory = () => {
                 <div 
                   key={p.id} 
                   className="p-3 hover:bg-slate-50 cursor-pointer active:bg-slate-100"
-                  onClick={() => setSelectedProductForAnalytics(p)}
+                  onClick={() => handleProductClick(p)}
                 >
                   <div className="flex justify-between items-start mb-2">
                     <div className="flex-1 min-w-0">
@@ -471,7 +483,7 @@ const Inventory = () => {
                       <TableRow 
                         key={p.id} 
                         className="hover:bg-blue-50 cursor-pointer border-b border-black"
-                        onClick={() => setSelectedProductForAnalytics(p)}
+                        onClick={() => handleProductClick(p)}
                       >
                         <TableCell className="px-3 py-1.5 font-mono text-slate-500 text-xs border-r border-black">#{index + 1}</TableCell>
                         <TableCell className="px-3 py-1.5 font-mono text-xs text-slate-600 border-r border-black">{p.barcode || '-'}</TableCell>

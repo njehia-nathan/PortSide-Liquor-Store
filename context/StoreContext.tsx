@@ -77,6 +77,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isSyncLocked, setIsSyncLocked] = useState(false); // Prevents concurrent sync operations
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -133,33 +134,91 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         let loadedProductSaleLogs: ProductSaleLog[] = [];
         let cloudLoadSuccess = false;
 
-        // STEP 1: Try to load from Supabase FIRST
+        // STEP 1: Try to load from Supabase FIRST with smart merge
         if (navigator.onLine) {
           try {
             console.log('🌐 Loading data from Supabase (cloud first)...');
-            
-            // 1. Users from cloud
+
+            // Helper function for smart merge with conflict resolution (last-write-wins)
+            const smartMerge = async <T extends { id: string; updatedAt?: string }>(
+              storeName: string,
+              cloudData: T[],
+              localData: T[]
+            ): Promise<T[]> => {
+              const merged = new Map<string, T>();
+
+              // Add all cloud items first
+              cloudData.forEach(item => merged.set(item.id, item));
+
+              // Merge local items with conflict resolution
+              for (const localItem of localData) {
+                const cloudItem = merged.get(localItem.id);
+
+                if (!cloudItem) {
+                  // Local-only item, keep it and queue for sync
+                  merged.set(localItem.id, localItem);
+                  await addToSyncQueue(`UPDATE_${storeName.toUpperCase()}`, localItem);
+                  console.log(`📤 Local-only ${storeName}:`, localItem.id);
+                } else if (localItem.updatedAt && cloudItem.updatedAt) {
+                  // Both have timestamps, use last-write-wins
+                  const localTime = new Date(localItem.updatedAt).getTime();
+                  const cloudTime = new Date(cloudItem.updatedAt).getTime();
+
+                  if (localTime > cloudTime) {
+                    // Local is newer, use it and queue for sync
+                    merged.set(localItem.id, localItem);
+                    await addToSyncQueue(`UPDATE_${storeName.toUpperCase()}`, localItem);
+                    console.log(`🔄 Local ${storeName} is newer:`, localItem.id);
+                  }
+                  // else: cloud is newer or equal, already in merged
+                }
+                // else: no timestamps, cloud wins (already in merged)
+              }
+
+              return Array.from(merged.values());
+            };
+
+            // Load local data first for comparison
+            const localUsers = await db.getAll('users');
+            const localProducts = await db.getAll('products');
+
+            // 1. Users from cloud with smart merge
             const { data: cloudUsers } = await supabase.from('users').select('*');
             if (cloudUsers && cloudUsers.length > 0) {
-              loadedUsers = cloudUsers;
-              for (const u of cloudUsers) await db.put('users', u);
-              console.log('✅ Loaded', cloudUsers.length, 'users from cloud');
+              loadedUsers = await smartMerge('users', cloudUsers, localUsers);
+              for (const u of loadedUsers) await db.put('users', u);
+              console.log('✅ Merged', loadedUsers.length, 'users (cloud + local)');
+            } else if (localUsers.length > 0) {
+              loadedUsers = localUsers;
+              console.log('✅ Using local users (cloud empty)');
             }
 
-            // 2. Products from cloud (with unitsSold field)
+            // 2. Products from cloud with smart merge
             const { data: cloudProducts } = await supabase.from('products').select('*');
             if (cloudProducts && cloudProducts.length > 0) {
-              loadedProducts = cloudProducts;
-              for (const p of cloudProducts) await db.put('products', p);
-              console.log('✅ Loaded', cloudProducts.length, 'products from cloud');
+              loadedProducts = await smartMerge('products', cloudProducts, localProducts);
+              for (const p of loadedProducts) await db.put('products', p);
+              console.log('✅ Merged', loadedProducts.length, 'products (cloud + local)');
+            } else if (localProducts.length > 0) {
+              loadedProducts = localProducts;
+              console.log('✅ Using local products (cloud empty)');
             }
 
-            // 3. Sales from cloud
+            // 3. Sales from cloud (immutable, so just merge by ID)
             const { data: cloudSales } = await supabase.from('sales').select('*');
             if (cloudSales && cloudSales.length > 0) {
-              loadedSales = cloudSales;
-              for (const s of cloudSales) await db.put('sales', s);
-              console.log('✅ Loaded', cloudSales.length, 'sales from cloud');
+              const localSales = await db.getAll('sales');
+              const cloudSaleIds = new Set(cloudSales.map(s => s.id));
+              const localOnlySales = localSales.filter(s => !cloudSaleIds.has(s.id));
+              loadedSales = [...cloudSales, ...localOnlySales];
+              for (const s of loadedSales) await db.put('sales', s);
+              if (localOnlySales.length > 0) {
+                console.log('📤 Found', localOnlySales.length, 'local-only sales');
+                for (const sale of localOnlySales) {
+                  await addToSyncQueue('SALE', sale);
+                }
+              }
+              console.log('✅ Loaded', loadedSales.length, 'sales from cloud');
             }
 
             // 4. Shifts from cloud
@@ -202,16 +261,37 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               console.log('✅ Loaded', cloudProductSaleLogs.length, 'product sale logs from cloud');
             }
 
-            // 9. Business Settings from cloud
+            // 9. Business Settings from cloud with smart merge
             const { data: cloudSettings } = await supabase.from('business_settings').select('*').eq('id', 'default').single();
-            if (cloudSettings) {
+            const localSettings = await db.get('businessSettings', 'default');
+
+            if (cloudSettings && localSettings) {
+              // Both exist, use last-write-wins
+              const cloudTime = cloudSettings.updatedAt ? new Date(cloudSettings.updatedAt).getTime() : 0;
+              const localTime = localSettings.updatedAt ? new Date(localSettings.updatedAt).getTime() : 0;
+
+              if (localTime > cloudTime) {
+                await db.put('businessSettings', localSettings);
+                setBusinessSettings(localSettings);
+                await addToSyncQueue('UPDATE_SETTINGS', localSettings);
+                console.log('✅ Using local business settings (newer)');
+              } else {
+                await db.put('businessSettings', cloudSettings);
+                setBusinessSettings(cloudSettings);
+                console.log('✅ Using cloud business settings (newer)');
+              }
+            } else if (cloudSettings) {
               await db.put('businessSettings', cloudSettings);
               setBusinessSettings(cloudSettings);
               console.log('✅ Business settings loaded from cloud');
+            } else if (localSettings) {
+              setBusinessSettings(localSettings);
+              await addToSyncQueue('UPDATE_SETTINGS', localSettings);
+              console.log('✅ Using local business settings');
             }
 
             cloudLoadSuccess = true;
-            console.log('✅ All data loaded from Supabase successfully');
+            console.log('✅ All data loaded from Supabase with smart merge');
           } catch (cloudErr) {
             console.warn("⚠️ Could not fetch from Supabase, falling back to local storage.", cloudErr);
             cloudLoadSuccess = false;
@@ -536,17 +616,19 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
    * User Management Actions
    */
   const updateUser = async (updatedUser: User) => {
-    setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+    const userWithTimestamp = { ...updatedUser, updatedAt: new Date().toISOString() };
+    setUsers(prev => prev.map(u => u.id === updatedUser.id ? userWithTimestamp : u));
     const db = await dbPromise();
-    await db.put('users', updatedUser);
+    await db.put('users', userWithTimestamp);
     await addLog('USER_UPDATE', `Updated user details for ${updatedUser.name}`);
-    await addToSyncQueue('UPDATE_USER', updatedUser);
+    await addToSyncQueue('UPDATE_USER', userWithTimestamp);
   };
 
   const addUser = async (userData: Omit<User, 'id'>) => {
     const newUser: User = {
       ...userData,
       id: Date.now().toString(),
+      updatedAt: new Date().toISOString(),
     };
     setUsers(prev => [...prev, newUser]);
     const db = await dbPromise();
@@ -749,6 +831,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const newProduct: Product = {
       ...productData,
       id: Date.now().toString(),
+      updatedAt: new Date().toISOString(),
     };
     setProducts(prev => [...prev, newProduct]);
 
@@ -759,12 +842,13 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   };
 
   const updateProduct = async (product: Product) => {
-    setProducts(prev => prev.map(p => p.id === product.id ? product : p));
+    const productWithTimestamp = { ...product, updatedAt: new Date().toISOString() };
+    setProducts(prev => prev.map(p => p.id === product.id ? productWithTimestamp : p));
 
     const db = await dbPromise();
-    await db.put('products', product);
+    await db.put('products', productWithTimestamp);
     await addLog('PRODUCT_EDIT', `Updated product: ${product.name} (${product.size})`);
-    await addToSyncQueue('UPDATE_PRODUCT', product);
+    await addToSyncQueue('UPDATE_PRODUCT', productWithTimestamp);
   };
 
   const deleteProduct = async (productId: string) => {
@@ -783,7 +867,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const product = products.find(p => p.id === productId);
     if (!product) return;
 
-    const updatedProduct = { ...product, stock: product.stock + change };
+    const updatedProduct = { ...product, stock: product.stock + change, updatedAt: new Date().toISOString() };
     setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
 
     const db = await dbPromise();
@@ -799,7 +883,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const updatedProduct = {
       ...product,
       stock: product.stock + quantity,
-      costPrice: newCost !== undefined ? newCost : product.costPrice
+      costPrice: newCost !== undefined ? newCost : product.costPrice,
+      updatedAt: new Date().toISOString()
     };
 
     setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
@@ -957,7 +1042,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const updatedProduct = {
       ...product,
       stock: product.stock + request.quantityChange,
-      costPrice: request.newCost !== undefined ? request.newCost : product.costPrice
+      costPrice: request.newCost !== undefined ? request.newCost : product.costPrice,
+      updatedAt: new Date().toISOString()
     };
 
     setStockChangeRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));

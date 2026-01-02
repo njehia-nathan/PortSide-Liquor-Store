@@ -30,6 +30,7 @@ export interface User {
   role: Role;
   pin: string; // Simplified auth for demo
   permissions: string[]; // List of access keys: 'POS', 'INVENTORY', 'REPORTS', 'ADMIN'
+  updatedAt?: string; // Timestamp for conflict resolution in multi-device sync
 }
 
 export interface Product {
@@ -46,6 +47,7 @@ export interface Product {
   stock: number;
   lowStockThreshold?: number; // Custom alert level
   unitsSold?: number; // Total units sold (for analytics)
+  updatedAt?: string; // Timestamp for conflict resolution in multi-device sync
 }
 
 export interface CartItem extends Product {
@@ -168,4 +170,5 @@ export interface BusinessSettings {
   evolutionApiUrl?: string;
   evolutionApiKey?: string;
   evolutionInstance?: string;
+  updatedAt?: string; // Timestamp for conflict resolution in multi-device sync
 }

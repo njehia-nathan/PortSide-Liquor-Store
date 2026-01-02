@@ -7,7 +7,7 @@ import { CURRENCY_FORMATTER } from '../../constants';
 import { PlusCircle, UserCog, UserPlus, Trash2, Barcode, Camera, Search, Filter, ArrowUpDown, Clock, User as UserIcon, Activity } from 'lucide-react';
 
 const Admin = () => {
-  const { products, auditLogs, users, currentUser, addProduct, updateProduct, deleteProduct, updateUser, addUser, deleteUser } = useStore();
+  const { products, auditLogs, users, currentUser, addProduct, updateProduct, deleteProduct, updateUser, addUser, deleteUser, fixCorruptedSales } = useStore();
   const [activeSection, setActiveSection] = useState<'PRODUCTS' | 'LOGS' | 'USERS'>('PRODUCTS');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
@@ -23,6 +23,8 @@ const Admin = () => {
   const [logFilterUser, setLogFilterUser] = useState<string>('ALL');
   const [logSortOrder, setLogSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'product' | 'user'; id: string; name: string } | null>(null);
+  const [isFixingSales, setIsFixingSales] = useState(false);
+  const [fixResult, setFixResult] = useState<{ fixed: number; total: number } | null>(null);
 
   const filteredProducts = useMemo(() => {
     if (!productSearch) return products;
@@ -70,15 +72,45 @@ const Admin = () => {
   const confirmDelete = () => { if (!deleteConfirm) return; if (deleteConfirm.type === 'product') deleteProduct(deleteConfirm.id); else deleteUser(deleteConfirm.id); setDeleteConfirm(null); };
   const handleRoleChange = (newRole: Role) => { let perms: string[] = []; if (newRole === Role.ADMIN) perms = ['POS', 'INVENTORY', 'REPORTS', 'ADMIN']; else if (newRole === Role.MANAGER) perms = ['POS', 'INVENTORY', 'REPORTS']; else perms = ['POS']; setUserFormData({ ...userFormData, role: newRole, permissions: perms }); };
   const togglePermission = (perm: string) => { const currentPerms = userFormData.permissions || []; if (currentPerms.includes(perm)) { setUserFormData({ ...userFormData, permissions: currentPerms.filter(p => p !== perm) }); } else { setUserFormData({ ...userFormData, permissions: [...currentPerms, perm] }); } };
+  
+  const handleFixCorruptedSales = async () => {
+    if (!confirm('This will fix sales records with missing cost/price data. Continue?')) return;
+    setIsFixingSales(true);
+    setFixResult(null);
+    try {
+      const result = await fixCorruptedSales();
+      setFixResult(result);
+      if (result.fixed > 0) {
+        alert(`Successfully fixed ${result.fixed} corrupted sales records!`);
+      } else {
+        alert('No corrupted sales found. All records are valid.');
+      }
+    } catch (error) {
+      console.error('Error fixing sales:', error);
+      alert('Failed to fix corrupted sales. Check console for details.');
+    } finally {
+      setIsFixingSales(false);
+    }
+  };
 
   return (
     <div className="p-3 lg:p-6 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 lg:mb-6">
         <h1 className="text-xl lg:text-2xl font-bold text-slate-800">Admin Panel</h1>
-        <div className="flex bg-white rounded-lg p-1 border border-slate-200 w-full sm:w-auto overflow-x-auto">
-          <button onClick={() => setActiveSection('PRODUCTS')} className={`flex-1 sm:flex-none px-3 lg:px-4 py-2 rounded-md text-xs lg:text-sm font-medium transition-colors whitespace-nowrap ${activeSection === 'PRODUCTS' ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>Products</button>
-          <button onClick={() => setActiveSection('USERS')} className={`flex-1 sm:flex-none px-3 lg:px-4 py-2 rounded-md text-xs lg:text-sm font-medium transition-colors whitespace-nowrap ${activeSection === 'USERS' ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>Users</button>
-          <button onClick={() => setActiveSection('LOGS')} className={`flex-1 sm:flex-none px-3 lg:px-4 py-2 rounded-md text-xs lg:text-sm font-medium transition-colors whitespace-nowrap ${activeSection === 'LOGS' ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>Logs</button>
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <div className="flex bg-white rounded-lg p-1 border border-slate-200 overflow-x-auto">
+            <button onClick={() => setActiveSection('PRODUCTS')} className={`flex-1 sm:flex-none px-3 lg:px-4 py-2 rounded-md text-xs lg:text-sm font-medium transition-colors whitespace-nowrap ${activeSection === 'PRODUCTS' ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>Products</button>
+            <button onClick={() => setActiveSection('USERS')} className={`flex-1 sm:flex-none px-3 lg:px-4 py-2 rounded-md text-xs lg:text-sm font-medium transition-colors whitespace-nowrap ${activeSection === 'USERS' ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>Users</button>
+            <button onClick={() => setActiveSection('LOGS')} className={`flex-1 sm:flex-none px-3 lg:px-4 py-2 rounded-md text-xs lg:text-sm font-medium transition-colors whitespace-nowrap ${activeSection === 'LOGS' ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>Logs</button>
+          </div>
+          <button 
+            onClick={handleFixCorruptedSales} 
+            disabled={isFixingSales}
+            className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white px-3 lg:px-4 py-2 rounded-lg font-medium text-xs lg:text-sm whitespace-nowrap transition-colors"
+          >
+            <Activity size={16} className={isFixingSales ? 'animate-spin' : ''} />
+            {isFixingSales ? 'Fixing...' : 'Fix Data'}
+          </button>
         </div>
       </div>
 

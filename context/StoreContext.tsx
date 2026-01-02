@@ -60,6 +60,9 @@ interface StoreContextType {
 
   // --- SETTINGS ACTIONS ---
   updateBusinessSettings: (settings: BusinessSettings) => Promise<void>;
+
+  // --- UTILITY ACTIONS ---
+  fixCorruptedSales: () => Promise<{ fixed: number; total: number }>;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
@@ -1089,6 +1092,95 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     await addToSyncQueue('UPDATE_SETTINGS', settings);
   };
 
+  /**
+   * FIX CORRUPTED SALES
+   * Fixes sales where items have 0 cost or 0 price by recalculating from current product data
+   */
+  const fixCorruptedSales = async (): Promise<{ fixed: number; total: number }> => {
+    const db = await dbPromise();
+    const tx = db.transaction(['sales', 'productSaleLogs'], 'readwrite');
+    
+    let fixedCount = 0;
+    const corruptedSales = sales.filter(sale => 
+      sale.totalAmount === 0 || sale.totalCost === 0 || 
+      sale.items.some(item => item.priceAtSale === 0 || item.costAtSale === 0)
+    );
+
+    const updatedSales: Sale[] = [];
+
+    for (const sale of corruptedSales) {
+      let needsUpdate = false;
+      const updatedItems: SaleItem[] = [];
+
+      for (const item of sale.items) {
+        // Find the current product to get pricing info
+        const product = products.find(p => p.id === item.productId);
+        
+        if (product && (item.priceAtSale === 0 || item.costAtSale === 0)) {
+          // Use current product prices as fallback
+          updatedItems.push({
+            ...item,
+            priceAtSale: item.priceAtSale === 0 ? product.sellingPrice : item.priceAtSale,
+            costAtSale: item.costAtSale === 0 ? product.costPrice : item.costAtSale
+          });
+          needsUpdate = true;
+        } else {
+          updatedItems.push(item);
+        }
+      }
+
+      if (needsUpdate) {
+        // Recalculate totals
+        const newTotalAmount = updatedItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
+        const newTotalCost = updatedItems.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
+
+        const updatedSale: Sale = {
+          ...sale,
+          items: updatedItems,
+          totalAmount: newTotalAmount,
+          totalCost: newTotalCost
+        };
+
+        // Update in database
+        await tx.objectStore('sales').put(updatedSale);
+        updatedSales.push(updatedSale);
+        fixedCount++;
+
+        // Also update product sale logs if they exist
+        for (const item of updatedItems) {
+          const logId = `${sale.id}-${item.productId}-${Date.now()}`;
+          const existingLogs = productSaleLogs.filter(log => log.saleId === sale.id && log.productId === item.productId);
+          
+          if (existingLogs.length > 0) {
+            // Update existing log
+            for (const log of existingLogs) {
+              const updatedLog: ProductSaleLog = {
+                ...log,
+                priceAtSale: item.priceAtSale,
+                costAtSale: item.costAtSale
+              };
+              await tx.objectStore('productSaleLogs').put(updatedLog);
+            }
+          }
+        }
+      }
+    }
+
+    await tx.done;
+
+    // Update state
+    if (updatedSales.length > 0) {
+      setSales(prev => prev.map(sale => {
+        const updated = updatedSales.find(s => s.id === sale.id);
+        return updated || sale;
+      }));
+
+      await addLog('DATA_FIX', `Fixed ${fixedCount} corrupted sales records`);
+    }
+
+    return { fixed: fixedCount, total: corruptedSales.length };
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
@@ -1135,6 +1227,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       productSaleLogs,
       businessSettings,
       updateBusinessSettings,
+      fixCorruptedSales,
     }}>
       {children}
     </StoreContext.Provider>

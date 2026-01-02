@@ -566,11 +566,11 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                     <p className="text-sm">No sales found for this period</p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto">
+                  <div className="max-h-[500px] overflow-y-auto overflow-x-auto">
                     <table className="w-full text-sm border-collapse">
-                      <thead className="bg-gray-100">
+                      <thead className="bg-gray-100 sticky top-0 z-10">
                         <tr className="border-b-2 border-black">
-                          <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase sticky left-0 bg-gray-100 border-r border-black">#</th>
+                          <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase sticky left-0 bg-gray-100 border-r border-black z-20">#</th>
                           <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Transaction ID</th>
                           <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Date</th>
                           <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Time</th>
@@ -671,11 +671,11 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                     <p className="text-sm">No activity found for this period</p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto">
+                  <div className="max-h-[500px] overflow-y-auto overflow-x-auto">
                     <table className="w-full text-sm border-collapse">
-                      <thead className="bg-gray-100">
+                      <thead className="bg-gray-100 sticky top-0 z-10">
                         <tr className="border-b-2 border-black">
-                          <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase sticky left-0 bg-gray-100 border-r border-black">#</th>
+                          <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase sticky left-0 bg-gray-100 border-r border-black z-20">#</th>
                           <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Action</th>
                           <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Date</th>
                           <th className="px-2 py-1.5 text-left text-[10px] font-bold text-gray-700 uppercase border-r border-black">Time</th>

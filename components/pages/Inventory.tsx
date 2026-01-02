@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Product, AlcoholType } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { ProductAnalytics } from '../ProductAnalytics';
+import { ProductAnalytics } from '@/components/ProductAnalytics';
 import {
   AlertCircle,
   ArrowDown,

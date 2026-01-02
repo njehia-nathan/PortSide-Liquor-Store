@@ -205,8 +205,15 @@ const Reports = () => {
           </div>
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="px-4 lg:px-6 py-3 lg:py-4 border-b border-slate-100 bg-slate-50">
+            <div className="px-4 lg:px-6 py-3 lg:py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
               <h3 className="font-bold text-slate-800 text-sm lg:text-base">Recent Transactions ({filteredSales.length})</h3>
+              <button 
+                onClick={downloadExcel} 
+                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+              >
+                <Download size={14} />
+                <span>Export CSV</span>
+              </button>
             </div>
             <div className="max-h-[500px] overflow-y-auto overflow-x-auto">
               <table className="w-full text-sm border-collapse">

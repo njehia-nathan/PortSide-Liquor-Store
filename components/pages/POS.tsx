@@ -198,7 +198,7 @@ const POS = () => {
 
   const sendWhatsAppReceipt = async () => {
     if (!receiptSale || !customerPhone) return;
-    
+
     const settings = businessSettings;
     if (!settings?.evolutionApiUrl || !settings?.evolutionApiKey || !settings?.evolutionInstance) {
       alert('WhatsApp API not configured. Please configure Evolution API in Settings.');
@@ -209,7 +209,7 @@ const POS = () => {
     try {
       const receiptText = generateReceiptText(receiptSale);
       const phone = customerPhone.replace(/[^0-9]/g, '');
-      
+
       const response = await fetch(`${settings.evolutionApiUrl}/message/sendText/${settings.evolutionInstance}`, {
         method: 'POST',
         headers: {
@@ -246,7 +246,7 @@ const POS = () => {
     e.preventDefault();
     const amount = parseFloat(shiftCashAmount);
     if (isNaN(amount) || !currentShift) return;
-    
+
     // Calculate shift stats before closing
     const shiftSales = sales.filter(s => {
       const saleTime = new Date(s.timestamp);
@@ -256,7 +256,7 @@ const POS = () => {
     const revenue = shiftSales.reduce((sum, s) => sum + s.totalAmount, 0);
     const cashSalesTotal = shiftSales.filter(s => s.paymentMethod === 'CASH').reduce((sum, s) => sum + s.totalAmount, 0);
     const expectedCash = currentShift.openingCash + cashSalesTotal;
-    
+
     // Store shift data for report
     setClosedShiftData({
       shift: { ...currentShift, closingCash: amount, expectedCash },
@@ -266,12 +266,12 @@ const POS = () => {
       expectedCash,
       closingCash: amount
     });
-    
+
     // Close shift
     await closeShift(amount);
     setShiftCashAmount('');
     setShowShiftModal(false);
-    
+
     // Show shift report
     setShowShiftReport(true);
   };
@@ -280,7 +280,7 @@ const POS = () => {
     setShowShiftReport(false);
     setClosedShiftData(null);
     logout();
-    window.location.href = '/';
+    router.push('/');
   };
 
   useEffect(() => {
@@ -362,8 +362,8 @@ const POS = () => {
               onClick={() => addToCart(product)}
               disabled={product.stock <= 0}
               className={`bg-white p-3 lg:p-4 rounded-xl shadow-sm border-2 text-left transition-all active:scale-95 ${product.stock <= 0
-                  ? 'opacity-50 cursor-not-allowed border-slate-200'
-                  : 'border-transparent hover:border-amber-400 hover:shadow-lg'
+                ? 'opacity-50 cursor-not-allowed border-slate-200'
+                : 'border-transparent hover:border-amber-400 hover:shadow-lg'
                 }`}
             >
               <div className="text-xs lg:text-sm font-bold text-slate-800 truncate">{product.name}</div>
@@ -383,8 +383,8 @@ const POS = () => {
       <div className="hidden lg:flex w-96 bg-white border-l border-slate-200 flex-col print:hidden">
         <div className="p-6 border-b border-slate-200 flex items-center justify-between">
           <h2 className="text-xl font-bold text-slate-800">Current Sale</h2>
-          <button 
-            onClick={() => setShowRecentSales(true)} 
+          <button
+            onClick={() => setShowRecentSales(true)}
             className="text-slate-400 hover:text-amber-600 relative"
             title="Recent Sales"
           >
@@ -494,9 +494,9 @@ const POS = () => {
                         <div className="font-bold text-base text-slate-800">{item.name}</div>
                         <div className="text-xs text-slate-500 mt-0.5">{item.size} • {CURRENCY_FORMATTER.format(item.sellingPrice)} each</div>
                       </div>
-                      <button 
+                      <button
                         type="button"
-                        onClick={() => removeFromCart(item.id)} 
+                        onClick={() => removeFromCart(item.id)}
                         className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"
                       >
                         <Trash2 size={18} />
@@ -504,17 +504,17 @@ const POS = () => {
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <button 
+                        <button
                           type="button"
-                          onClick={() => adjustQty(item.id, -1)} 
+                          onClick={() => adjustQty(item.id, -1)}
                           className="w-10 h-10 rounded-xl bg-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-300 transition-colors"
                         >
                           <Minus size={18} />
                         </button>
                         <span className="font-bold w-8 text-center text-lg">{item.quantity}</span>
-                        <button 
+                        <button
                           type="button"
-                          onClick={() => adjustQty(item.id, 1)} 
+                          onClick={() => adjustQty(item.id, 1)}
                           className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center hover:bg-amber-600 transition-colors"
                         >
                           <Plus size={18} />
@@ -601,7 +601,7 @@ const POS = () => {
                   {CURRENCY_FORMATTER.format(cartTotal)}
                 </div>
               </div>
-              
+
               <div className="mb-4">
                 <label className="block text-sm font-bold text-slate-700 mb-2">Cash Received</label>
                 <input
@@ -1013,7 +1013,7 @@ const POS = () => {
                 <p className="text-lg font-bold text-amber-600">{voidRequests.filter(r => r.status === 'PENDING').length}</p>
               </div>
             </div>
-            
+
             {/* Table */}
             <div className="flex-1 overflow-auto">
               {sales.length === 0 ? (
@@ -1037,8 +1037,8 @@ const POS = () => {
                     {sales.slice(0, 15).map((sale, index) => {
                       const voidReq = voidRequests.find(r => r.saleId === sale.id);
                       return (
-                        <tr 
-                          key={sale.id} 
+                        <tr
+                          key={sale.id}
                           onClick={() => {
                             setReceiptSale(sale);
                             setShowRecentSales(false);
@@ -1056,21 +1056,19 @@ const POS = () => {
                             </p>
                           </td>
                           <td className="px-3 py-3">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-700' :
-                              sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-700' :
-                              'bg-purple-100 text-purple-700'
-                            }`}>{sale.paymentMethod}</span>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-700' :
+                                sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-700' :
+                                  'bg-purple-100 text-purple-700'
+                              }`}>{sale.paymentMethod}</span>
                           </td>
                           <td className="px-3 py-3">
                             {sale.isVoided ? (
                               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">VOIDED</span>
                             ) : voidReq ? (
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                voidReq.status === 'PENDING' ? 'bg-amber-100 text-amber-700' :
-                                voidReq.status === 'APPROVED' ? 'bg-red-100 text-red-700' :
-                                'bg-slate-100 text-slate-600'
-                              }`}>{voidReq.status}</span>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${voidReq.status === 'PENDING' ? 'bg-amber-100 text-amber-700' :
+                                  voidReq.status === 'APPROVED' ? 'bg-red-100 text-red-700' :
+                                    'bg-slate-100 text-slate-600'
+                                }`}>{voidReq.status}</span>
                             ) : (
                               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700">VALID</span>
                             )}

@@ -177,7 +177,7 @@ const Inventory = () => {
         comparison = (a.unitsSold || 0) - (b.unitsSold || 0);
         break;
       case 'value':
-        comparison = (a.costPrice * a.stock) - (b.costPrice * b.stock);
+        comparison = ((Number(a.costPrice) || 0) * (Number(a.stock) || 0)) - ((Number(b.costPrice) || 0) * (Number(b.stock) || 0));
         break;
     }
     
@@ -191,8 +191,38 @@ const Inventory = () => {
   }));
 
   const lowStockProducts = products.filter(p => p.stock <= (p.lowStockThreshold || 5));
-  const totalInventoryValue = products.reduce((sum, p) => sum + (p.costPrice * p.stock), 0);
-  const totalItems = products.reduce((sum, p) => sum + p.stock, 0);
+
+  // Debug: Check for products with extremely high values
+  const problematicProducts = products.filter(p => {
+    const cost = Number(p.costPrice) || 0;
+    const stock = Number(p.stock) || 0;
+    const value = cost * stock;
+    return value > 1000000; // Products with value over 1M
+  });
+  
+  if (problematicProducts.length > 0) {
+    console.error('🚨 Products with extremely high values:', problematicProducts.map(p => ({
+      name: p.name,
+      costPrice: p.costPrice,
+      stock: p.stock,
+      value: (Number(p.costPrice) || 0) * (Number(p.stock) || 0)
+    })));
+  }
+  
+  const totalInventoryValue = products.reduce((sum, p) => {
+    const cost = Number(p.costPrice) || 0;
+    const stock = Number(p.stock) || 0;
+    const productValue = cost * stock;
+    
+    // Skip products with unrealistic values in calculation
+    if (productValue > 1000000) {
+      console.warn(`⚠️ Skipping ${p.name} - value too high: ${productValue}`);
+      return sum;
+    }
+    
+    return sum + productValue;
+  }, 0);
+  const totalItems = products.reduce((sum, p) => sum + (Number(p.stock) || 0), 0);
 
   // Debug: Log products to check unitsSold values
   useEffect(() => {

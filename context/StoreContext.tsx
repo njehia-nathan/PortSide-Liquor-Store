@@ -946,12 +946,16 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       voidReason: request.reason,
     };
 
-    // Restore inventory for voided sale
+    // Restore inventory for voided sale (restore stock AND decrement unitsSold)
     const updatedProducts = [...products];
     for (const item of request.sale.items) {
       const idx = updatedProducts.findIndex(p => p.id === item.productId);
       if (idx > -1) {
-        updatedProducts[idx] = { ...updatedProducts[idx], stock: updatedProducts[idx].stock + item.quantity };
+        updatedProducts[idx] = { 
+          ...updatedProducts[idx], 
+          stock: updatedProducts[idx].stock + item.quantity,
+          unitsSold: Math.max(0, (updatedProducts[idx].unitsSold || 0) - item.quantity)
+        };
       }
     }
 
@@ -1093,43 +1097,80 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   };
 
   /**
-   * FIX CORRUPTED SALES
-   * Fixes sales where items have 0 cost or 0 price by recalculating from current product data
+   * FIX CORRUPTED DATA
+   * 1. Fixes sales where items have 0 cost or 0 price by recalculating from current product data
+   * 2. Recalculates unitsSold for all products based on actual non-voided sales
+   * 3. Fixes products with unrealistic costPrice or stock values
    */
   const fixCorruptedSales = async (): Promise<{ fixed: number; total: number }> => {
+    console.log('🔧 Starting corrupted sales fix and unitsSold recalculation...');
     const db = await dbPromise();
-    const tx = db.transaction(['sales', 'productSaleLogs'], 'readwrite');
+    const tx = db.transaction(['sales', 'productSaleLogs', 'products'], 'readwrite');
     
     let fixedCount = 0;
+    let skippedCount = 0;
     const corruptedSales = sales.filter(sale => 
       sale.totalAmount === 0 || sale.totalCost === 0 || 
       sale.items.some(item => item.priceAtSale === 0 || item.costAtSale === 0)
     );
 
+    console.log(`Found ${corruptedSales.length} corrupted sales to fix`);
+
     const updatedSales: Sale[] = [];
+    const updatedLogs: ProductSaleLog[] = [];
+    const updatedProducts: Product[] = [];
 
     for (const sale of corruptedSales) {
-      let needsUpdate = false;
+      let canFix = true;
       const updatedItems: SaleItem[] = [];
 
+      console.log(`Processing sale ${sale.id}:`, {
+        totalAmount: sale.totalAmount,
+        totalCost: sale.totalCost,
+        items: sale.items.length
+      });
+
       for (const item of sale.items) {
-        // Find the current product to get pricing info
-        const product = products.find(p => p.id === item.productId);
+        // Try to find product by ID first
+        let product = products.find(p => p.id === item.productId);
         
-        if (product && (item.priceAtSale === 0 || item.costAtSale === 0)) {
-          // Use current product prices as fallback
-          updatedItems.push({
-            ...item,
-            priceAtSale: item.priceAtSale === 0 ? product.sellingPrice : item.priceAtSale,
-            costAtSale: item.costAtSale === 0 ? product.costPrice : item.costAtSale
-          });
-          needsUpdate = true;
-        } else {
-          updatedItems.push(item);
+        // If not found by ID, try to find by name and size
+        if (!product) {
+          product = products.find(p => 
+            p.name.toLowerCase() === item.productName.toLowerCase() && 
+            p.size === item.size
+          );
+          if (product) {
+            console.log(`  ⚠️ Product ID mismatch for ${item.productName}, using name match`);
+          }
         }
+
+        if (!product) {
+          console.error(`  ❌ Cannot find product: ${item.productName} (${item.size}), ID: ${item.productId}`);
+          canFix = false;
+          break;
+        }
+
+        const newPriceAtSale = item.priceAtSale === 0 ? product.sellingPrice : item.priceAtSale;
+        const newCostAtSale = item.costAtSale === 0 ? product.costPrice : item.costAtSale;
+
+        if (newPriceAtSale === 0 || newCostAtSale === 0) {
+          console.error(`  ❌ Product ${product.name} has 0 price/cost in inventory`);
+          canFix = false;
+          break;
+        }
+
+        updatedItems.push({
+          ...item,
+          productId: product.id, // Update to correct product ID if it was wrong
+          priceAtSale: newPriceAtSale,
+          costAtSale: newCostAtSale
+        });
+
+        console.log(`  ✓ Fixed item: ${item.productName} - Price: ${newPriceAtSale}, Cost: ${newCostAtSale}`);
       }
 
-      if (needsUpdate) {
+      if (canFix && updatedItems.length > 0) {
         // Recalculate totals
         const newTotalAmount = updatedItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
         const newTotalCost = updatedItems.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
@@ -1141,18 +1182,18 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           totalCost: newTotalCost
         };
 
+        console.log(`  ✅ Sale ${sale.id} fixed: Amount ${newTotalAmount}, Cost ${newTotalCost}`);
+
         // Update in database
         await tx.objectStore('sales').put(updatedSale);
         updatedSales.push(updatedSale);
         fixedCount++;
 
-        // Also update product sale logs if they exist
+        // Update product sale logs
         for (const item of updatedItems) {
-          const logId = `${sale.id}-${item.productId}-${Date.now()}`;
           const existingLogs = productSaleLogs.filter(log => log.saleId === sale.id && log.productId === item.productId);
           
           if (existingLogs.length > 0) {
-            // Update existing log
             for (const log of existingLogs) {
               const updatedLog: ProductSaleLog = {
                 ...log,
@@ -1160,25 +1201,136 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
                 costAtSale: item.costAtSale
               };
               await tx.objectStore('productSaleLogs').put(updatedLog);
+              updatedLogs.push(updatedLog);
             }
           }
         }
+      } else {
+        console.warn(`  ⚠️ Skipping sale ${sale.id} - cannot fix`);
+        skippedCount++;
       }
     }
 
     await tx.done;
 
-    // Update state
-    if (updatedSales.length > 0) {
-      setSales(prev => prev.map(sale => {
-        const updated = updatedSales.find(s => s.id === sale.id);
-        return updated || sale;
-      }));
-
-      await addLog('DATA_FIX', `Fixed ${fixedCount} corrupted sales records`);
+    // STEP 2: Recalculate unitsSold for ALL products based on actual non-voided sales
+    console.log('📊 Recalculating unitsSold for all products...');
+    const productSalesMap = new Map<string, number>();
+    
+    // Count units sold per product from all non-voided sales
+    for (const sale of sales) {
+      if (sale.isVoided) continue; // Skip voided sales
+      
+      for (const item of sale.items) {
+        const currentCount = productSalesMap.get(item.productId) || 0;
+        productSalesMap.set(item.productId, currentCount + item.quantity);
+      }
     }
+    
+    // Update products with recalculated unitsSold
+    const tx2 = db.transaction(['products'], 'readwrite');
+    let unitsFixedCount = 0;
+    
+    for (const product of products) {
+      const calculatedUnitsSold = productSalesMap.get(product.id) || 0;
+      const currentUnitsSold = product.unitsSold || 0;
+      
+      if (calculatedUnitsSold !== currentUnitsSold) {
+        const updatedProduct = {
+          ...product,
+          unitsSold: calculatedUnitsSold,
+          updatedAt: new Date().toISOString()
+        };
+        
+        await tx2.objectStore('products').put(updatedProduct);
+        updatedProducts.push(updatedProduct);
+        unitsFixedCount++;
+        
+        console.log(`  ✓ ${product.name}: ${currentUnitsSold} → ${calculatedUnitsSold} units sold`);
+      }
+    }
+    
+    await tx2.done;
+    console.log(`📊 Recalculated unitsSold for ${unitsFixedCount} products`);
 
-    return { fixed: fixedCount, total: corruptedSales.length };
+    // STEP 3: Fix products with unrealistic costPrice or stock values
+    console.log('🔧 Fixing products with unrealistic values...');
+    const tx3 = db.transaction(['products'], 'readwrite');
+    let valueFixedCount = 0;
+    
+    for (const product of products) {
+      const cost = Number(product.costPrice) || 0;
+      const stock = Number(product.stock) || 0;
+      const value = cost * stock;
+      let needsFix = false;
+      let updatedProduct = { ...product };
+      
+      // Fix unrealistic cost prices (over 1M Ksh per unit)
+      if (cost > 1000000) {
+        console.warn(`  ⚠️ ${product.name}: Cost price too high (${cost}), setting to 0`);
+        updatedProduct.costPrice = 0;
+        needsFix = true;
+      }
+      
+      // Fix unrealistic stock levels (over 100,000 units)
+      if (stock > 100000) {
+        console.warn(`  ⚠️ ${product.name}: Stock too high (${stock}), setting to 0`);
+        updatedProduct.stock = 0;
+        needsFix = true;
+      }
+      
+      // Fix negative values
+      if (cost < 0) {
+        console.warn(`  ⚠️ ${product.name}: Negative cost price (${cost}), setting to 0`);
+        updatedProduct.costPrice = 0;
+        needsFix = true;
+      }
+      
+      if (stock < 0) {
+        console.warn(`  ⚠️ ${product.name}: Negative stock (${stock}), setting to 0`);
+        updatedProduct.stock = 0;
+        needsFix = true;
+      }
+      
+      if (needsFix) {
+        updatedProduct.updatedAt = new Date().toISOString();
+        await tx3.objectStore('products').put(updatedProduct);
+        updatedProducts.push(updatedProduct);
+        valueFixedCount++;
+      }
+    }
+    
+    await tx3.done;
+    console.log(`🔧 Fixed unrealistic values for ${valueFixedCount} products`);
+
+    // Update state
+    if (updatedSales.length > 0 || updatedProducts.length > 0) {
+      if (updatedSales.length > 0) {
+        setSales(prev => prev.map(sale => {
+          const updated = updatedSales.find(s => s.id === sale.id);
+          return updated || sale;
+        }));
+      }
+
+      if (updatedLogs.length > 0) {
+        setProductSaleLogs(prev => prev.map(log => {
+          const updated = updatedLogs.find(l => l.id === log.id);
+          return updated || log;
+        }));
+      }
+      
+      if (updatedProducts.length > 0) {
+        setProducts(prev => prev.map(product => {
+          const updated = updatedProducts.find(p => p.id === product.id);
+          return updated || product;
+        }));
+      }
+
+      await addLog('DATA_FIX', `Fixed ${fixedCount} corrupted sales, recalculated unitsSold for ${unitsFixedCount} products, and fixed unrealistic values for ${valueFixedCount} products (${skippedCount} sales skipped)`);
+
+      console.log(`✅ Fix complete: ${fixedCount} sales fixed, ${unitsFixedCount} products unitsSold recalculated, ${valueFixedCount} products values fixed, ${skippedCount} skipped, ${corruptedSales.length} total corrupted`);
+      return { fixed: fixedCount + unitsFixedCount + valueFixedCount, total: corruptedSales.length + unitsFixedCount + valueFixedCount };
+    }
   };
 
   if (isLoading) {

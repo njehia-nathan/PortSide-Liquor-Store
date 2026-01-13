@@ -1345,21 +1345,11 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       }
 
       await addLog('DATA_FIX', `Fixed ${fixedCount} corrupted sales, recalculated unitsSold for ${unitsFixedCount} products, and fixed unrealistic values for ${valueFixedCount} products (${skippedCount} sales skipped)`);
-
-      console.log(`✅ Fix complete: ${fixedCount} sales fixed, ${unitsFixedCount} products unitsSold recalculated, ${valueFixedCount} products values fixed, ${skippedCount} skipped, ${corruptedSales.length} total corrupted`);
-      return { fixed: fixedCount + unitsFixedCount + valueFixedCount, total: corruptedSales.length + unitsFixedCount + valueFixedCount };
     }
-  };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
-        <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-        <h2 className="text-xl font-bold">Loading System...</h2>
-        <p className="text-slate-400 mt-2">Initializing Database</p>
-      </div>
-    );
-  }
+    console.log(`✅ Fix complete: ${fixedCount} sales fixed, ${unitsFixedCount} products unitsSold recalculated, ${valueFixedCount} products values fixed, ${skippedCount} skipped, ${corruptedSales.length} total corrupted`);
+    return { fixed: fixedCount + unitsFixedCount + valueFixedCount, total: corruptedSales.length + unitsFixedCount + valueFixedCount };
+  };
 
   return (
     <StoreContext.Provider value={{

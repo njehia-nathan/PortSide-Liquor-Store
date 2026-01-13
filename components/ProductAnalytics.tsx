@@ -55,17 +55,17 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
   // Filter sales for this specific product
   const filteredProductSales = useMemo(() => {
     if (!sales || !Array.isArray(sales)) return [];
-    
+
     const { startDate, endDate } = getDateBounds();
-    
+
     return sales.filter(sale => {
       if (sale.isVoided) return false;
       if (!sale.items.some(item => item.productId === product.id)) return false;
-      
+
       const saleDate = new Date(sale.timestamp);
       if (startDate && saleDate < startDate) return false;
       if (endDate && saleDate > endDate) return false;
-      
+
       return true;
     }).map(sale => ({
       ...sale,
@@ -76,24 +76,24 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
   // Filter audit logs related to this product AND create sale activity logs from actual sales
   const filteredLogs = useMemo(() => {
     if (!auditLogs || !Array.isArray(auditLogs)) return [];
-    
+
     const { startDate, endDate } = getDateBounds();
-    
+
     // Get audit logs that mention this product
     const productAuditLogs = auditLogs.filter(log => {
       const details = log.details.toLowerCase();
       const productName = product.name.toLowerCase();
       const productId = product.id;
-      
+
       const mentionsProduct = details.includes(productName) || details.includes(productId);
-      
+
       const relevantActions = ['PRODUCT_ADD', 'PRODUCT_EDIT', 'PRODUCT_DELETE', 'STOCK_ADJUST', 'STOCK_RECEIVE'];
       if (!mentionsProduct || !relevantActions.includes(log.action)) return false;
-      
+
       const logDate = new Date(log.timestamp);
       if (startDate && logDate < startDate) return false;
       if (endDate && logDate > endDate) return false;
-      
+
       return true;
     });
 
@@ -101,7 +101,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
     const saleActivityLogs = filteredProductSales.map(sale => {
       const qty = sale.productItems.reduce((sum, item) => sum + item.quantity, 0);
       const total = sale.productItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
-      
+
       return {
         id: `sale-${sale.id}`,
         timestamp: sale.timestamp,
@@ -120,33 +120,39 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
   // Calculate comprehensive analytics
   const analytics = useMemo(() => {
     // Units sold in the selected period (from filtered sales)
-    const periodUnitsSold = filteredProductSales.reduce((sum, sale) => 
+    const periodUnitsSold = filteredProductSales.reduce((sum, sale) =>
       sum + sale.productItems.reduce((itemSum, item) => itemSum + item.quantity, 0), 0);
-    
-    const totalRevenue = filteredProductSales.reduce((sum, sale) => 
+
+    const totalRevenue = filteredProductSales.reduce((sum, sale) =>
       sum + sale.productItems.reduce((itemSum, item) => itemSum + (item.priceAtSale * item.quantity), 0), 0);
-    
-    const totalCost = filteredProductSales.reduce((sum, sale) => 
+
+    const totalCost = filteredProductSales.reduce((sum, sale) =>
       sum + sale.productItems.reduce((itemSum, item) => itemSum + (item.costAtSale * item.quantity), 0), 0);
-    
+
     const totalProfit = totalRevenue - totalCost;
     const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
     const avgPricePerUnit = periodUnitsSold > 0 ? totalRevenue / periodUnitsSold : product.sellingPrice;
-    
+
     // Activity counts
     const salesCount = filteredLogs.filter(log => log.action === 'SALE').length;
     const adjustCount = filteredLogs.filter(log => log.action === 'STOCK_ADJUST').length;
     const receiveCount = filteredLogs.filter(log => log.action === 'STOCK_RECEIVE').length;
     const editCount = filteredLogs.filter(log => log.action === 'PRODUCT_EDIT').length;
-    
-    // Calculate total units received from STOCK_RECEIVE logs
-    const totalUnitsReceived = filteredLogs
+
+    // Calculate units received from STOCK_RECEIVE logs (restocking operations)
+    const restockingUnits = filteredLogs
       .filter(log => log.action === 'STOCK_RECEIVE')
       .reduce((sum, log) => {
-        // Extract quantity from details string (e.g., "Received 10 units")
-        const match = log.details.match(/(\d+)\s+unit/);
+        // Extract quantity from details string (e.g., "Received 10 of Product Name")
+        const match = log.details.match(/Received\s+(\d+)/i);
         return sum + (match ? parseInt(match[1]) : 0);
       }, 0);
+
+    // Calculate initial stock: Current Stock + Lifetime Sold - Restocking
+    const initialStock = product.stock + (product.unitsSold || 0) - restockingUnits;
+
+    // Total Units Received = Initial Stock + All Restocking
+    const totalUnitsReceived = initialStock + restockingUnits;
 
     return {
       periodUnitsSold,  // Units sold in selected date range
@@ -161,6 +167,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
       receiveCount,
       editCount,
       totalUnitsReceived,
+      initialStock,  // Calculated starting inventory
       totalTransactions: filteredProductSales.length,
       totalActivities: filteredLogs.length,
     };
@@ -169,27 +176,27 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
   // Sales by day for chart
   const salesByDay = useMemo(() => {
     const dayMap = new Map<string, { date: string, units: number, revenue: number, profit: number }>();
-    
+
     filteredProductSales.forEach(sale => {
       const date = new Date(sale.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
       const existing = dayMap.get(date) || { date, units: 0, revenue: 0, profit: 0 };
-      
+
       sale.productItems.forEach(item => {
         existing.units += item.quantity;
         existing.revenue += item.priceAtSale * item.quantity;
         existing.profit += (item.priceAtSale - item.costAtSale) * item.quantity;
       });
-      
+
       dayMap.set(date, existing);
     });
-    
+
     return Array.from(dayMap.values()).reverse().slice(-14); // Last 14 days
   }, [filteredProductSales]);
 
   // Sales by hour for peak hours chart
   const salesByHour = useMemo(() => {
     const hourData = Array.from({ length: 24 }, (_, i) => ({ hour: `${i}:00`, sales: 0, units: 0 }));
-    
+
     filteredProductSales.forEach(sale => {
       const hour = new Date(sale.timestamp).getHours();
       sale.productItems.forEach(item => {
@@ -197,7 +204,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
         hourData[hour].units += item.quantity;
       });
     });
-    
+
     return hourData;
   }, [filteredProductSales]);
 
@@ -209,7 +216,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
       { name: 'Adjustments', value: analytics.adjustCount, color: '#8b5cf6' },
       { name: 'Edits', value: analytics.editCount, color: '#f59e0b' },
     ].filter(item => item.value > 0);
-    
+
     return breakdown;
   }, [analytics]);
 
@@ -250,10 +257,10 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
   const handleExportCSV = () => {
     const headers = [
       '#', 'Transaction ID', 'Date', 'Time', 'Cashier',
-      'Quantity', 'Unit Cost', 'Unit Price', 'Total Cost', 'Total Sale', 
+      'Quantity', 'Unit Cost', 'Unit Price', 'Total Cost', 'Total Sale',
       'Profit', 'Margin %', 'Payment Method'
     ];
-    
+
     const rows = filteredProductSales.map((sale, idx) => {
       const qty = sale.productItems.reduce((sum, item) => sum + item.quantity, 0);
       const totalSale = sale.productItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
@@ -263,7 +270,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
       const unitPrice = sale.productItems[0]?.priceAtSale || 0;
       const unitCost = sale.productItems[0]?.costAtSale || 0;
       const date = new Date(sale.timestamp);
-      
+
       return [
         idx + 1,
         sale.id,
@@ -280,15 +287,15 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
         sale.paymentMethod
       ].join(',');
     });
-    
+
     // Add summary row
     rows.push('');
-    rows.push(['SUMMARY', '', '', '', '', 
-      analytics.periodUnitsSold, '', '', 
-      analytics.totalCost, analytics.totalRevenue, 
+    rows.push(['SUMMARY', '', '', '', '',
+      analytics.periodUnitsSold, '', '',
+      analytics.totalCost, analytics.totalRevenue,
       analytics.totalProfit, analytics.profitMargin.toFixed(2), ''
     ].join(','));
-    
+
     const csv = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const link = document.createElement('a');
@@ -329,9 +336,8 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
             <button
               key={range}
               onClick={() => setDateRange(range)}
-              className={`px-2.5 py-1 rounded text-xs font-medium transition ${
-                dateRange === range ? 'bg-amber-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
-              }`}
+              className={`px-2.5 py-1 rounded text-xs font-medium transition ${dateRange === range ? 'bg-amber-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                }`}
             >
               {range === 'today' ? 'Today' : range === 'week' ? '7 Days' : range === 'month' ? '30 Days' : range === 'all' ? 'All Time' : 'Custom'}
             </button>
@@ -371,6 +377,32 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
 
           {/* Statistics Tab */}
           <TabsContent value="statistics" className="flex-1 overflow-y-auto p-4 space-y-4 m-0">
+            {/* Stock Flow Equation Banner */}
+            <div className="bg-gradient-to-r from-slate-700 to-slate-800 rounded-lg p-4 text-white">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-2">
+                  <Package size={18} className="text-slate-300" />
+                  <span className="text-sm font-semibold">Stock Flow:</span>
+                </div>
+                <div className="flex items-center gap-3 text-sm font-mono">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Total Received</span>
+                    <span className="px-3 py-1 bg-cyan-600 rounded font-bold">{analytics.totalUnitsReceived}</span>
+                  </div>
+                  <span className="text-slate-400">-</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Sold</span>
+                    <span className="px-3 py-1 bg-purple-600 rounded font-bold">{analytics.lifetimeUnitsSold}</span>
+                  </div>
+                  <span className="text-slate-400">=</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Current Stock</span>
+                    <span className="px-3 py-1 bg-green-600 rounded font-bold">{product.stock}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* KPI Cards - 2 rows */}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
               <div className="bg-white rounded-lg p-3 border border-blue-200 shadow-sm">
@@ -395,7 +427,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                   <span className="text-[10px] text-gray-500 font-medium uppercase">Units Received</span>
                 </div>
                 <p className="text-xl font-bold text-cyan-600">{analytics.totalUnitsReceived}</p>
-                <p className="text-[9px] text-gray-500 mt-0.5">{analytics.receiveCount} receipts</p>
+                <p className="text-[9px] text-gray-500 mt-0.5">Total inventory</p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-green-200 shadow-sm">
                 <div className="flex items-center gap-2 mb-1">
@@ -419,6 +451,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                   <span className="text-[10px] text-gray-500 font-medium uppercase">Current Stock</span>
                 </div>
                 <p className={`text-xl font-bold ${product.stock <= (product.lowStockThreshold || 5) ? 'text-red-600' : 'text-gray-900'}`}>{product.stock}</p>
+                <p className="text-[9px] text-gray-500 mt-0.5">On hand now</p>
               </div>
             </div>
 
@@ -434,14 +467,14 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                     <AreaChart data={salesByDay}>
                       <defs>
                         <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3}/>
-                          <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                          <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
+                          <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
                         </linearGradient>
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="date" tick={{ fontSize: 10 }} stroke="#9ca3af" />
                       <YAxis tick={{ fontSize: 10 }} stroke="#9ca3af" />
-                      <Tooltip 
+                      <Tooltip
                         contentStyle={{ fontSize: 12, borderRadius: 8 }}
                         formatter={(value: number, name: string) => [
                           name === 'revenue' ? CURRENCY_FORMATTER.format(value) : value,
@@ -595,7 +628,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                           const unitPrice = sale.productItems[0]?.priceAtSale || 0;
                           const unitCost = sale.productItems[0]?.costAtSale || 0;
                           const saleDate = new Date(sale.timestamp);
-                          
+
                           return (
                             <tr key={sale.id} className="hover:bg-gray-100 border-b border-black">
                               <td className="px-2 py-1.5 text-gray-500 font-mono text-xs sticky left-0 bg-white border-r border-black">{idx + 1}</td>
@@ -619,11 +652,10 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                                 </span>
                               </td>
                               <td className="px-2 py-1.5 text-center">
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                                  sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-800 border-green-800' :
-                                  sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-800 border-blue-800' : 
-                                  'bg-purple-100 text-purple-800 border-purple-800'
-                                }`}>
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-800 border-green-800' :
+                                  sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-800 border-blue-800' :
+                                    'bg-purple-100 text-purple-800 border-purple-800'
+                                  }`}>
                                   {sale.paymentMethod}
                                 </span>
                               </td>
@@ -660,8 +692,8 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                 <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
                   <h3 className="text-sm font-bold text-gray-800">Activity History ({filteredLogs.length} records)</h3>
                   <span className="text-xs text-gray-500">
-                    Sales: {filteredLogs.filter(log => log.action === 'SALE').length} | 
-                    Adjustments: {filteredLogs.filter(log => log.action === 'STOCK_ADJUST').length} | 
+                    Sales: {filteredLogs.filter(log => log.action === 'SALE').length} |
+                    Adjustments: {filteredLogs.filter(log => log.action === 'STOCK_ADJUST').length} |
                     Received: {filteredLogs.filter(log => log.action === 'STOCK_RECEIVE').length}
                   </span>
                 </div>

@@ -39,6 +39,7 @@ interface StoreContextType {
   // --- POS ACTIONS ---
   processSale: (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT', splitPayment?: { cashAmount: number; mobileAmount: number }) => Promise<Sale | undefined>;
   updateSale: (sale: Sale) => Promise<void>;
+  deleteSale: (saleId: string) => Promise<void>;
 
   // --- INVENTORY ACTIONS ---
   addProduct: (product: Omit<Product, 'id'>) => Promise<void>;
@@ -850,6 +851,93 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   };
 
   /**
+   * DELETE SALE
+   * Permanently deletes a sale and restores inventory to pre-sale state.
+   * This reverses stock deductions and unitsSold increments.
+   */
+  const deleteSale = async (saleId: string) => {
+    if (!currentUser) return;
+
+    const sale = sales.find(s => s.id === saleId);
+    if (!sale) {
+      throw new Error('Sale not found');
+    }
+
+    // Prevent deletion of voided sales (they're already reversed)
+    if (sale.isVoided) {
+      throw new Error('Cannot delete a voided sale. Voided sales are already reversed.');
+    }
+
+    const db = await dbPromise();
+    const tx = db.transaction(['sales', 'products', 'productSaleLogs', 'syncQueue'], 'readwrite');
+
+    try {
+      // 1. Restore inventory (reverse the stock deduction and unitsSold increment)
+      const updatedProducts = [...products];
+
+      for (const item of sale.items) {
+        const idx = updatedProducts.findIndex(p => p.id === item.productId);
+        if (idx > -1) {
+          updatedProducts[idx] = {
+            ...updatedProducts[idx],
+            stock: updatedProducts[idx].stock + item.quantity, // Add back stock
+            unitsSold: Math.max(0, (updatedProducts[idx].unitsSold || 0) - item.quantity) // Subtract from unitsSold
+          };
+
+          // Update product in DB
+          await tx.objectStore('products').put(updatedProducts[idx]);
+
+          // Queue product update for cloud sync
+          await tx.objectStore('syncQueue').add({
+            type: 'UPDATE_PRODUCT',
+            payload: updatedProducts[idx],
+            timestamp: Date.now()
+          });
+        }
+      }
+
+      // 2. Delete associated product sale logs
+      const allLogs = await tx.objectStore('productSaleLogs').getAll();
+      const logsToDelete = allLogs.filter(log => log.saleId === saleId);
+
+      for (const log of logsToDelete) {
+        await tx.objectStore('productSaleLogs').delete(log.id);
+        // Queue log deletion for cloud sync
+        await tx.objectStore('syncQueue').add({
+          type: 'DELETE_PRODUCT_SALE_LOG',
+          payload: { id: log.id },
+          timestamp: Date.now()
+        });
+      }
+
+      // 3. Delete the sale
+      await tx.objectStore('sales').delete(saleId);
+
+      // Queue sale deletion for cloud sync
+      await tx.objectStore('syncQueue').add({
+        type: 'DELETE_SALE',
+        payload: { id: saleId },
+        timestamp: Date.now()
+      });
+
+      // Commit transaction
+      await tx.done;
+
+      // Update React state
+      setProducts(updatedProducts);
+      setSales(prev => prev.filter(s => s.id !== saleId));
+      setProductSaleLogs(prev => prev.filter(log => log.saleId !== saleId));
+
+      await addLog('SALE_DELETE', `Deleted sale #${saleId.slice(-8)} - Stock restored for ${sale.items.length} items - Total: ${CURRENCY_FORMATTER.format(sale.totalAmount)}`);
+
+      console.log(`✅ Sale ${saleId} deleted successfully. Stock restored.`);
+    } catch (error) {
+      console.error('Sale deletion failed:', error);
+      throw error;
+    }
+  };
+
+  /**
    * Inventory Management Functions
    */
   const addProduct = async (productData: Omit<Product, 'id'>) => {
@@ -1425,6 +1513,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       deleteUser,
       processSale,
       updateSale,
+      deleteSale,
       addProduct,
       updateProduct,
       deleteProduct,

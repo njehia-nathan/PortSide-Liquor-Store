@@ -70,13 +70,17 @@ export interface Sale {
   cashierName: string;
   totalAmount: number;
   totalCost: number; // For profit calc
-  paymentMethod: 'CASH' | 'CARD' | 'MOBILE';
+  paymentMethod: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT';
   items: SaleItem[];
   shiftId?: string; // Link to shift
   isVoided?: boolean;
   voidedAt?: string;
   voidedBy?: string;
   voidReason?: string;
+  splitPayment?: {
+    cashAmount: number;
+    mobileAmount: number;
+  };
 }
 
 export interface Shift {

@@ -247,7 +247,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
               logout();
               router.push('/');
             }}
-            className="flex items-center gap-3 px-4 py-3 w-full rounded-lg text-red-400 hover:bg-slate-800 hover:text-red-300 transition-colors"
+            className="flex items-center gap-3 px-4 py-3 w-full rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white transition-colors font-semibold"
           >
             <LogOut size={20} />
             <span className="font-medium">Logout</span>

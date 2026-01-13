@@ -37,7 +37,7 @@ interface StoreContextType {
   deleteUser: (userId: string) => Promise<void>;
 
   // --- POS ACTIONS ---
-  processSale: (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE') => Promise<Sale | undefined>;
+  processSale: (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT', splitPayment?: { cashAmount: number; mobileAmount: number }) => Promise<Sale | undefined>;
   updateSale: (sale: Sale) => Promise<void>;
 
   // --- INVENTORY ACTIONS ---
@@ -64,6 +64,7 @@ interface StoreContextType {
 
   // --- UTILITY ACTIONS ---
   fixCorruptedSales: () => Promise<{ fixed: number; total: number }>;
+  reconcileStock: () => Promise<{ reconciled: number; errors: string[] }>;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
@@ -715,16 +716,18 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
    * The core function of the POS. Handles money and inventory deduction.
    * CRITICAL FIX: Added stock validation, unitsSold tracking, and product sale logs.
    */
-  const processSale = async (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE') => {
+  const processSale = async (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT', splitPayment?: { cashAmount: number; mobileAmount: number }) => {
     if (!currentUser) return undefined;
 
     // CRITICAL: Validate stock availability BEFORE processing sale
     for (const item of items) {
       const product = products.find(p => p.id === item.productId);
       if (!product) {
+        alert(`Product not found: ${item.productName}`);
         throw new Error(`Product not found: ${item.productName}`);
       }
       if (product.stock < item.quantity) {
+        alert(`Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
         throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
       }
     }
@@ -741,6 +744,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       totalCost,
       paymentMethod,
       items,
+      splitPayment: paymentMethod === 'SPLIT' ? splitPayment : undefined,
     };
 
     // DB Transaction: We need to update Products, save Sale, AND create product sale logs atomically
@@ -969,8 +973,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     for (const item of request.sale.items) {
       const idx = updatedProducts.findIndex(p => p.id === item.productId);
       if (idx > -1) {
-        updatedProducts[idx] = { 
-          ...updatedProducts[idx], 
+        updatedProducts[idx] = {
+          ...updatedProducts[idx],
           stock: updatedProducts[idx].stock + item.quantity,
           unitsSold: Math.max(0, (updatedProducts[idx].unitsSold || 0) - item.quantity)
         };
@@ -1124,11 +1128,11 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     console.log('🔧 Starting corrupted sales fix and unitsSold recalculation...');
     const db = await dbPromise();
     const tx = db.transaction(['sales', 'productSaleLogs', 'products'], 'readwrite');
-    
+
     let fixedCount = 0;
     let skippedCount = 0;
-    const corruptedSales = sales.filter(sale => 
-      sale.totalAmount === 0 || sale.totalCost === 0 || 
+    const corruptedSales = sales.filter(sale =>
+      sale.totalAmount === 0 || sale.totalCost === 0 ||
       sale.items.some(item => item.priceAtSale === 0 || item.costAtSale === 0)
     );
 
@@ -1151,11 +1155,11 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       for (const item of sale.items) {
         // Try to find product by ID first
         let product = products.find(p => p.id === item.productId);
-        
+
         // If not found by ID, try to find by name and size
         if (!product) {
-          product = products.find(p => 
-            p.name.toLowerCase() === item.productName.toLowerCase() && 
+          product = products.find(p =>
+            p.name.toLowerCase() === item.productName.toLowerCase() &&
             p.size === item.size
           );
           if (product) {
@@ -1234,40 +1238,40 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     // STEP 2: Recalculate unitsSold for ALL products based on actual non-voided sales
     console.log('📊 Recalculating unitsSold for all products...');
     const productSalesMap = new Map<string, number>();
-    
+
     // Count units sold per product from all non-voided sales
     for (const sale of sales) {
       if (sale.isVoided) continue; // Skip voided sales
-      
+
       for (const item of sale.items) {
         const currentCount = productSalesMap.get(item.productId) || 0;
         productSalesMap.set(item.productId, currentCount + item.quantity);
       }
     }
-    
+
     // Update products with recalculated unitsSold
     const tx2 = db.transaction(['products'], 'readwrite');
     let unitsFixedCount = 0;
-    
+
     for (const product of products) {
       const calculatedUnitsSold = productSalesMap.get(product.id) || 0;
       const currentUnitsSold = product.unitsSold || 0;
-      
+
       if (calculatedUnitsSold !== currentUnitsSold) {
         const updatedProduct = {
           ...product,
           unitsSold: calculatedUnitsSold,
           updatedAt: new Date().toISOString()
         };
-        
+
         await tx2.objectStore('products').put(updatedProduct);
         updatedProducts.push(updatedProduct);
         unitsFixedCount++;
-        
+
         console.log(`  ✓ ${product.name}: ${currentUnitsSold} → ${calculatedUnitsSold} units sold`);
       }
     }
-    
+
     await tx2.done;
     console.log(`📊 Recalculated unitsSold for ${unitsFixedCount} products`);
 
@@ -1275,41 +1279,41 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     console.log('🔧 Fixing products with unrealistic values...');
     const tx3 = db.transaction(['products'], 'readwrite');
     let valueFixedCount = 0;
-    
+
     for (const product of products) {
       const cost = Number(product.costPrice) || 0;
       const stock = Number(product.stock) || 0;
       const value = cost * stock;
       let needsFix = false;
       let updatedProduct = { ...product };
-      
+
       // Fix unrealistic cost prices (over 1M Ksh per unit)
       if (cost > 1000000) {
         console.warn(`  ⚠️ ${product.name}: Cost price too high (${cost}), setting to 0`);
         updatedProduct.costPrice = 0;
         needsFix = true;
       }
-      
+
       // Fix unrealistic stock levels (over 100,000 units)
       if (stock > 100000) {
         console.warn(`  ⚠️ ${product.name}: Stock too high (${stock}), setting to 0`);
         updatedProduct.stock = 0;
         needsFix = true;
       }
-      
+
       // Fix negative values
       if (cost < 0) {
         console.warn(`  ⚠️ ${product.name}: Negative cost price (${cost}), setting to 0`);
         updatedProduct.costPrice = 0;
         needsFix = true;
       }
-      
+
       if (stock < 0) {
         console.warn(`  ⚠️ ${product.name}: Negative stock (${stock}), setting to 0`);
         updatedProduct.stock = 0;
         needsFix = true;
       }
-      
+
       if (needsFix) {
         updatedProduct.updatedAt = new Date().toISOString();
         await tx3.objectStore('products').put(updatedProduct);
@@ -1317,7 +1321,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         valueFixedCount++;
       }
     }
-    
+
     await tx3.done;
     console.log(`🔧 Fixed unrealistic values for ${valueFixedCount} products`);
 
@@ -1336,7 +1340,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           return updated || log;
         }));
       }
-      
+
       if (updatedProducts.length > 0) {
         setProducts(prev => prev.map(product => {
           const updated = updatedProducts.find(p => p.id === product.id);
@@ -1349,6 +1353,57 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     console.log(`✅ Fix complete: ${fixedCount} sales fixed, ${unitsFixedCount} products unitsSold recalculated, ${valueFixedCount} products values fixed, ${skippedCount} skipped, ${corruptedSales.length} total corrupted`);
     return { fixed: fixedCount + unitsFixedCount + valueFixedCount, total: corruptedSales.length + unitsFixedCount + valueFixedCount };
+  };
+
+  /**
+   * RECONCILE STOCK
+   * Recalculates stock levels based on product sale logs to fix discrepancies.
+   */
+  const reconcileStock = async (): Promise<{ reconciled: number; errors: string[] }> => {
+    console.log('📊 Starting stock reconciliation...');
+    const errors: string[] = [];
+    let reconciledCount = 0;
+
+    try {
+      const db = await dbPromise();
+      const tx = db.transaction(['products'], 'readwrite');
+      const updatedProducts: Product[] = [];
+
+      for (const product of products) {
+        // Validate stock isn't negative
+        if (product.stock < 0) {
+          console.warn(`  ⚠️ ${product.name}: Negative stock (${product.stock}), setting to 0`);
+          const updatedProduct = {
+            ...product,
+            stock: 0,
+            updatedAt: new Date().toISOString()
+          };
+          await tx.objectStore('products').put(updatedProduct);
+          updatedProducts.push(updatedProduct);
+          errors.push(`${product.name} had negative stock: ${product.stock}`);
+          reconciledCount++;
+        }
+      }
+
+      await tx.done;
+
+      if (updatedProducts.length > 0) {
+        setProducts(prev => prev.map(p => {
+          const updated = updatedProducts.find(up => up.id === p.id);
+          return updated || p;
+        }));
+
+        await addLog('STOCK_RECONCILE', `Reconciled stock for ${reconciledCount} products`);
+      }
+
+      console.log(`✅ Stock reconciliation complete: ${reconciledCount} products updated`);
+      return { reconciled: reconciledCount, errors };
+
+    } catch (error) {
+      console.error('❌ Stock reconciliation failed:', error);
+      errors.push(`Reconciliation failed: ${error}`);
+      return { reconciled: reconciledCount, errors };
+    }
   };
 
   return (
@@ -1389,6 +1444,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       businessSettings,
       updateBusinessSettings,
       fixCorruptedSales,
+      reconcileStock,
     }}>
       {children}
     </StoreContext.Provider>

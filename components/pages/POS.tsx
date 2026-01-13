@@ -31,6 +31,9 @@ const POS = () => {
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
   const [cashTendered, setCashTendered] = useState('');
   const [showCashModal, setShowCashModal] = useState(false);
+  const [showSplitModal, setShowSplitModal] = useState(false);
+  const [splitCashAmount, setSplitCashAmount] = useState('');
+  const [splitMobileAmount, setSplitMobileAmount] = useState('');
   const [showShiftReport, setShowShiftReport] = useState(false);
   const [closedShiftData, setClosedShiftData] = useState<{ shift: Shift; salesCount: number; revenue: number; cashSales: number; expectedCash: number; closingCash: number } | null>(null);
   const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
@@ -98,41 +101,55 @@ const POS = () => {
 
   const cartTotal = cart.reduce((sum, item) => sum + (item.sellingPrice * item.quantity), 0);
 
-  const handlePayment = async (method: 'CASH' | 'CARD' | 'MOBILE', cashAmount?: number) => {
-    const saleItems: SaleItem[] = cart.map(c => ({
-      productId: c.id,
-      productName: c.name,
-      size: c.size,
-      quantity: c.quantity,
-      priceAtSale: c.sellingPrice,
-      costAtSale: c.costPrice
-    }));
+  const handlePayment = async (method: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT', cashAmount?: number, splitPayment?: { cashAmount: number; mobileAmount: number }) => {
+    try {
+      const saleItems: SaleItem[] = cart.map(c => ({
+        productId: c.id,
+        productName: c.name,
+        size: c.size,
+        quantity: c.quantity,
+        priceAtSale: c.sellingPrice,
+        costAtSale: c.costPrice
+      }));
 
-    const newSale = await processSale(saleItems, method);
+      const newSale = await processSale(saleItems, method, splitPayment);
 
-    if (newSale) {
-      // Store cash tendered and change for receipt
-      if (method === 'CASH' && cashAmount) {
-        (newSale as any).cashTendered = cashAmount;
-        (newSale as any).changeGiven = cashAmount - newSale.totalAmount;
+      if (newSale) {
+        // Store cash tendered and change for receipt
+        if (method === 'CASH' && cashAmount) {
+          (newSale as any).cashTendered = cashAmount;
+          (newSale as any).changeGiven = cashAmount - newSale.totalAmount;
+        }
+        setReceiptSale(newSale);
+        setCart([]);
+        setPaymentModalOpen(false);
+        setShowCashModal(false);
+        setShowSplitModal(false);
+        setCashTendered('');
+        setSplitCashAmount('');
+        setSplitMobileAmount('');
+        setMobileCartOpen(false);
+        // Auto-print receipt
+        setTimeout(() => {
+          setShowReceiptModal(true);
+          setTimeout(() => window.print(), 500);
+        }, 100);
       }
-      setReceiptSale(newSale);
-      setCart([]);
-      setPaymentModalOpen(false);
-      setShowCashModal(false);
-      setCashTendered('');
-      setMobileCartOpen(false);
-      // Auto-print receipt
-      setTimeout(() => {
-        setShowReceiptModal(true);
-        setTimeout(() => window.print(), 500);
-      }, 100);
+    } catch (error) {
+      // Error already shown via alert in processSale
+      console.error('Payment failed:', error);
+      // Keep modals open so user can fix the issue
     }
   };
 
   const handleCashPayment = () => {
     setPaymentModalOpen(false);
     setShowCashModal(true);
+  };
+
+  const handleSplitPayment = () => {
+    setPaymentModalOpen(false);
+    setShowSplitModal(true);
   };
 
   const confirmCashPayment = () => {
@@ -142,6 +159,24 @@ const POS = () => {
       return;
     }
     handlePayment('CASH', tendered);
+  };
+
+  const confirmSplitPayment = () => {
+    const cash = parseFloat(splitCashAmount) || 0;
+    const mobile = parseFloat(splitMobileAmount) || 0;
+    const total = cash + mobile;
+
+    if (cash <= 0 || mobile <= 0) {
+      alert('Both cash and M-Pesa amounts must be greater than zero');
+      return;
+    }
+
+    if (Math.abs(total - cartTotal) > 0.01) {
+      alert(`Split payment total (${CURRENCY_FORMATTER.format(total)}) must equal cart total (${CURRENCY_FORMATTER.format(cartTotal)})`);
+      return;
+    }
+
+    handlePayment('SPLIT', undefined, { cashAmount: cash, mobileAmount: mobile });
   };
 
   const viewLastTransaction = () => {
@@ -563,7 +598,7 @@ const POS = () => {
                   {CURRENCY_FORMATTER.format(cartTotal)}
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <button onClick={handleCashPayment} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-green-50 rounded-xl hover:bg-green-100 border-2 border-green-200">
                   <Banknote size={28} className="text-green-600" />
                   <span className="font-bold text-green-800 text-sm lg:text-base">Cash</span>
@@ -575,6 +610,10 @@ const POS = () => {
                 <button onClick={() => handlePayment('MOBILE')} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-purple-50 rounded-xl hover:bg-purple-100 border-2 border-purple-200">
                   <Smartphone size={28} className="text-purple-600" />
                   <span className="font-bold text-purple-800 text-sm lg:text-base">M-Pesa</span>
+                </button>
+                <button onClick={handleSplitPayment} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-orange-50 rounded-xl hover:bg-orange-100 border-2 border-orange-200">
+                  <DollarSign size={28} className="text-orange-600" />
+                  <span className="font-bold text-orange-800 text-sm lg:text-base">Split Pay</span>
                 </button>
               </div>
             </div>
@@ -655,6 +694,104 @@ const POS = () => {
                   className="py-3 bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center justify-center gap-2"
                 >
                   <Banknote size={18} /> Complete Sale
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Split Payment Modal */}
+      {showSplitModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-end lg:items-center justify-center print:hidden">
+          <div className="bg-white w-full lg:rounded-xl lg:max-w-md lg:w-full rounded-t-2xl">
+            <div className="p-4 lg:p-6 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-lg lg:text-xl font-bold flex items-center gap-2">
+                <DollarSign className="text-orange-600" /> Split Payment
+              </h2>
+              <button type="button" onClick={() => { setShowSplitModal(false); setSplitCashAmount(''); setSplitMobileAmount(''); }}>
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-4 lg:p-6">
+              <div className="text-center mb-6">
+                <div className="text-slate-500 text-sm">Total Amount</div>
+                <div className="text-3xl lg:text-4xl font-bold text-amber-600">
+                  {CURRENCY_FORMATTER.format(cartTotal)}
+                </div>
+              </div>
+
+              <div className="mb-4">
+                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
+                  <Banknote size={16} className="text-green-600" /> Cash Amount
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  autoFocus
+                  placeholder="0.00"
+                  className="w-full border-2 border-green-400 p-4 rounded-lg text-xl font-mono text-center focus:ring-2 focus:ring-green-500 outline-none"
+                  value={splitCashAmount}
+                  onChange={(e) => setSplitCashAmount(e.target.value)}
+                />
+              </div>
+
+              <div className="mb-4">
+                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
+                  <Smartphone size={16} className="text-purple-600" /> M-Pesa Amount
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  className="w-full border-2 border-purple-400 p-4 rounded-lg text-xl font-mono text-center focus:ring-2 focus:ring-purple-500 outline-none"
+                  value={splitMobileAmount}
+                  onChange={(e) => setSplitMobileAmount(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      confirmSplitPayment();
+                    }
+                  }}
+                />
+              </div>
+
+              {splitCashAmount && splitMobileAmount && (
+                <div className={`border-2 rounded-xl p-4 mb-4 ${Math.abs((parseFloat(splitCashAmount) + parseFloat(splitMobileAmount)) - cartTotal) < 0.01
+                  ? 'bg-green-50 border-green-200'
+                  : 'bg-red-50 border-red-200'
+                  }`}>
+                  <div className="text-center">
+                    <div className={`text-sm font-medium ${Math.abs((parseFloat(splitCashAmount) + parseFloat(splitMobileAmount)) - cartTotal) < 0.01
+                      ? 'text-green-600'
+                      : 'text-red-600'
+                      }`}>
+                      {Math.abs((parseFloat(splitCashAmount) + parseFloat(splitMobileAmount)) - cartTotal) < 0.01
+                        ? 'Amounts Match ✓'
+                        : 'Amounts Must Equal Total'}
+                    </div>
+                    <div className={`text-2xl font-bold ${Math.abs((parseFloat(splitCashAmount) + parseFloat(splitMobileAmount)) - cartTotal) < 0.01
+                      ? 'text-green-700'
+                      : 'text-red-700'
+                      }`}>
+                      {CURRENCY_FORMATTER.format(parseFloat(splitCashAmount) + parseFloat(splitMobileAmount))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => { setShowSplitModal(false); setSplitCashAmount(''); setSplitMobileAmount(''); }}
+                  className="py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmSplitPayment}
+                  disabled={!splitCashAmount || !splitMobileAmount || Math.abs((parseFloat(splitCashAmount) + parseFloat(splitMobileAmount)) - cartTotal) > 0.01}
+                  className="py-3 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center justify-center gap-2"
+                >
+                  <DollarSign size={18} /> Complete Sale
                 </button>
               </div>
             </div>
@@ -834,6 +971,7 @@ const POS = () => {
                     {receiptSale.paymentMethod === 'CASH' && '💵'}
                     {receiptSale.paymentMethod === 'CARD' && '💳'}
                     {receiptSale.paymentMethod === 'MOBILE' && '📱'}
+                    {receiptSale.paymentMethod === 'SPLIT' && '💰'}
                     {receiptSale.paymentMethod === 'MOBILE' ? 'M-PESA' : receiptSale.paymentMethod}
                   </span>
                 </div>
@@ -901,6 +1039,23 @@ const POS = () => {
                     <div className="flex justify-between text-xs sm:text-sm">
                       <span className="text-green-700 font-medium">Balance</span>
                       <span className="font-bold text-green-700">{CURRENCY_FORMATTER.format((receiptSale as any).changeGiven)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Split Payment Details */}
+              {receiptSale.paymentMethod === 'SPLIT' && receiptSale.splitPayment && (
+                <div className="bg-orange-50 border border-orange-200 rounded-lg sm:rounded-xl p-2 sm:p-3 mb-3 sm:mb-4 print:bg-transparent print:border-slate-300 print:p-2 print:mb-3">
+                  <h4 className="text-xs font-bold text-black mb-2 print:text-[10px]">Payment Breakdown</h4>
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs sm:text-sm">
+                      <span className="text-black flex items-center gap-1">💵 Cash</span>
+                      <span className="font-bold text-black">{CURRENCY_FORMATTER.format(receiptSale.splitPayment.cashAmount)}</span>
+                    </div>
+                    <div className="flex justify-between text-xs sm:text-sm">
+                      <span className="text-black flex items-center gap-1">📱 M-Pesa</span>
+                      <span className="font-bold text-black">{CURRENCY_FORMATTER.format(receiptSale.splitPayment.mobileAmount)}</span>
                     </div>
                   </div>
                 </div>
@@ -1057,8 +1212,8 @@ const POS = () => {
                           </td>
                           <td className="px-3 py-3">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-700' :
-                                sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-700' :
-                                  'bg-purple-100 text-purple-700'
+                              sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-700' :
+                                'bg-purple-100 text-purple-700'
                               }`}>{sale.paymentMethod}</span>
                           </td>
                           <td className="px-3 py-3">
@@ -1066,8 +1221,8 @@ const POS = () => {
                               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700">VOIDED</span>
                             ) : voidReq ? (
                               <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${voidReq.status === 'PENDING' ? 'bg-amber-100 text-amber-700' :
-                                  voidReq.status === 'APPROVED' ? 'bg-red-100 text-red-700' :
-                                    'bg-slate-100 text-slate-600'
+                                voidReq.status === 'APPROVED' ? 'bg-red-100 text-red-700' :
+                                  'bg-slate-100 text-slate-600'
                                 }`}>{voidReq.status}</span>
                             ) : (
                               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700">VALID</span>

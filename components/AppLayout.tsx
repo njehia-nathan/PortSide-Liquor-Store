@@ -2,7 +2,7 @@
 
 import React, { PropsWithChildren, useEffect, useState } from 'react';
 import { useStore } from '../context/StoreContext';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   LogOut,
@@ -20,15 +20,20 @@ import {
   Clock,
   Users,
   Ban,
-  CheckSquare
+  CheckSquare,
+  AlertTriangle,
+  DollarSign
 } from 'lucide-react';
 
 const AppLayout = ({ children }: PropsWithChildren) => {
-  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings } = useStore();
+  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings, products } = useStore();
   const pathname = usePathname();
+  const router = useRouter();
   const [lastSaved, setLastSaved] = useState<string>('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showOfflineBanner, setShowOfflineBanner] = useState(true);
+  const [showProductWarning, setShowProductWarning] = useState(false);
+  const [productsWithIssues, setProductsWithIssues] = useState<any[]>([]);
 
   useEffect(() => {
     if (auditLogs.length > 0) {
@@ -45,6 +50,26 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       setShowOfflineBanner(true);
     }
   }, [isOnline]);
+
+  useEffect(() => {
+    // Check for products with missing costs when admin logs in
+    if (currentUser && currentUser.permissions?.includes('ADMIN')) {
+      const issueProducts = products.filter(p =>
+        p.costPrice === 0 || p.sellingPrice === 0 ||
+        isNaN(p.costPrice) || isNaN(p.sellingPrice)
+      );
+
+      if (issueProducts.length > 0) {
+        setProductsWithIssues(issueProducts);
+        // Only show once per session
+        const warningShown = sessionStorage.getItem('productWarningShown');
+        if (!warningShown) {
+          setShowProductWarning(true);
+          sessionStorage.setItem('productWarningShown', 'true');
+        }
+      }
+    }
+  }, [currentUser, products]);
 
   if (!currentUser) {
     return <>{children}</>;
@@ -218,7 +243,10 @@ const AppLayout = ({ children }: PropsWithChildren) => {
 
         <div className="p-4 border-t border-slate-800">
           <button
-            onClick={logout}
+            onClick={() => {
+              logout();
+              router.push('/');
+            }}
             className="flex items-center gap-3 px-4 py-3 w-full rounded-lg text-red-400 hover:bg-slate-800 hover:text-red-300 transition-colors"
           >
             <LogOut size={20} />
@@ -226,6 +254,80 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           </button>
         </div>
       </aside>
+
+      {/* Product Warning Modal */}
+      {showProductWarning && productsWithIssues.length > 0 && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-200 bg-gradient-to-r from-red-500 to-red-600">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
+                  <AlertTriangle size={24} className="text-white" />
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Products Need Attention</h2>
+                  <p className="text-red-100 text-sm mt-1">{productsWithIssues.length} product(s) have missing or invalid prices</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <p className="text-sm text-amber-900">
+                  <strong>Action Required:</strong> The following products have missing cost or selling prices.
+                  Please update them in the Inventory page to ensure accurate sales tracking and reporting.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                {productsWithIssues.map(product => (
+                  <div key={product.id} className="p-4 border border-red-200 bg-red-50 rounded-lg">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="font-bold text-slate-800">{product.name}</p>
+                        <p className="text-sm text-slate-600">{product.size} • {product.brand}</p>
+                        <p className="text-xs text-slate-500 mt-1">SKU: {product.sku}</p>
+                      </div>
+                      <div className="text-right">
+                        <div className="flex items-center gap-2">
+                          <DollarSign size={14} className="text-red-600" />
+                          <div>
+                            <p className={`text-sm ${product.costPrice === 0 ? 'text-red-600 font-bold' : 'text-slate-600'}`}>
+                              Cost: {product.costPrice === 0 ? 'MISSING' : `KES ${product.costPrice}`}
+                            </p>
+                            <p className={`text-sm ${product.sellingPrice === 0 ? 'text-red-600 font-bold' : 'text-slate-600'}`}>
+                              Sale: {product.sellingPrice === 0 ? 'MISSING' : `KES ${product.sellingPrice}`}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-slate-200 bg-slate-50 flex justify-between items-center">
+              <button
+                onClick={() => setShowProductWarning(false)}
+                className="px-4 py-2 text-slate-600 hover:text-slate-800 font-medium transition-colors"
+              >
+                Remind Me Later
+              </button>
+              <button
+                onClick={() => {
+                  setShowProductWarning(false);
+                  router.push('/inventory');
+                }}
+                className="flex items-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold transition-colors"
+              >
+                <Package size={18} />
+                Go to Inventory
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="flex-1 overflow-auto bg-slate-100 relative print:overflow-visible print:bg-white print:p-0 pt-14 lg:pt-0">

@@ -38,6 +38,7 @@ interface StoreContextType {
 
   // --- POS ACTIONS ---
   processSale: (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE') => Promise<Sale | undefined>;
+  updateSale: (sale: Sale) => Promise<void>;
 
   // --- INVENTORY ACTIONS ---
   addProduct: (product: Omit<Product, 'id'>) => Promise<void>;
@@ -755,14 +756,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         const idx = updatedProducts.findIndex(p => p.id === item.productId);
         if (idx > -1) {
           const currentProduct = updatedProducts[idx];
-          
+
           // CRITICAL FIX: Update both stock AND unitsSold
           updatedProducts[idx] = {
             ...currentProduct,
             stock: currentProduct.stock - item.quantity,
             unitsSold: (currentProduct.unitsSold || 0) + item.quantity
           };
-          
+
           // Update product in DB
           await tx.objectStore('products').put(updatedProducts[idx]);
 
@@ -786,12 +787,12 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             cashierId: currentUser.id,
             cashierName: currentUser.name
           };
-          
+
           newProductSaleLogs.push(saleLog);
-          
+
           // Save sale log to DB
           await tx.objectStore('productSaleLogs').put(saleLog);
-          
+
           // Queue sale log for cloud sync
           await tx.objectStore('syncQueue').add({
             type: 'PRODUCT_SALE_LOG',
@@ -825,6 +826,23 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       console.error('Sale processing failed:', error);
       throw error;
     }
+  };
+
+  /**
+   * UPDATE SALE
+   * Updates an existing sale (e.g., fixing prices)
+   */
+  const updateSale = async (updatedSale: Sale) => {
+    // Update React state
+    setSales(prev => prev.map(s => s.id === updatedSale.id ? updatedSale : s));
+
+    // Update IndexedDB
+    const db = await dbPromise();
+    await db.put('sales', updatedSale);
+
+    // Queue for cloud sync
+    await addToSyncQueue('UPDATE_SALE', updatedSale);
+    await addLog('SALE_UPDATE', `Updated sale #${updatedSale.id.slice(-8)} - Total: ${CURRENCY_FORMATTER.format(updatedSale.totalAmount)}`);
   };
 
   /**
@@ -1192,7 +1210,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         // Update product sale logs
         for (const item of updatedItems) {
           const existingLogs = productSaleLogs.filter(log => log.saleId === sale.id && log.productId === item.productId);
-          
+
           if (existingLogs.length > 0) {
             for (const log of existingLogs) {
               const updatedLog: ProductSaleLog = {
@@ -1361,6 +1379,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       addUser,
       deleteUser,
       processSale,
+      updateSale,
       addProduct,
       updateProduct,
       deleteProduct,

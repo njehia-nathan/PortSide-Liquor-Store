@@ -4,14 +4,35 @@ import React, { useState, useMemo } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { CURRENCY_FORMATTER } from '../../constants';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
-import { Banknote, CreditCard, Smartphone, Download, Calendar, FilterX } from 'lucide-react';
+import { Banknote, CreditCard, Smartphone, Download, Calendar, FilterX, X, Edit2, Save, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { Sale, SaleItem } from '../../types';
 
 const COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6'];
 
 const Reports = () => {
-  const { sales, products } = useStore();
+  const { sales, products, updateSale } = useStore();
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
+  const [showSaleDetailsModal, setShowSaleDetailsModal] = useState(false);
+  const [editingItems, setEditingItems] = useState<SaleItem[]>([]);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [showProductSelector, setShowProductSelector] = useState(false);
+  const [selectingForItemIndex, setSelectingForItemIndex] = useState<number | null>(null);
+  const [productSearchQuery, setProductSearchQuery] = useState('');
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' } | null>(null);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<(() => void) | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'warning' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const showConfirm = (message: string, onConfirm: () => void) => {
+    setConfirmAction(() => onConfirm);
+    setShowConfirmDialog(true);
+  };
 
   const filteredSales = useMemo(() => {
     return sales.filter(sale => {
@@ -95,6 +116,188 @@ const Reports = () => {
     document.body.removeChild(link);
   };
 
+  const handleViewSaleDetails = (sale: Sale) => {
+    setSelectedSale(sale);
+    setEditingItems(JSON.parse(JSON.stringify(sale.items)));
+    setIsEditMode(false);
+    setShowSaleDetailsModal(true);
+  };
+
+  const handleEnterEditMode = () => {
+    if (!selectedSale) return;
+
+    // Auto-load current product prices for items with 0 prices
+    const itemsWithPrices = selectedSale.items.map(item => {
+      const hasZeroPrice = item.priceAtSale === 0 || item.costAtSale === 0;
+
+      if (hasZeroPrice) {
+        // Try to find by ID first
+        let currentProduct = products.find(p => p.id === item.productId);
+
+        // If not found by ID, try to find by name (case-insensitive, partial match)
+        if (!currentProduct) {
+          const searchName = item.productName.toLowerCase();
+          currentProduct = products.find(p =>
+            p.name.toLowerCase().includes(searchName) ||
+            searchName.includes(p.name.toLowerCase())
+          );
+        }
+
+        // If still not found, try by size match
+        if (!currentProduct) {
+          currentProduct = products.find(p => p.size === item.size);
+        }
+
+        if (currentProduct) {
+          return {
+            ...item,
+            priceAtSale: item.priceAtSale === 0 ? currentProduct.sellingPrice : item.priceAtSale,
+            costAtSale: item.costAtSale === 0 ? currentProduct.costPrice : item.costAtSale
+          };
+        }
+      }
+
+      return item;
+    });
+
+    setEditingItems(itemsWithPrices);
+    setIsEditMode(true);
+  };
+
+  const handleSelectProduct = (itemIndex: number) => {
+    setSelectingForItemIndex(itemIndex);
+    setProductSearchQuery('');
+    setShowProductSelector(true);
+  };
+
+  const handleProductSelected = (product: any) => {
+    if (selectingForItemIndex === null) return;
+
+    setEditingItems(prev => prev.map((item, i) =>
+      i === selectingForItemIndex ? {
+        ...item,
+        productId: product.id,
+        productName: product.name,
+        size: product.size,
+        priceAtSale: product.sellingPrice,
+        costAtSale: product.costPrice
+      } : item
+    ));
+
+    setShowProductSelector(false);
+    setSelectingForItemIndex(null);
+  };
+
+  const filteredProductsForSelector = useMemo(() => {
+    if (!productSearchQuery) return products;
+    const query = productSearchQuery.toLowerCase();
+    return products.filter(p =>
+      p.name.toLowerCase().includes(query) ||
+      p.sku.toLowerCase().includes(query) ||
+      p.brand.toLowerCase().includes(query)
+    );
+  }, [products, productSearchQuery]);
+
+  const handleUpdateItemPrice = (index: number, field: 'priceAtSale' | 'costAtSale', value: string) => {
+    const numValue = parseFloat(value) || 0;
+    setEditingItems(prev => prev.map((item, i) =>
+      i === index ? { ...item, [field]: numValue } : item
+    ));
+  };
+
+  const handleSaveSaleUpdates = async () => {
+    if (!selectedSale) return;
+
+    // Validate all items have valid prices
+    const hasInvalidPrices = editingItems.some(item =>
+      item.priceAtSale < 0 || item.costAtSale < 0 ||
+      isNaN(item.priceAtSale) || isNaN(item.costAtSale)
+    );
+
+    if (hasInvalidPrices) {
+      showToast('Error: All prices must be valid positive numbers.', 'error');
+      return;
+    }
+
+    // Check if any items still have 0 prices
+    const stillHasZeros = editingItems.some(item =>
+      item.priceAtSale === 0 || item.costAtSale === 0
+    );
+
+    if (stillHasZeros) {
+      showConfirm(
+        'Some items still have 0 prices. Are you sure you want to save?',
+        () => performSaveUpdates()
+      );
+      return;
+    }
+
+    await performSaveUpdates();
+  };
+
+  const performSaveUpdates = async () => {
+    if (!selectedSale) return;
+
+    // Calculate totals with proper rounding
+    const updatedTotalAmount = editingItems.reduce((sum, item) => {
+      return sum + (Math.round(item.priceAtSale * item.quantity * 100) / 100);
+    }, 0);
+
+    const updatedTotalCost = editingItems.reduce((sum, item) => {
+      return sum + (Math.round(item.costAtSale * item.quantity * 100) / 100);
+    }, 0);
+
+    const updatedSale: Sale = {
+      ...selectedSale,
+      items: editingItems,
+      totalAmount: Math.round(updatedTotalAmount * 100) / 100,
+      totalCost: Math.round(updatedTotalCost * 100) / 100
+    };
+
+    try {
+      // Use the updateSale function from StoreContext
+      // This will update React state, IndexedDB, and queue for Supabase sync
+      await updateSale(updatedSale);
+
+      // Also update product sale logs if they exist
+      const { dbPromise, addToSyncQueue } = await import('../../db');
+      const db = await dbPromise();
+      const tx = db.transaction(['productSaleLogs'], 'readwrite');
+      const allLogs = await tx.objectStore('productSaleLogs').getAll();
+
+      for (const item of editingItems) {
+        const existingLog = allLogs.find(log =>
+          log.saleId === selectedSale.id && log.productId === item.productId
+        );
+
+        if (existingLog) {
+          const updatedLog = {
+            ...existingLog,
+            priceAtSale: item.priceAtSale,
+            costAtSale: item.costAtSale
+          };
+          await db.put('productSaleLogs', updatedLog);
+          await addToSyncQueue('UPDATE_PRODUCT_SALE_LOG', updatedLog);
+        }
+      }
+
+      showToast('Sale updated successfully!', 'success');
+
+      // Close modal and exit edit mode after successful update
+      setTimeout(() => {
+        setShowSaleDetailsModal(false);
+        setSelectedSale(null);
+        setIsEditMode(false);
+      }, 1500);
+    } catch (error) {
+      showToast('Failed to update sale: ' + error, 'error');
+    }
+  };
+
+  const hasZeroPrices = (sale: Sale) => {
+    return sale.items.some(item => item.priceAtSale === 0 || item.costAtSale === 0);
+  };
+
   return (
     <div className="p-3 lg:p-6 max-w-7xl mx-auto space-y-4 lg:space-y-6">
       <div className="flex flex-col gap-3">
@@ -104,7 +307,7 @@ const Reports = () => {
         </div>
         <div className="flex flex-col sm:flex-row gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-sm">
           <div className="flex items-center gap-2 px-2 flex-1">
-            <Calendar size={16} className="text-slate-400 shrink-0"/>
+            <Calendar size={16} className="text-slate-400 shrink-0" />
             <input type="date" className="text-sm border-none outline-none text-slate-600 bg-transparent min-w-0 flex-1" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             <span className="text-slate-400">-</span>
             <input type="date" className="text-sm border-none outline-none text-slate-600 bg-transparent min-w-0 flex-1" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
@@ -141,21 +344,21 @@ const Reports = () => {
 
           <div className="grid grid-cols-3 gap-2 lg:gap-6">
             <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center gap-2 lg:gap-4">
-              <div className="p-2 lg:p-3 bg-green-100 text-green-600 rounded-full"><Banknote size={18} className="lg:w-6 lg:h-6"/></div>
+              <div className="p-2 lg:p-3 bg-green-100 text-green-600 rounded-full"><Banknote size={18} className="lg:w-6 lg:h-6" /></div>
               <div className="text-center lg:text-left">
                 <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Cash</p>
                 <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.CASH)}</p>
               </div>
             </div>
             <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center gap-2 lg:gap-4">
-              <div className="p-2 lg:p-3 bg-blue-100 text-blue-600 rounded-full"><CreditCard size={18} className="lg:w-6 lg:h-6"/></div>
+              <div className="p-2 lg:p-3 bg-blue-100 text-blue-600 rounded-full"><CreditCard size={18} className="lg:w-6 lg:h-6" /></div>
               <div className="text-center lg:text-left">
                 <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Card</p>
                 <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.CARD)}</p>
               </div>
             </div>
             <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center gap-2 lg:gap-4">
-              <div className="p-2 lg:p-3 bg-purple-100 text-purple-600 rounded-full"><Smartphone size={18} className="lg:w-6 lg:h-6"/></div>
+              <div className="p-2 lg:p-3 bg-purple-100 text-purple-600 rounded-full"><Smartphone size={18} className="lg:w-6 lg:h-6" /></div>
               <div className="text-center lg:text-left">
                 <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Mobile</p>
                 <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.MOBILE)}</p>
@@ -172,7 +375,7 @@ const Reports = () => {
                     {categoryData.map((entry, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}
                   </Pie>
                   <Tooltip formatter={(value: number) => CURRENCY_FORMATTER.format(value)} />
-                  <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px' }}/>
+                  <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px' }} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -182,7 +385,7 @@ const Reports = () => {
                 <BarChart data={topProductsData} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} />
                   <XAxis type="number" hide />
-                  <YAxis dataKey="name" type="category" width={100} tick={{fontSize: 11}} interval={0} />
+                  <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 11 }} interval={0} />
                   <Tooltip />
                   <Bar dataKey="qty" fill="#3b82f6" radius={[0, 4, 4, 0]}>
                     {topProductsData.map((entry, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}
@@ -207,8 +410,8 @@ const Reports = () => {
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="px-4 lg:px-6 py-3 lg:py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
               <h3 className="font-bold text-slate-800 text-sm lg:text-base">Recent Transactions ({filteredSales.length})</h3>
-              <button 
-                onClick={downloadExcel} 
+              <button
+                onClick={downloadExcel}
                 className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
               >
                 <Download size={14} />
@@ -240,7 +443,7 @@ const Reports = () => {
                     const margin = sale.totalAmount > 0 ? (profit / sale.totalAmount) * 100 : 0;
                     const saleDate = new Date(sale.timestamp);
                     const itemsDisplay = sale.items.map(i => `${i.quantity}x ${i.productName} (${i.size})`).join(', ');
-                    
+
                     return (
                       <tr key={sale.id} className="hover:bg-gray-100 border-b border-black">
                         <td className="px-2 py-1.5 text-gray-500 font-mono text-xs sticky left-0 bg-white border-r border-black">{idx + 1}</td>
@@ -252,7 +455,18 @@ const Reports = () => {
                           {saleDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                         </td>
                         <td className="px-2 py-1.5 text-gray-800 text-xs font-medium border-r border-black">{sale.cashierName}</td>
-                        <td className="px-2 py-1.5 text-gray-700 text-xs border-r border-black max-w-xs truncate" title={itemsDisplay}>{itemsDisplay}</td>
+                        <td
+                          className="px-2 py-1.5 text-gray-700 text-xs border-r border-black max-w-xs truncate cursor-pointer hover:bg-blue-50 hover:text-blue-700 relative"
+                          title={itemsDisplay}
+                          onClick={() => handleViewSaleDetails(sale)}
+                        >
+                          {itemsDisplay}
+                          {hasZeroPrices(sale) && (
+                            <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-100 text-red-700 border border-red-300">
+                              <AlertCircle size={10} className="mr-0.5" /> FIX
+                            </span>
+                          )}
+                        </td>
                         <td className="px-2 py-1.5 text-center font-bold text-gray-900 border-r border-black">{totalQty}</td>
                         <td className="px-2 py-1.5 text-right text-gray-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(sale.totalCost)}</td>
                         <td className="px-2 py-1.5 text-right font-bold text-gray-900 border-r border-black">{CURRENCY_FORMATTER.format(sale.totalAmount)}</td>
@@ -263,11 +477,10 @@ const Reports = () => {
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-center">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                            sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-800 border-green-800' :
-                            sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-800 border-blue-800' : 
-                            'bg-purple-100 text-purple-800 border-purple-800'
-                          }`}>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-800 border-green-800' :
+                            sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-800 border-blue-800' :
+                              'bg-purple-100 text-purple-800 border-purple-800'
+                            }`}>
                             {sale.paymentMethod}
                           </span>
                         </td>
@@ -294,6 +507,363 @@ const Reports = () => {
             </div>
           </div>
         </>
+      )}
+
+      {/* Sale Details Modal */}
+      {showSaleDetailsModal && selectedSale && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="p-6 border-b border-slate-200 bg-gradient-to-r from-blue-500 to-blue-600">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Sale Details</h2>
+                  <p className="text-blue-100 text-sm mt-1">Transaction #{selectedSale.id.slice(-8).toUpperCase()}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowSaleDetailsModal(false);
+                    setSelectedSale(null);
+                    setIsEditMode(false);
+                  }}
+                  className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+                >
+                  <X size={24} className="text-white" />
+                </button>
+              </div>
+            </div>
+
+            {/* Sale Info */}
+            <div className="p-6 bg-slate-50 border-b border-slate-200">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-xs text-slate-500 font-medium">Date</p>
+                  <p className="text-sm font-bold text-slate-800">
+                    {new Date(selectedSale.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 font-medium">Time</p>
+                  <p className="text-sm font-bold text-slate-800">
+                    {new Date(selectedSale.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 font-medium">Cashier</p>
+                  <p className="text-sm font-bold text-slate-800">{selectedSale.cashierName}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 font-medium">Payment</p>
+                  <p className="text-sm font-bold text-slate-800">{selectedSale.paymentMethod}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Items Table */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {hasZeroPrices(selectedSale) && !isEditMode && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
+                  <AlertCircle size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-amber-900">Missing Price Information</p>
+                    <p className="text-xs text-amber-700 mt-1">
+                      Some items have 0 prices/costs. This may be because they were sold before prices were recorded. Click Edit to update.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {isEditMode && (
+                <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-3">
+                  <AlertCircle size={20} className="text-blue-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-blue-900">Edit Mode Active</p>
+                    <p className="text-xs text-blue-700 mt-1">
+                      Prices have been auto-loaded from current product inventory. You can adjust them manually if needed.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <table className="w-full text-sm">
+                <thead className="bg-slate-100 border-b-2 border-slate-300">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-bold text-slate-700 uppercase">#</th>
+                    <th className="px-3 py-2 text-left text-xs font-bold text-slate-700 uppercase">Product</th>
+                    <th className="px-3 py-2 text-center text-xs font-bold text-slate-700 uppercase">Qty</th>
+                    <th className="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase">Cost Price</th>
+                    <th className="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase">Sale Price</th>
+                    <th className="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase">Total Cost</th>
+                    <th className="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase">Total Sale</th>
+                    <th className="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase">Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(isEditMode ? editingItems : selectedSale.items).map((item, idx) => {
+                    const totalCost = item.costAtSale * item.quantity;
+                    const totalSale = item.priceAtSale * item.quantity;
+                    const profit = totalSale - totalCost;
+                    const hasIssue = item.priceAtSale === 0 || item.costAtSale === 0;
+
+                    return (
+                      <tr key={idx} className={`border-b border-slate-200 ${hasIssue ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
+                        <td className="px-3 py-2 text-slate-600">{idx + 1}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <p className="font-medium text-slate-800">{item.productName}</p>
+                              <p className="text-xs text-slate-500">{item.size}</p>
+                            </div>
+                            {isEditMode && hasIssue && (
+                              <button
+                                onClick={() => handleSelectProduct(idx)}
+                                className="text-xs px-2 py-1 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded border border-blue-300 font-medium"
+                              >
+                                Select Product
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-center font-bold text-slate-900">{item.quantity}</td>
+                        <td className="px-3 py-2 text-right">
+                          {isEditMode ? (
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={item.costAtSale}
+                              onChange={(e) => handleUpdateItemPrice(idx, 'costAtSale', e.target.value)}
+                              className={`w-24 px-2 py-1 text-right border rounded ${hasIssue ? 'border-red-300 bg-red-50' : 'border-slate-300'}`}
+                            />
+                          ) : (
+                            <span className={hasIssue ? 'text-red-600 font-bold' : 'text-slate-700'}>
+                              {CURRENCY_FORMATTER.format(item.costAtSale)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {isEditMode ? (
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={item.priceAtSale}
+                              onChange={(e) => handleUpdateItemPrice(idx, 'priceAtSale', e.target.value)}
+                              className={`w-24 px-2 py-1 text-right border rounded ${hasIssue ? 'border-red-300 bg-red-50' : 'border-slate-300'}`}
+                            />
+                          ) : (
+                            <span className={hasIssue ? 'text-red-600 font-bold' : 'text-slate-700'}>
+                              {CURRENCY_FORMATTER.format(item.priceAtSale)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right text-slate-700">{CURRENCY_FORMATTER.format(totalCost)}</td>
+                        <td className="px-3 py-2 text-right font-bold text-slate-900">{CURRENCY_FORMATTER.format(totalSale)}</td>
+                        <td className="px-3 py-2 text-right font-bold text-green-700">{CURRENCY_FORMATTER.format(profit)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot className="bg-slate-100 border-t-2 border-slate-300">
+                  <tr className="font-bold">
+                    <td colSpan={5} className="px-3 py-3 text-right text-slate-900 uppercase text-xs">Totals:</td>
+                    <td className="px-3 py-3 text-right text-slate-900">
+                      {CURRENCY_FORMATTER.format(
+                        (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0)
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-right text-slate-900">
+                      {CURRENCY_FORMATTER.format(
+                        (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0)
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-right text-green-700">
+                      {CURRENCY_FORMATTER.format(
+                        (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => {
+                          const totalSale = item.priceAtSale * item.quantity;
+                          const totalCost = item.costAtSale * item.quantity;
+                          return sum + (totalSale - totalCost);
+                        }, 0)
+                      )}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            {/* Footer Actions */}
+            <div className="p-6 border-t border-slate-200 bg-slate-50 flex justify-between items-center">
+              <button
+                onClick={() => {
+                  setShowSaleDetailsModal(false);
+                  setSelectedSale(null);
+                  setIsEditMode(false);
+                }}
+                className="px-4 py-2 text-slate-600 hover:text-slate-800 font-medium transition-colors"
+              >
+                Close
+              </button>
+              <div className="flex gap-3">
+                {!isEditMode ? (
+                  <button
+                    onClick={handleEnterEditMode}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                  >
+                    <Edit2 size={16} />
+                    Edit Prices
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => {
+                        setEditingItems(JSON.parse(JSON.stringify(selectedSale.items)));
+                        setIsEditMode(false);
+                      }}
+                      className="px-4 py-2 border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-lg font-medium transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveSaleUpdates}
+                      className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors"
+                    >
+                      <Save size={16} />
+                      Save Changes
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Product Selector Modal */}
+      {showProductSelector && (
+        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-200 bg-gradient-to-r from-purple-500 to-purple-600">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Select Product</h2>
+                  <p className="text-purple-100 text-sm mt-1">Choose a product to replace the missing item</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowProductSelector(false);
+                    setSelectingForItemIndex(null);
+                  }}
+                  className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+                >
+                  <X size={24} className="text-white" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 border-b border-slate-200">
+              <input
+                type="text"
+                placeholder="Search products by name, SKU, or brand..."
+                value={productSearchQuery}
+                onChange={(e) => setProductSearchQuery(e.target.value)}
+                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {filteredProductsForSelector.length === 0 ? (
+                <div className="text-center py-8 text-slate-500">
+                  <p>No products found</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {filteredProductsForSelector.map(product => (
+                    <button
+                      key={product.id}
+                      onClick={() => handleProductSelected(product)}
+                      className="w-full p-4 border border-slate-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors text-left"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="font-bold text-slate-800">{product.name}</p>
+                          <p className="text-sm text-slate-500">{product.size} • {product.brand}</p>
+                          <p className="text-xs text-slate-400 mt-1">SKU: {product.sku}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm text-slate-600">Cost: {CURRENCY_FORMATTER.format(product.costPrice)}</p>
+                          <p className="text-sm font-bold text-green-600">Sale: {CURRENCY_FORMATTER.format(product.sellingPrice)}</p>
+                          <p className="text-xs text-slate-500 mt-1">Stock: {product.stock}</p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast && (
+        <div className="fixed top-4 right-4 z-[200] animate-slide-in">
+          <div className={`flex items-center gap-3 px-6 py-4 rounded-lg shadow-2xl border-2 ${toast.type === 'success' ? 'bg-green-50 border-green-500 text-green-900' :
+            toast.type === 'error' ? 'bg-red-50 border-red-500 text-red-900' :
+              'bg-amber-50 border-amber-500 text-amber-900'
+            }`}>
+            {toast.type === 'success' && <CheckCircle size={24} className="text-green-600" />}
+            {toast.type === 'error' && <XCircle size={24} className="text-red-600" />}
+            {toast.type === 'warning' && <AlertCircle size={24} className="text-amber-600" />}
+            <p className="font-medium">{toast.message}</p>
+            <button
+              onClick={() => setToast(null)}
+              className="ml-2 hover:opacity-70 transition-opacity"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Dialog */}
+      {showConfirmDialog && (
+        <div className="fixed inset-0 z-[150] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-6 border-b border-slate-200 bg-gradient-to-r from-amber-500 to-amber-600">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
+                  <AlertCircle size={24} className="text-white" />
+                </div>
+                <h2 className="text-xl font-bold text-white">Confirm Action</h2>
+              </div>
+            </div>
+            <div className="p-6">
+              <p className="text-slate-700">Some items still have 0 prices. Are you sure you want to save?</p>
+            </div>
+            <div className="p-6 pt-0 flex gap-3">
+              <button
+                onClick={() => {
+                  setShowConfirmDialog(false);
+                  setConfirmAction(null);
+                }}
+                className="flex-1 px-4 py-3 border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-lg font-medium transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowConfirmDialog(false);
+                  if (confirmAction) {
+                    confirmAction();
+                  }
+                  setConfirmAction(null);
+                }}
+                className="flex-1 px-4 py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold transition-colors"
+              >
+                Yes, Save Anyway
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

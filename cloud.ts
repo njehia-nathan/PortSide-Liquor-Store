@@ -4,8 +4,8 @@ import { createClient } from '@supabase/supabase-js';
 // CONFIGURATION
 // ------------------------------------------------------------------
 // Real credentials provided by user
-const SUPABASE_URL = 'https://gdmezqfvlirkaamwfqmf.supabase.co'; 
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdkbWV6cWZ2bGlya2FhbXdmcW1mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MTI0MzEsImV4cCI6MjA4MTM4ODQzMX0.YymnaJGMt-z63v8lyXdIoVX7m6u7ZqJM8AFU4QImoRs'; 
+const SUPABASE_URL = 'https://gdmezqfvlirkaamwfqmf.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdkbWV6cWZ2bGlya2FhbXdmcW1mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MTI0MzEsImV4cCI6MjA4MTM4ODQzMX0.YymnaJGMt-z63v8lyXdIoVX7m6u7ZqJM8AFU4QImoRs';
 
 // Check if keys are configured.
 const IS_CONFIGURED = (SUPABASE_URL as string) !== 'https://xyzcompany.supabase.co';
@@ -24,7 +24,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
   // If user hasn't set up Supabase yet, just pretend we synced it.
   if (!IS_CONFIGURED) {
     console.log(`[Simulation] Cloud Sync Success: ${type}`, payload);
-    return true; 
+    return true;
   }
 
   try {
@@ -34,6 +34,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
     // Map internal action types to Supabase Database Tables
     switch (type) {
       case 'SALE':
+      case 'UPDATE_SALE':
         table = 'sales';
         break;
       case 'ADD_PRODUCT':
@@ -118,13 +119,13 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
     } else {
       // Upsert handles both Insert (New) and Update (Existing ID)
       const { error } = await supabase.from(table).upsert(payload);
-      
+
       if (error) {
-          // Help debug schema issues
-          if (error.code === '42703') { // Postgres code for undefined_column
-              console.error(`[Cloud Sync] Schema Error: A column is missing in Supabase table '${table}'. Check your SQL setup.`, error.message);
-          }
-          throw error;
+        // Help debug schema issues
+        if (error.code === '42703') { // Postgres code for undefined_column
+          console.error(`[Cloud Sync] Schema Error: A column is missing in Supabase table '${table}'. Check your SQL setup.`, error.message);
+        }
+        throw error;
       }
     }
 

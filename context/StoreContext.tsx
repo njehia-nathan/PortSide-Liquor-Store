@@ -1069,17 +1069,46 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       }
     }
 
-    setVoidRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));
-    setSales(prev => prev.map(s => s.id === request.saleId ? updatedSale : s));
-    setProducts(updatedProducts);
-
+    // Update database first
     const db = await dbPromise();
-    await db.put('voidRequests', updatedRequest);
-    await db.put('sales', updatedSale);
-    for (const p of updatedProducts) await db.put('products', p);
+    const tx = db.transaction(['voidRequests', 'sales', 'products', 'syncQueue'], 'readwrite');
 
-    await addLog('VOID_APPROVED', `Approved void for Sale #${request.saleId}${notes ? `. Notes: ${notes}` : ''}`);
-    await addToSyncQueue('VOID_APPROVED', { request: updatedRequest, sale: updatedSale });
+    try {
+      // Update void request
+      await tx.objectStore('voidRequests').put(updatedRequest);
+
+      // Update sale
+      await tx.objectStore('sales').put(updatedSale);
+
+      // Update all products and queue for sync
+      for (const p of updatedProducts) {
+        await tx.objectStore('products').put(p);
+        await tx.objectStore('syncQueue').add({
+          type: 'UPDATE_PRODUCT',
+          payload: p,
+          timestamp: Date.now()
+        });
+      }
+
+      // Queue void approval for sync
+      await tx.objectStore('syncQueue').add({
+        type: 'VOID_APPROVED',
+        payload: { request: updatedRequest, sale: updatedSale },
+        timestamp: Date.now()
+      });
+
+      await tx.done;
+
+      // Update React state after successful DB transaction
+      setVoidRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));
+      setSales(prev => prev.map(s => s.id === request.saleId ? updatedSale : s));
+      setProducts(updatedProducts);
+
+      await addLog('VOID_APPROVED', `Approved void for Sale #${request.saleId}${notes ? `. Notes: ${notes}` : ''}`);
+    } catch (error) {
+      console.error('Failed to approve void:', error);
+      throw error;
+    }
   };
 
   const rejectVoid = async (requestId: string, notes?: string) => {

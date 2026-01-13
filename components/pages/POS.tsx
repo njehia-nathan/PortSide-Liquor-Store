@@ -10,7 +10,7 @@ import { Shift } from '../../types';
 
 const POS = () => {
   const router = useRouter();
-  const { products, sales, processSale, currentShift, openShift, closeShift, logout, businessSettings, requestVoid, voidRequests } = useStore();
+  const { products, sales, processSale, currentShift, openShift, closeShift, logout, businessSettings, requestVoid, voidRequests, users, shifts, currentUser } = useStore();
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<AlcoholType | 'ALL'>('ALL');
@@ -38,6 +38,14 @@ const POS = () => {
   const [closedShiftData, setClosedShiftData] = useState<{ shift: Shift; salesCount: number; revenue: number; cashSales: number; expectedCash: number; closingCash: number } | null>(null);
   const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
   const lastKeyTime = useRef<number>(0);
+  
+  // Sales Dashboard Filters
+  const [filterUser, setFilterUser] = useState<string>('current');
+  const [filterShift, setFilterShift] = useState<string>('all');
+  const [filterPayment, setFilterPayment] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
 
   // Global barcode scanner listener - scan anytime without clicking
   useEffect(() => {
@@ -70,11 +78,60 @@ const POS = () => {
 
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.includes(search) || (p.barcode && p.barcode.includes(search));
-      const matchesType = filter === 'ALL' || p.type === filter;
-      return matchesSearch && matchesType;
+      const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase()) ||
+        p.brand.toLowerCase().includes(search.toLowerCase()) ||
+        p.sku?.toLowerCase().includes(search.toLowerCase()) ||
+        p.barcode?.toLowerCase().includes(search.toLowerCase());
+      const matchesFilter = filter === 'ALL' || p.type === filter;
+      return matchesSearch && matchesFilter && p.stock > 0;
     });
   }, [products, search, filter]);
+
+  // Filtered sales for dashboard
+  const filteredSales = useMemo(() => {
+    return sales.filter(sale => {
+      // User filter
+      if (filterUser === 'current') {
+        if (sale.cashierId !== currentUser?.id) return false;
+      } else if (filterUser !== 'all') {
+        if (sale.cashierId !== filterUser) return false;
+      }
+
+      // Shift filter
+      if (filterShift !== 'all') {
+        const shift = shifts.find(s => s.id === filterShift);
+        if (shift) {
+          const saleTime = new Date(sale.timestamp);
+          const startTime = new Date(shift.startTime);
+          const endTime = shift.endTime ? new Date(shift.endTime) : new Date();
+          if (saleTime < startTime || saleTime > endTime) return false;
+        }
+      }
+
+      // Payment method filter
+      if (filterPayment !== 'all' && sale.paymentMethod !== filterPayment) return false;
+
+      // Status filter
+      if (filterStatus === 'valid' && sale.isVoided) return false;
+      if (filterStatus === 'voided' && !sale.isVoided) return false;
+
+      // Date range filter
+      if (filterDateFrom) {
+        const saleDate = new Date(sale.timestamp);
+        const fromDate = new Date(filterDateFrom);
+        fromDate.setHours(0, 0, 0, 0);
+        if (saleDate < fromDate) return false;
+      }
+      if (filterDateTo) {
+        const saleDate = new Date(sale.timestamp);
+        const toDate = new Date(filterDateTo);
+        toDate.setHours(23, 59, 59, 999);
+        if (saleDate > toDate) return false;
+      }
+
+      return true;
+    }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [sales, filterUser, filterShift, filterPayment, filterStatus, filterDateFrom, filterDateTo, currentUser, shifts]);
 
   const addToCart = (product: Product) => {
     setCart(prev => {
@@ -418,18 +475,30 @@ const POS = () => {
       <div className="hidden lg:flex w-96 bg-white border-l border-slate-200 flex-col print:hidden">
         <div className="p-6 border-b border-slate-200 flex items-center justify-between">
           <h2 className="text-xl font-bold text-slate-800">Current Sale</h2>
-          <button
-            onClick={() => setShowRecentSales(true)}
-            className="text-slate-400 hover:text-amber-600 relative"
-            title="Recent Sales"
-          >
-            <Receipt size={20} />
-            {sales.length > 0 && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                {sales.length > 9 ? '9+' : sales.length}
-              </span>
-            )}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowRecentSales(true)}
+              className="text-slate-400 hover:text-amber-600 relative"
+              title="Recent Sales"
+            >
+              <Receipt size={20} />
+              {sales.length > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                  {sales.length > 9 ? '9+' : sales.length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => {
+                logout();
+                router.push('/');
+              }}
+              className="text-slate-400 hover:text-red-600"
+              title="Logout"
+            >
+              <LogOut size={20} />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -511,9 +580,22 @@ const POS = () => {
           <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl max-h-[85vh] flex flex-col">
             <div className="p-4 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-lg font-bold">Cart ({cart.length} items)</h2>
-              <button type="button" onClick={() => setMobileCartOpen(false)}>
-                <X size={24} />
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    logout();
+                    router.push('/');
+                  }}
+                  className="text-slate-400 hover:text-red-600"
+                  title="Logout"
+                >
+                  <LogOut size={20} />
+                </button>
+                <button type="button" onClick={() => setMobileCartOpen(false)}>
+                  <X size={24} />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -1202,9 +1284,13 @@ const POS = () => {
                           className={`hover:bg-amber-50 cursor-pointer transition-colors ${sale.isVoided ? 'bg-red-50/50' : ''}`}
                         >
                           <td className="px-3 py-3 font-mono text-slate-400">#{index + 1}</td>
-                          <td className="px-3 py-3 text-slate-600 whitespace-nowrap">
-                            {new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          <td className="px-3 py-3 text-slate-600 whitespace-nowrap text-xs">
+                            <div>{new Date(sale.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</div>
+                            <div className="text-slate-400">{new Date(sale.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                           </td>
+                          {filterUser === 'all' && (
+                            <td className="px-3 py-3 text-slate-700 font-medium text-xs">{sale.cashierName}</td>
+                          )}
                           <td className="px-3 py-3">
                             <p className={`font-medium text-slate-800 truncate max-w-[150px] ${sale.isVoided ? 'line-through text-red-400' : ''}`}>
                               {sale.items.map(i => `${i.quantity}x ${i.productName}`).join(', ')}

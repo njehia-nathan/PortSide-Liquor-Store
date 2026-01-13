@@ -2,20 +2,39 @@
 
 import React, { useState } from 'react';
 import { useStore } from '../context/StoreContext';
-import { Lock } from 'lucide-react';
+import { Lock, Loader2 } from 'lucide-react';
 
 const Login = () => {
-  const { login, businessSettings } = useStore();
+  const { login, businessSettings, isLoading } = useStore();
   const [pin, setPin] = useState('');
   const [error, setError] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsLoggingIn(true);
+    setError(false);
+    
+    // Small delay to show loading state
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
     if (!login(pin)) {
       setError(true);
       setPin('');
+      setIsLoggingIn(false);
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-900">
+        <div className="text-center">
+          <Loader2 size={48} className="text-amber-500 animate-spin mx-auto mb-4" />
+          <p className="text-white text-lg">Loading system...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-900">
@@ -56,9 +75,17 @@ const Login = () => {
 
           <button
             type="submit"
-            className="w-full bg-slate-900 text-white py-4 rounded-lg font-bold text-lg hover:bg-slate-800 transition-transform active:scale-95"
+            disabled={isLoggingIn || !pin}
+            className="w-full bg-slate-900 text-white py-4 rounded-lg font-bold text-lg hover:bg-slate-800 transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
-            Access System
+            {isLoggingIn ? (
+              <>
+                <Loader2 size={20} className="animate-spin" />
+                Logging in...
+              </>
+            ) : (
+              'Access System'
+            )}
           </button>
         </form>
       </div>

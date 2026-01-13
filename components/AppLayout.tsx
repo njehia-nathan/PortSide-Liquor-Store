@@ -142,11 +142,25 @@ const AppLayout = ({ children }: PropsWithChildren) => {
             </button>
           </div>
           <div className="mt-4 text-sm text-slate-400">
-            <p>User: <span className="text-white font-medium">{currentUser.name}</span></p>
-            <p className="mt-1 flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${currentShift ? 'bg-green-500' : 'bg-red-500'}`}></span>
-              {currentShift ? 'Shift Open' : 'Shift Closed'}
-            </p>
+            <div className="flex items-center justify-between">
+              <div className="flex-1">
+                <p>User: <span className="text-white font-medium">{currentUser.name}</span></p>
+                <p className="mt-1 flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${currentShift ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                  {currentShift ? 'Shift Open' : 'Shift Closed'}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  logout();
+                  router.push('/');
+                }}
+                className="p-2 bg-red-500 hover:bg-red-600 rounded-lg text-white transition-colors"
+                title="Logout"
+              >
+                <LogOut size={18} />
+              </button>
+            </div>
           </div>
         </div>
 

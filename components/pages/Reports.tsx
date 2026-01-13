@@ -4,13 +4,13 @@ import React, { useState, useMemo } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { CURRENCY_FORMATTER } from '../../constants';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
-import { Banknote, CreditCard, Smartphone, Download, Calendar, FilterX, X, Edit2, Save, AlertCircle, CheckCircle, XCircle, Trash2 } from 'lucide-react';
+import { Banknote, CreditCard, Smartphone, Download, Calendar, FilterX, X, Edit2, Save, AlertCircle, CheckCircle, XCircle, Trash2, Ban } from 'lucide-react';
 import { Sale, SaleItem } from '../../types';
 
 const COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6'];
 
 const Reports = () => {
-  const { sales, products, updateSale, deleteSale, currentUser } = useStore();
+  const { sales, products, updateSale, deleteSale, currentUser, requestVoid, voidRequests, users } = useStore();
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
@@ -26,6 +26,12 @@ const Reports = () => {
   const [showDeletePasswordDialog, setShowDeletePasswordDialog] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
   const [saleToDelete, setSaleToDelete] = useState<string | null>(null);
+  const [showVoidModal, setShowVoidModal] = useState(false);
+  const [voidReason, setVoidReason] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterUser, setFilterUser] = useState<string>('all');
+  const [filterPayment, setFilterPayment] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
 
   const showToast = (message: string, type: 'success' | 'error' | 'warning' = 'success') => {
     setToast({ message, type });
@@ -39,6 +45,7 @@ const Reports = () => {
 
   const filteredSales = useMemo(() => {
     return sales.filter(sale => {
+      // Date range filter
       const saleDate = new Date(sale.timestamp);
       let startCondition = true;
       let endCondition = true;
@@ -52,19 +59,41 @@ const Reports = () => {
         end.setHours(23, 59, 59, 999);
         endCondition = saleDate <= end;
       }
-      return startCondition && endCondition;
-    });
-  }, [sales, startDate, endDate]);
 
-  const totalRevenue = filteredSales.reduce((acc, sale) => acc + sale.totalAmount, 0);
-  const totalCost = filteredSales.reduce((acc, sale) => acc + sale.totalCost, 0);
+      // Search filter
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        const matchesId = sale.id.toLowerCase().includes(query);
+        const matchesCashier = sale.cashierName.toLowerCase().includes(query);
+        const matchesItems = sale.items.some(item =>
+          item.productName.toLowerCase().includes(query)
+        );
+        if (!matchesId && !matchesCashier && !matchesItems) return false;
+      }
+
+      // User filter
+      if (filterUser !== 'all' && sale.cashierId !== filterUser) return false;
+
+      // Payment method filter
+      if (filterPayment !== 'all' && sale.paymentMethod !== filterPayment) return false;
+
+      // Status filter
+      if (filterStatus === 'valid' && sale.isVoided) return false;
+      if (filterStatus === 'voided' && !sale.isVoided) return false;
+
+      return startCondition && endCondition;
+    }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [sales, startDate, endDate, searchQuery, filterUser, filterPayment, filterStatus]);
+
+  const totalRevenue = filteredSales.filter(s => !s.isVoided).reduce((acc, sale) => acc + sale.totalAmount, 0);
+  const totalCost = filteredSales.filter(s => !s.isVoided).reduce((acc, sale) => acc + sale.totalCost, 0);
   const grossProfit = totalRevenue - totalCost;
 
   const productTypeMap = new Map<string, string>();
   products.forEach(p => productTypeMap.set(p.id, p.type));
 
   const categoryRevenueMap = new Map<string, number>();
-  filteredSales.forEach(sale => {
+  filteredSales.filter(s => !s.isVoided).forEach(sale => {
     sale.items.forEach(item => {
       const type = productTypeMap.get(item.productId) || 'Unknown';
       const itemRevenue = item.priceAtSale * item.quantity;
@@ -76,7 +105,7 @@ const Reports = () => {
   const categoryData = Array.from(categoryRevenueMap.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
 
   const productPerformance = new Map<string, number>();
-  filteredSales.forEach(sale => {
+  filteredSales.filter(s => !s.isVoided).forEach(sale => {
     sale.items.forEach(item => {
       const key = item.productName;
       const current = productPerformance.get(key) || 0;
@@ -87,19 +116,19 @@ const Reports = () => {
   const topProductsData = Array.from(productPerformance.entries()).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty).slice(0, 5);
 
   const hourlyData = new Array(24).fill(0).map((_, i) => ({ hour: `${i}:00`, sales: 0 }));
-  filteredSales.forEach(sale => {
+  filteredSales.filter(s => !s.isVoided).forEach(sale => {
     const hour = new Date(sale.timestamp).getHours();
     hourlyData[hour].sales += sale.totalAmount;
   });
 
-  const paymentTotals = filteredSales.reduce((acc, sale) => {
+  const paymentTotals = filteredSales.filter(s => !s.isVoided).reduce((acc, sale) => {
     acc[sale.paymentMethod] = (acc[sale.paymentMethod] || 0) + sale.totalAmount;
     return acc;
   }, { CASH: 0, CARD: 0, MOBILE: 0 } as Record<string, number>);
 
   const downloadExcel = () => {
     if (filteredSales.length === 0) { alert("No data to export."); return; }
-    const headers = ['Transaction ID', 'Date', 'Time', 'Cashier', 'Payment Method', 'Items', 'Total Amount (KES)', 'Total Cost (KES)', 'Gross Profit (KES)'];
+    const headers = ['Transaction ID', 'Date', 'Time', 'Cashier', 'Payment Method', 'Items', 'Total Amount (KES)', 'Total Cost (KES)', 'Gross Profit (KES)', 'Status'];
     const csvRows = [
       headers.join(','),
       ...filteredSales.map(sale => {
@@ -107,7 +136,7 @@ const Reports = () => {
         const itemsStr = sale.items.map(i => `${i.quantity}x ${i.productName} (${i.size})`).join('; ');
         const profit = sale.totalAmount - sale.totalCost;
         const escape = (str: string | number) => `"${String(str).replace(/"/g, '""')}"`;
-        return [escape(sale.id), escape(date.toLocaleDateString()), escape(date.toLocaleTimeString()), escape(sale.cashierName), escape(sale.paymentMethod), escape(itemsStr), sale.totalAmount, sale.totalCost, profit].join(',');
+        return [escape(sale.id), escape(date.toLocaleDateString()), escape(date.toLocaleTimeString()), escape(sale.cashierName), escape(sale.paymentMethod), escape(itemsStr), sale.totalAmount, sale.totalCost, profit, escape(sale.isVoided ? 'VOIDED' : 'VALID')].join(',');
       })
     ];
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -335,10 +364,10 @@ const Reports = () => {
 
   return (
     <div className="p-3 lg:p-6 max-w-7xl mx-auto space-y-4 lg:space-y-6">
-      <div className="flex flex-col gap-3">
-        <div className="flex justify-between items-center">
-          <h1 className="text-xl lg:text-2xl font-bold text-slate-800">Reports</h1>
-          <span className="text-xs lg:text-sm text-slate-500">{new Date().toLocaleDateString()}</span>
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-bold text-slate-800">Sales Reports</h1>
+          <p className="text-slate-500 text-sm lg:text-base">Analyze your sales performance and trends</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-sm">
           <div className="flex items-center gap-2 px-2 flex-1">
@@ -354,15 +383,68 @@ const Reports = () => {
         </div>
       </div>
 
+      {/* Filters and Search */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          <input
+            type="text"
+            placeholder="Search by ID, cashier, or product..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <select
+            value={filterUser}
+            onChange={(e) => setFilterUser(e.target.value)}
+            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All Cashiers</option>
+            {users.map(user => (
+              <option key={user.id} value={user.id}>{user.name}</option>
+            ))}
+          </select>
+          <select
+            value={filterPayment}
+            onChange={(e) => setFilterPayment(e.target.value)}
+            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All Payments</option>
+            <option value="CASH">Cash</option>
+            <option value="CARD">Card</option>
+            <option value="MOBILE">M-Pesa</option>
+            <option value="SPLIT">Split</option>
+          </select>
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All Status</option>
+            <option value="valid">Valid Only</option>
+            <option value="voided">Voided Only</option>
+          </select>
+          <button
+            onClick={() => {
+              setSearchQuery('');
+              setFilterUser('all');
+              setFilterPayment('all');
+              setFilterStatus('all');
+            }}
+            className="px-3 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+          >
+            <FilterX size={16} /> Clear Filters
+          </button>
+        </div>
+      </div>
+
       {filteredSales.length === 0 ? (
-        <div className="bg-white p-8 lg:p-12 rounded-xl border border-slate-200 text-center shadow-sm">
-          <div className="text-slate-400 text-4xl lg:text-6xl mb-3 lg:mb-4">📅</div>
-          <h3 className="text-lg lg:text-xl font-medium text-slate-700">No Transactions Found</h3>
-          <p className="text-sm lg:text-base text-slate-500 mt-2">No sales found for the selected date range.</p>
+        <div className="text-center py-12 text-slate-500">
+          <p>No sales data available for the selected date range.</p>
         </div>
       ) : (
         <>
           <div className="grid grid-cols-3 gap-2 lg:gap-6">
+            {/* Revenue, Profit, Sales cards */}
             <div className="bg-white p-3 lg:p-6 rounded-xl border border-slate-200 shadow-sm">
               <h3 className="text-[10px] lg:text-sm font-medium text-slate-500 uppercase">Revenue</h3>
               <p className="text-lg lg:text-3xl font-bold text-slate-900 mt-1 lg:mt-2">{CURRENCY_FORMATTER.format(totalRevenue)}</p>
@@ -468,7 +550,8 @@ const Reports = () => {
                     <th className="px-2 py-1.5 text-right text-[10px] font-bold text-gray-700 uppercase border-r border-black">Total Sale</th>
                     <th className="px-2 py-1.5 text-right text-[10px] font-bold text-gray-700 uppercase border-r border-black">Profit</th>
                     <th className="px-2 py-1.5 text-right text-[10px] font-bold text-gray-700 uppercase border-r border-black">Margin %</th>
-                    <th className="px-2 py-1.5 text-center text-[10px] font-bold text-gray-700 uppercase">Payment</th>
+                    <th className="px-2 py-1.5 text-center text-[10px] font-bold text-gray-700 uppercase border-r border-black">Payment</th>
+                    <th className="px-2 py-1.5 text-center text-[10px] font-bold text-gray-700 uppercase">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -480,7 +563,7 @@ const Reports = () => {
                     const itemsDisplay = sale.items.map(i => `${i.quantity}x ${i.productName} (${i.size})`).join(', ');
 
                     return (
-                      <tr key={sale.id} className="hover:bg-gray-100 border-b border-black">
+                      <tr key={sale.id} className={`hover:bg-gray-100 border-b border-black ${sale.isVoided ? 'bg-red-50/30 line-through decoration-red-500 decoration-2' : ''}`}>
                         <td className="px-2 py-1.5 text-gray-500 font-mono text-xs sticky left-0 bg-white border-r border-black">{idx + 1}</td>
                         <td className="px-2 py-1.5 text-gray-700 font-mono text-[10px] border-r border-black">#{sale.id.slice(-8)}</td>
                         <td className="px-2 py-1.5 text-gray-800 text-xs whitespace-nowrap border-r border-black">
@@ -511,13 +594,24 @@ const Reports = () => {
                             {margin.toFixed(1)}%
                           </span>
                         </td>
-                        <td className="px-2 py-1.5 text-center">
+                        <td className={`px-2 py-1.5 text-center border-r border-black ${sale.isVoided ? 'bg-red-50/30' : ''}`}>
                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-800 border-green-800' :
                             sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-800 border-blue-800' :
                               'bg-purple-100 text-purple-800 border-purple-800'
                             }`}>
                             {sale.paymentMethod}
                           </span>
+                        </td>
+                        <td className={`px-2 py-1.5 text-center ${sale.isVoided ? 'bg-red-50/30' : ''}`}>
+                          {sale.isVoided ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700 border border-red-700">
+                              VOIDED
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700 border border-green-700">
+                              VALID
+                            </span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -535,6 +629,7 @@ const Reports = () => {
                     <td className="px-2 py-2 text-right text-xs border-r border-black">
                       <span className="font-bold text-gray-900">{totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0.0'}%</span>
                     </td>
+                    <td className="px-2 py-2 border-r border-black"></td>
                     <td className="px-2 py-2"></td>
                   </tr>
                 </tfoot>
@@ -549,11 +644,18 @@ const Reports = () => {
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
             {/* Header */}
-            <div className="p-6 border-b border-slate-200 bg-gradient-to-r from-blue-500 to-blue-600">
+            <div className={`p-6 border-b border-slate-200 bg-gradient-to-r ${selectedSale.isVoided ? 'from-red-500 to-red-600' : 'from-blue-500 to-blue-600'}`}>
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-2xl font-bold text-white">Sale Details</h2>
-                  <p className="text-blue-100 text-sm mt-1">Transaction #{selectedSale.id.slice(-8).toUpperCase()}</p>
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-2xl font-bold text-white">Sale Details</h2>
+                    {selectedSale.isVoided && (
+                      <span className="px-3 py-1 bg-white/20 border-2 border-white rounded-lg text-white text-sm font-bold">
+                        VOIDED
+                      </span>
+                    )}
+                  </div>
+                  <p className={`text-sm mt-1 ${selectedSale.isVoided ? 'text-red-100' : 'text-blue-100'}`}>Transaction #{selectedSale.id.slice(-8).toUpperCase()}</p>
                 </div>
                 <button
                   onClick={() => {
@@ -596,6 +698,17 @@ const Reports = () => {
 
             {/* Items Table */}
             <div className="flex-1 overflow-y-auto p-6">
+              {selectedSale.isVoided && (
+                <div className="mb-4 p-4 bg-red-50 border-2 border-red-300 rounded-lg flex items-start gap-3">
+                  <AlertCircle size={20} className="text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-red-900">This Sale Has Been Voided</p>
+                    <p className="text-xs text-red-700 mt-1">
+                      This transaction was voided on {selectedSale.voidedAt ? new Date(selectedSale.voidedAt).toLocaleString('en-GB') : 'N/A'}. Stock has been restored to inventory.
+                    </p>
+                  </div>
+                </div>
+              )}
               {hasZeroPrices(selectedSale) && !isEditMode && (
                 <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
                   <AlertCircle size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
@@ -641,7 +754,7 @@ const Reports = () => {
                     const hasIssue = item.priceAtSale === 0 || item.costAtSale === 0;
 
                     return (
-                      <tr key={idx} className={`border-b border-slate-200 ${hasIssue ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
+                      <tr key={idx} className={`border-b border-slate-200 ${selectedSale.isVoided ? 'bg-red-50/30 line-through decoration-red-500 decoration-2' : hasIssue ? 'bg-red-50' : 'hover:bg-slate-50'}`}>
                         <td className="px-3 py-2 text-slate-600">{idx + 1}</td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-between gap-2">
@@ -702,17 +815,17 @@ const Reports = () => {
                     <td colSpan={5} className="px-3 py-3 text-right text-slate-900 uppercase text-xs">Totals:</td>
                     <td className="px-3 py-3 text-right text-slate-900">
                       {CURRENCY_FORMATTER.format(
-                        (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0)
+                        selectedSale.isVoided ? 0 : (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0)
                       )}
                     </td>
                     <td className="px-3 py-3 text-right text-slate-900">
                       {CURRENCY_FORMATTER.format(
-                        (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0)
+                        selectedSale.isVoided ? 0 : (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0)
                       )}
                     </td>
                     <td className="px-3 py-3 text-right text-green-700">
                       {CURRENCY_FORMATTER.format(
-                        (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => {
+                        selectedSale.isVoided ? 0 : (isEditMode ? editingItems : selectedSale.items).reduce((sum, item) => {
                           const totalSale = item.priceAtSale * item.quantity;
                           const totalCost = item.costAtSale * item.quantity;
                           return sum + (totalSale - totalCost);
@@ -737,7 +850,16 @@ const Reports = () => {
                 >
                   Close
                 </button>
-                {!isEditMode && (
+                {!isEditMode && !selectedSale.isVoided && !voidRequests.find(r => r.saleId === selectedSale.id && r.status === 'PENDING') && (
+                  <button
+                    onClick={() => setShowVoidModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg font-medium transition-colors"
+                  >
+                    <Ban size={16} />
+                    Request Void
+                  </button>
+                )}
+                {!isEditMode && !selectedSale.isVoided && (
                   <button
                     onClick={handleDeleteSale}
                     className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
@@ -965,6 +1087,55 @@ const Reports = () => {
                 className="flex-1 px-4 py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold transition-colors"
               >
                 Yes, Save Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Void Request Modal */}
+      {showVoidModal && selectedSale && (
+        <div className="fixed inset-0 z-[70] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold mb-2 flex items-center gap-2 text-red-600">
+              <Ban size={20} /> Request Void Sale
+            </h3>
+            <p className="text-sm text-slate-500 mb-4">
+              Sale #{selectedSale.id.slice(-8)} • {CURRENCY_FORMATTER.format(selectedSale.totalAmount)}
+            </p>
+            <p className="text-sm text-slate-600 mb-4">
+              Please provide a reason for voiding this sale. This request will be sent to an admin for approval. Once approved, all products will be returned to inventory.
+            </p>
+            <textarea
+              autoFocus
+              placeholder="Enter reason for void (required)..."
+              className="w-full border-2 border-red-300 p-3 rounded-lg text-sm focus:ring-2 focus:ring-red-500 outline-none resize-none"
+              rows={3}
+              value={voidReason}
+              onChange={e => setVoidReason(e.target.value)}
+            />
+            <div className="flex gap-3 mt-4">
+              <button
+                onClick={async () => {
+                  if (voidReason.trim() && selectedSale) {
+                    await requestVoid(selectedSale.id, voidReason.trim());
+                    setVoidReason('');
+                    setShowVoidModal(false);
+                    showToast('Void request submitted successfully', 'success');
+                  }
+                }}
+                disabled={!voidReason.trim()}
+                className="flex-1 bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2"
+              >
+                <Ban size={18} /> Submit Request
+              </button>
+              <button
+                onClick={() => {
+                  setVoidReason('');
+                  setShowVoidModal(false);
+                }}
+                className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500"
+              >
+                Cancel
               </button>
             </div>
           </div>

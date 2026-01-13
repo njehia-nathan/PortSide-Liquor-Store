@@ -23,6 +23,8 @@ const MyShifts = () => {
       const saleTime = new Date(s.timestamp);
       const startTime = new Date(shiftStart);
       const endTime = shiftEnd ? new Date(shiftEnd) : new Date();
+      // Include all sales (voided and valid) but they exist in the sales array
+      // Deleted sales are removed from the sales array entirely
       return s.cashierId === currentUser?.id && saleTime >= startTime && saleTime <= endTime;
     });
   };
@@ -44,12 +46,12 @@ const MyShifts = () => {
     return `${hours}h ${minutes}m`;
   };
 
-  const totalMySales = sales.filter(s => s.cashierId === currentUser?.id).length;
-  const totalRevenue = sales.filter(s => s.cashierId === currentUser?.id).reduce((acc, s) => acc + s.totalAmount, 0);
+  const totalMySales = sales.filter(s => s.cashierId === currentUser?.id && !s.isVoided).length;
+  const totalRevenue = sales.filter(s => s.cashierId === currentUser?.id && !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
 
   // Get sales for selected shift
   const selectedShiftSales = selectedShift ? getShiftSales(selectedShift.startTime, selectedShift.endTime) : [];
-  const selectedShiftRevenue = selectedShiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+  const selectedShiftRevenue = selectedShiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
   
   // Payment method breakdown for Z-Report
   const selectedShiftCashSales = selectedShiftSales.filter(s => s.paymentMethod === 'CASH' && !s.isVoided);
@@ -60,7 +62,7 @@ const MyShifts = () => {
   const cashTotal = selectedShiftCashSales.reduce((acc, s) => acc + s.totalAmount, 0);
   const cardTotal = selectedShiftCardSales.reduce((acc, s) => acc + s.totalAmount, 0);
   const mobileTotal = selectedShiftMobileSales.reduce((acc, s) => acc + s.totalAmount, 0);
-  const voidedTotal = selectedShiftVoidedSales.reduce((acc, s) => acc + s.totalAmount, 0);
+  const voidedTotal = 0; // Voided sales should show 0 total
 
   const handlePrintZReport = () => {
     const printContent = document.getElementById('z-report-content-user');
@@ -268,7 +270,7 @@ const MyShifts = () => {
             <div className="lg:hidden divide-y divide-slate-100">
               {myShifts.map((shift, index) => {
                 const shiftSales = getShiftSales(shift.startTime, shift.endTime);
-                const shiftRevenue = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+                const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
                 const startDT = formatDateTime(shift.startTime);
                 const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
                 
@@ -312,7 +314,7 @@ const MyShifts = () => {
                 <tbody className="divide-y divide-slate-100 text-sm">
                   {myShifts.map((shift, index) => {
                     const shiftSales = getShiftSales(shift.startTime, shift.endTime);
-                    const shiftRevenue = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+                    const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
                     const startDT = formatDateTime(shift.startTime);
                     const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
                     
@@ -447,7 +449,7 @@ const MyShifts = () => {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {selectedShiftSales.map((sale, idx) => (
-                      <tr key={sale.id} className={`hover:bg-slate-50 ${sale.isVoided ? 'opacity-50 line-through' : ''}`}>
+                      <tr key={sale.id} className={`hover:bg-slate-50 ${sale.isVoided ? 'bg-red-50/30 line-through decoration-red-500 decoration-2' : ''}`}>
                         <td className="px-3 py-3 font-mono text-slate-500">#{idx + 1}</td>
                         <td className="px-3 py-3 text-slate-600">{formatDateTime(sale.timestamp).time}</td>
                         <td className="px-3 py-3">

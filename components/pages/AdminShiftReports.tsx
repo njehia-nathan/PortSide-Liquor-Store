@@ -25,6 +25,8 @@ const AdminShiftReports = () => {
       const saleTime = new Date(s.timestamp);
       const startTime = new Date(shiftStart);
       const endTime = shiftEnd ? new Date(shiftEnd) : new Date();
+      // Include all sales (voided and valid) but they exist in the sales array
+      // Deleted sales are removed from the sales array entirely
       return s.cashierId === cashierId && saleTime >= startTime && saleTime <= endTime;
     });
   };
@@ -48,14 +50,14 @@ const AdminShiftReports = () => {
 
   const totalRevenue = allShifts.reduce((acc, shift) => {
     const shiftSales = getShiftSales(shift.cashierId, shift.startTime, shift.endTime);
-    return acc + shiftSales.reduce((sum, s) => sum + s.totalAmount, 0);
+    return acc + shiftSales.filter(s => !s.isVoided).reduce((sum, s) => sum + s.totalAmount, 0);
   }, 0);
 
   const shiftsWithComments = allShifts.filter(s => s.comments);
 
   // Get sales for selected shift
   const selectedShiftSales = selectedShift ? getShiftSales(selectedShift.cashierId, selectedShift.startTime, selectedShift.endTime) : [];
-  const selectedShiftRevenue = selectedShiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+  const selectedShiftRevenue = selectedShiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
   // Payment method breakdown for Z-Report
   const selectedShiftCashSales = selectedShiftSales.filter(s => s.paymentMethod === 'CASH' && !s.isVoided);
   const selectedShiftCardSales = selectedShiftSales.filter(s => s.paymentMethod === 'CARD' && !s.isVoided);
@@ -65,7 +67,7 @@ const AdminShiftReports = () => {
   const cashTotal = selectedShiftCashSales.reduce((acc, s) => acc + s.totalAmount, 0);
   const cardTotal = selectedShiftCardSales.reduce((acc, s) => acc + s.totalAmount, 0);
   const mobileTotal = selectedShiftMobileSales.reduce((acc, s) => acc + s.totalAmount, 0);
-  const voidedTotal = selectedShiftVoidedSales.reduce((acc, s) => acc + s.totalAmount, 0);
+  const voidedTotal = 0; // Voided sales should show 0 total
 
   const handlePrintZReport = () => {
     const printContent = document.getElementById('z-report-content');
@@ -291,7 +293,7 @@ const AdminShiftReports = () => {
             <div className="lg:hidden divide-y divide-slate-100">
               {allShifts.map((shift, index) => {
                 const shiftSales = getShiftSales(shift.cashierId, shift.startTime, shift.endTime);
-                const shiftRevenue = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+                const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
                 const startDT = formatDateTime(shift.startTime);
                 const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
                 
@@ -336,7 +338,7 @@ const AdminShiftReports = () => {
                 <tbody className="divide-y divide-slate-100 text-sm">
                   {allShifts.map((shift, index) => {
                     const shiftSales = getShiftSales(shift.cashierId, shift.startTime, shift.endTime);
-                    const shiftRevenue = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
+                    const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
                     const startDT = formatDateTime(shift.startTime);
                     const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
                     
@@ -468,11 +470,12 @@ const AdminShiftReports = () => {
                       <th className="px-3 py-3">Items</th>
                       <th className="px-3 py-3">Payment</th>
                       <th className="px-3 py-3 text-right">Amount</th>
+                      <th className="px-3 py-3 text-center">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {selectedShiftSales.map((sale, idx) => (
-                      <tr key={sale.id} className={`hover:bg-slate-50 ${sale.isVoided ? 'opacity-50 line-through' : ''}`}>
+                      <tr key={sale.id} className={`hover:bg-slate-50 ${sale.isVoided ? 'bg-red-50/30 line-through decoration-red-500 decoration-2' : ''}`}>
                         <td className="px-3 py-3 font-mono text-slate-500">#{idx + 1}</td>
                         <td className="px-3 py-3 text-slate-600">{formatDateTime(sale.timestamp).time}</td>
                         <td className="px-3 py-3">
@@ -494,6 +497,17 @@ const AdminShiftReports = () => {
                           </span>
                         </td>
                         <td className="px-3 py-3 text-right font-bold text-green-600">{CURRENCY_FORMATTER.format(sale.totalAmount)}</td>
+                        <td className="px-3 py-3 text-center">
+                          {sale.isVoided ? (
+                            <span className="px-2 py-0.5 rounded text-xs font-bold bg-red-100 text-red-700 border border-red-700">
+                              VOIDED
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-xs font-bold bg-green-100 text-green-700 border border-green-700">
+                              VALID
+                            </span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -501,6 +515,7 @@ const AdminShiftReports = () => {
                     <tr>
                       <td colSpan={4} className="px-3 py-3 text-right">TOTAL:</td>
                       <td className="px-3 py-3 text-right text-green-600 text-lg">{CURRENCY_FORMATTER.format(selectedShiftRevenue)}</td>
+                      <td className="px-3 py-3"></td>
                     </tr>
                   </tfoot>
                 </table>

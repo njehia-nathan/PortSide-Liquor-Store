@@ -29,6 +29,7 @@ interface StoreContextType {
   isLoading: boolean;
   isOnline: boolean;
   isSyncing: boolean;
+  dataLoadedTimestamp: number; // Timestamp when all data including productSaleLogs was loaded
 
   // --- AUTH ACTIONS ---
   login: (pin: string) => boolean;
@@ -69,6 +70,7 @@ interface StoreContextType {
   applyDataFix: (salesChanges: SaleReconciliation[], productChanges: ProductReconciliation[]) => Promise<{ fixed: number; total: number }>;
   fixCorruptedSales: () => Promise<{ fixed: number; total: number }>;
   reconcileStock: () => Promise<{ reconciled: number; errors: string[] }>;
+  refreshProductSaleLogs: () => Promise<void>;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
@@ -87,6 +89,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSyncLocked, setIsSyncLocked] = useState(false); // Prevents concurrent sync operations
+  const [dataLoadedTimestamp, setDataLoadedTimestamp] = useState(0); // Set after ALL data including productSaleLogs is loaded
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -354,6 +357,66 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               loadedProducts = [...loadedProducts, ...localOnlyProducts];
               console.log('📤 Found', localOnlyProducts.length, 'local-only products to sync');
             }
+
+            // Merge local-only product sale logs and handle duplicates
+            const localLogs = await db.getAll('productSaleLogs');
+            const cloudLogIds = new Set(loadedProductSaleLogs.map(l => l.id));
+
+            // Build a map of existing logs by saleId-productId to detect duplicates
+            const logKeyMap = new Map<string, typeof loadedProductSaleLogs[0]>();
+            for (const log of loadedProductSaleLogs) {
+              const key = `${log.saleId}-${log.productId}`;
+              // Keep the most recent log if duplicates exist
+              const existing = logKeyMap.get(key);
+              if (!existing || new Date(log.timestamp).getTime() > new Date(existing.timestamp).getTime()) {
+                logKeyMap.set(key, log);
+              }
+            }
+
+            // Process local logs - merge if unique, skip if duplicate exists
+            let localOnlyLogsCount = 0;
+            let duplicatesSkipped = 0;
+            for (const localLog of localLogs) {
+              if (cloudLogIds.has(localLog.id)) {
+                // Already in cloud by ID, skip
+                continue;
+              }
+
+              const key = `${localLog.saleId}-${localLog.productId}`;
+              const existingLog = logKeyMap.get(key);
+
+              if (existingLog) {
+                // Duplicate by saleId-productId - keep the newer one
+                const localTime = new Date(localLog.timestamp).getTime();
+                const existingTime = new Date(existingLog.timestamp).getTime();
+
+                if (localTime > existingTime) {
+                  // Local is newer, replace
+                  logKeyMap.set(key, localLog);
+                  // Delete the old one from local DB
+                  await db.delete('productSaleLogs', existingLog.id);
+                  localOnlyLogsCount++;
+                } else {
+                  // Existing is newer or same, delete local duplicate
+                  await db.delete('productSaleLogs', localLog.id);
+                  duplicatesSkipped++;
+                }
+              } else {
+                // Unique log, add it
+                logKeyMap.set(key, localLog);
+                localOnlyLogsCount++;
+              }
+            }
+
+            // Convert map back to array
+            loadedProductSaleLogs = Array.from(logKeyMap.values());
+
+            if (localOnlyLogsCount > 0) {
+              console.log('📤 Found', localOnlyLogsCount, 'local-only product sale logs to sync');
+            }
+            if (duplicatesSkipped > 0) {
+              console.log('🗑️ Cleaned up', duplicatesSkipped, 'duplicate product sale logs');
+            }
           } catch (mergeErr) {
             console.warn('⚠️ Error merging local-only data:', mergeErr);
           }
@@ -430,6 +493,11 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         setVoidRequests(loadedVoidRequests);
         setStockChangeRequests(loadedStockChangeRequests);
         setProductSaleLogs(loadedProductSaleLogs);
+
+        // Mark data as fully loaded - this timestamp signals to AppLayout that productSaleLogs is ready
+        // Setting this AFTER setProductSaleLogs ensures the logs are in state before detection runs
+        setDataLoadedTimestamp(Date.now());
+        console.log(`✅ Data fully loaded: ${loadedProductSaleLogs.length} product sale logs ready`);
 
         // Restore user session after users are loaded (reuse savedSession from above)
         if (savedSession) {
@@ -2027,6 +2095,19 @@ const approveVoid = async (requestId: string, notes?: string) => {
     }
   };
 
+  // Refresh productSaleLogs from IndexedDB (used after bulk operations in AppLayout)
+  const refreshProductSaleLogs = async () => {
+    try {
+      const db = await dbPromise();
+      const allLogs = await db.getAll('productSaleLogs');
+      allLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setProductSaleLogs(allLogs);
+      console.log(`✅ Refreshed ${allLogs.length} product sale logs from IndexedDB`);
+    } catch (error) {
+      console.error('❌ Failed to refresh product sale logs:', error);
+    }
+  };
+
   return (
     <StoreContext.Provider value={{
       currentUser,
@@ -2039,6 +2120,7 @@ const approveVoid = async (requestId: string, notes?: string) => {
       isLoading,
       isOnline,
       isSyncing,
+      dataLoadedTimestamp,
       login,
       logout,
       updateUser,
@@ -2069,6 +2151,7 @@ const approveVoid = async (requestId: string, notes?: string) => {
       applyDataFix,
       fixCorruptedSales,
       reconcileStock,
+      refreshProductSaleLogs,
     }}>
       {children}
     </StoreContext.Provider>

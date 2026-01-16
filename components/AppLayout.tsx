@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 
 const AppLayout = ({ children }: PropsWithChildren) => {
-  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings, products, updateProduct, sales, productSaleLogs } = useStore();
+  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings, products, updateProduct, sales, productSaleLogs, isLoading, dataLoadedTimestamp, refreshProductSaleLogs } = useStore();
   const pathname = usePathname();
   const router = useRouter();
   const [lastSaved, setLastSaved] = useState<string>('');
@@ -53,6 +53,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const [editItemCost, setEditItemCost] = useState('');
   const [editItemPrice, setEditItemPrice] = useState('');
   const [fixedSaleItemIds, setFixedSaleItemIds] = useState<Set<string>>(new Set());
+  const [isBulkOperationInProgress, setIsBulkOperationInProgress] = useState(false);
 
   useEffect(() => {
     if (auditLogs.length > 0) {
@@ -71,15 +72,17 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   }, [isOnline]);
 
   useEffect(() => {
-    // Check for products with missing costs when admin logs in
-    if (currentUser && currentUser.permissions?.includes('ADMIN')) {
+    // Detect products with 0 cost or selling price
+    // Only run detection when dataLoadedTimestamp > 0 (meaning all data including productSaleLogs is ready)
+    // This prevents false positives from race conditions where isLoading becomes false before state updates
+    if (currentUser && currentUser.permissions?.includes('ADMIN') && dataLoadedTimestamp > 0 && products.length > 0) {
       const issueProducts = products.filter(p =>
         p.costPrice === 0 || p.sellingPrice === 0 ||
         isNaN(p.costPrice) || isNaN(p.sellingPrice)
       );
 
       setProductsWithIssues(issueProducts);
-      
+
       // Always show warning if there are issues (until all are fixed)
       if (issueProducts.length > 0) {
         setShowProductWarning(true);
@@ -88,18 +91,21 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         setSavedProductIds(new Set()); // Reset saved state when all fixed
       }
     }
-  }, [currentUser, products]);
+  }, [currentUser, products, dataLoadedTimestamp]);
 
   useEffect(() => {
     // Check for corrupted sales and missing logs when admin logs in
-    if (currentUser && currentUser.permissions?.includes('ADMIN')) {
+    // Only run detection when dataLoadedTimestamp > 0 (meaning all data including productSaleLogs is ready)
+    // This prevents the race condition where isLoading=false but productSaleLogs state hasn't updated yet
+    // Skip detection during bulk operations to avoid race conditions
+    if (currentUser && currentUser.permissions?.includes('ADMIN') && dataLoadedTimestamp > 0 && !isBulkOperationInProgress) {
       // Check if user dismissed the dialog in this session
       const dismissed = sessionStorage.getItem('sales_validation_dismissed');
-      
+
       // Find sales with 0 cost or price items (including NaN and undefined)
       const badSales = sales.filter(sale => {
         if (sale.isVoided) return false;
-        return sale.items.some(item => 
+        return sale.items.some(item =>
           !item.costAtSale || item.costAtSale === 0 || isNaN(item.costAtSale) ||
           !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale)
         );
@@ -110,7 +116,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       sales.forEach(sale => {
         if (sale.isVoided) return;
         sale.items.forEach(item => {
-          const logExists = productSaleLogs.some(log => 
+          const logExists = productSaleLogs.some(log =>
             log.saleId === sale.id && log.productId === item.productId
           );
           if (!logExists) {
@@ -164,7 +170,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         setFixedSaleItemIds(new Set());
       }
     }
-  }, [currentUser, sales, productSaleLogs]);
+  }, [currentUser, sales, productSaleLogs, dataLoadedTimestamp, isBulkOperationInProgress]);
 
   if (!currentUser) {
     return <>{children}</>;
@@ -402,15 +408,18 @@ const AppLayout = ({ children }: PropsWithChildren) => {
 
       await tx.done;
 
+      // Refresh the productSaleLogs state to include the newly created log
+      await refreshProductSaleLogs();
+
       // Remove from missing logs list
-      setMissingSaleLogs(prev => prev.filter(log => 
+      setMissingSaleLogs(prev => prev.filter(log =>
         !(log.saleId === missingLog.saleId && log.item.productId === missingLog.item.productId)
       ));
 
-      alert('✓ Missing log created successfully');
+      notifySuccess('Missing log created successfully');
     } catch (error) {
       console.error('Failed to create missing log:', error);
-      alert('Failed to create missing log. Please try again.');
+      notifyError('Failed to create missing log. Please try again.');
     }
   };
 
@@ -595,6 +604,9 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   };
 
   const handleBulkDeleteDuplicates = async () => {
+    // Prevent detection from running during bulk operation
+    setIsBulkOperationInProgress(true);
+
     try {
       const count = duplicateLogs.length;
 
@@ -602,11 +614,11 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       if (isOnline) {
         const { pushToCloud } = await import('../cloud');
         const results = await Promise.all(
-          duplicateLogs.map(log => 
+          duplicateLogs.map(log =>
             pushToCloud('DELETE_PRODUCT_SALE_LOG', { id: log.id })
           )
         );
-        
+
         // Check if any failed
         const failedCount = results.filter(r => !r).length;
         if (failedCount > 0) {
@@ -623,7 +635,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       // STEP 3: If offline, queue for later sync
       if (!isOnline) {
         await Promise.all(
-          duplicateLogs.map(log => 
+          duplicateLogs.map(log =>
             db.add('syncQueue', {
               type: 'DELETE_PRODUCT_SALE_LOG',
               payload: { id: log.id },
@@ -633,16 +645,30 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         );
       }
 
+      // Refresh state after bulk delete
+      await refreshProductSaleLogs();
       setDuplicateLogs([]);
+
+      // If all issues are resolved, close the dialog
+      if (corruptedSales.length === 0 && missingSaleLogs.length === 0) {
+        setShowSalesWarning(false);
+        sessionStorage.removeItem('sales_validation_dismissed');
+      }
 
       notifySuccess(`Successfully deleted ${count} duplicate logs`);
     } catch (error) {
       console.error('Bulk delete failed:', error);
       notifyError('Bulk delete failed. Please try again.');
+    } finally {
+      // Re-enable detection after bulk operation completes
+      setIsBulkOperationInProgress(false);
     }
   };
 
   const handleBulkCreateLogs = async () => {
+    // Prevent detection from running during bulk operation
+    setIsBulkOperationInProgress(true);
+
     try {
       const db = await dbPromise();
       let createdCount = 0;
@@ -816,6 +842,10 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         await tx.done;
       }
 
+      // Refresh the productSaleLogs state from IndexedDB to include newly created/downloaded logs
+      // This prevents the detection logic from finding them as "missing" again
+      await refreshProductSaleLogs();
+
       // Clear missing logs immediately - they've been created/downloaded
       setMissingSaleLogs([]);
 
@@ -825,14 +855,17 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         sessionStorage.removeItem('sales_validation_dismissed');
       }
 
-      const message = downloadedCount > 0 
+      const message = downloadedCount > 0
         ? `Downloaded ${downloadedCount} existing logs, created ${createdCount} new logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}`
         : `Created ${createdCount} logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}`;
-      
+
       notifySuccess(message);
     } catch (error) {
       console.error('Bulk create failed:', error);
       notifyError('Failed to create logs. Please try again.');
+    } finally {
+      // Re-enable detection after bulk operation completes
+      setIsBulkOperationInProgress(false);
     }
   };
 
@@ -1207,15 +1240,25 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                     <AlertTriangle size={24} className="text-white" />
                   </div>
                   <div>
-                    <h2 className="text-lg font-bold text-red-900 flex items-center gap-2">
+                    <h2 className="text-lg font-bold text-white flex items-center gap-2">
                       <AlertCircle size={20} />
                       Sales Data Issues Detected
                     </h2>
-                    <p className="text-sm text-red-700 mt-1">
+                    <p className="text-sm text-orange-100 mt-1">
                       {corruptedSales.length} corrupted sale(s) • {missingSaleLogs.length} missing log(s) • {duplicateLogs.length} duplicate log(s)
                     </p>
                   </div>
                 </div>
+                <button
+                  onClick={() => {
+                    sessionStorage.setItem('sales_validation_dismissed', 'true');
+                    setShowSalesWarning(false);
+                  }}
+                  className="p-2 hover:bg-white/20 rounded-full transition-colors"
+                  title="Dismiss for this session"
+                >
+                  <X size={24} className="text-white" />
+                </button>
               </div>
             </div>
 

@@ -14,6 +14,35 @@ const IS_CONFIGURED = (SUPABASE_URL as string) !== 'https://xyzcompany.supabase.
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /**
+ * Normalize product payload for Supabase (convert camelCase to snake_case and remove duplicates)
+ * This fixes the issue where local data uses camelCase but Supabase expects snake_case
+ */
+const normalizeProductPayload = (payload: any): any => {
+  // Create a clean object with only snake_case fields that Supabase expects
+  return {
+    id: payload.id,
+    name: payload.name,
+    type: payload.type,
+    size: payload.size,
+    brand: payload.brand,
+    sku: payload.sku || '',
+    costPrice: payload.costPrice,
+    sellingPrice: payload.sellingPrice,
+    supplier: payload.supplier || null,
+    stock: payload.stock,
+    lowStockThreshold: payload.lowStockThreshold || 5,
+    barcode: payload.barcode || '',
+    unitsSold: payload.unitsSold || 0,
+    // Use camelCase version if available, otherwise fall back to snake_case
+    updated_at: payload.updatedAt || payload.updated_at || new Date().toISOString(),
+    version: payload.version || 1,
+    last_modified_by: payload.lastModifiedBy || payload.last_modified_by || null,
+    last_modified_by_name: payload.lastModifiedByName || payload.last_modified_by_name || null,
+    price_history: payload.priceHistory || payload.price_history || []
+  };
+};
+
+/**
  * Syncs a single item from the local queue to the Cloud DB.
  * 
  * @param type - The type of action (e.g., 'SALE', 'ADD_PRODUCT')
@@ -156,8 +185,11 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
       const { error } = await supabase.from(table).delete().eq('id', payload.id);
       if (error) throw error;
     } else {
+      // Normalize payload for products table to fix camelCase/snake_case mismatch
+      const normalizedPayload = table === 'products' ? normalizeProductPayload(payload) : payload;
+
       // Upsert handles both Insert (New) and Update (Existing ID)
-      const { error } = await supabase.from(table).upsert(payload);
+      const { error } = await supabase.from(table).upsert(normalizedPayload);
 
       if (error) {
         // Help debug schema issues

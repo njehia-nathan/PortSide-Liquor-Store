@@ -144,15 +144,21 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         }
       });
 
+      // Always update the detection state
       setCorruptedSales(badSales);
       setMissingSaleLogs(missingLogs);
       setDuplicateLogs(duplicates);
 
-      // Only show warning if there are issues AND user hasn't dismissed it this session
-      if ((badSales.length > 0 || missingLogs.length > 0 || duplicates.length > 0) && !dismissed) {
-        setShowSalesWarning(true);
-      } else if (badSales.length === 0 && missingLogs.length === 0 && duplicates.length === 0) {
-        // Clear dismissal flag if all issues are resolved
+      const hasIssues = badSales.length > 0 || missingLogs.length > 0 || duplicates.length > 0;
+
+      if (hasIssues) {
+        // Only show dialog if not dismissed
+        if (!dismissed) {
+          setShowSalesWarning(true);
+        }
+        // If dismissed, keep dialog hidden
+      } else {
+        // No issues - clear dismissal flag and hide dialog
         sessionStorage.removeItem('sales_validation_dismissed');
         setShowSalesWarning(false);
         setFixedSaleItemIds(new Set());
@@ -810,23 +816,18 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         await tx.done;
       }
 
-      // CRITICAL: Update React state so detection logic sees the new logs immediately
-      if (downloadedLogs.length > 0 || newlyCreatedLogs.length > 0) {
-        const allNewLogs = [...downloadedLogs, ...newlyCreatedLogs];
-        // Update productSaleLogs context from StoreContext
-        // Since we don't have direct access, we need to reload from IndexedDB
-        const allLogs = await db.getAll('productSaleLogs');
-        // Sort by timestamp (newest first)
-        allLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        // This will trigger the useEffect in StoreContext to update
-        window.location.reload();
-      }
-
+      // Clear missing logs immediately - they've been created/downloaded
       setMissingSaleLogs([]);
 
+      // If all issues are resolved, close the dialog
+      if (corruptedSales.length === 0 && duplicateLogs.length === 0) {
+        setShowSalesWarning(false);
+        sessionStorage.removeItem('sales_validation_dismissed');
+      }
+
       const message = downloadedCount > 0 
-        ? `Downloaded ${downloadedCount} existing logs, created ${createdCount} new logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}. Refreshing...`
-        : `Created ${createdCount} logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}. Refreshing...`;
+        ? `Downloaded ${downloadedCount} existing logs, created ${createdCount} new logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}`
+        : `Created ${createdCount} logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}`;
       
       notifySuccess(message);
     } catch (error) {

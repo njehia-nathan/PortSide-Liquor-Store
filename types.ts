@@ -48,6 +48,21 @@ export interface Product {
   lowStockThreshold?: number; // Custom alert level
   unitsSold?: number; // Total units sold (for analytics)
   updatedAt?: string; // Timestamp for conflict resolution in multi-device sync
+  version?: number; // Version number for optimistic locking
+  lastModifiedBy?: string; // User ID who last modified this product
+  lastModifiedByName?: string; // User name who last modified this product
+  priceHistory?: PriceChange[]; // History of price changes for audit trail
+}
+
+export interface PriceChange {
+  timestamp: string;
+  userId: string;
+  userName: string;
+  oldCostPrice: number;
+  newCostPrice: number;
+  oldSellingPrice: number;
+  newSellingPrice: number;
+  reason?: string;
 }
 
 export interface CartItem extends Product {

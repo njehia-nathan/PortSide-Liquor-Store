@@ -145,8 +145,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           try {
             console.log('🌐 Loading data from Supabase (cloud first)...');
 
-            // Helper function for smart merge with conflict resolution (last-write-wins)
-            const smartMerge = async <T extends { id: string; updatedAt?: string }>(
+            // Helper function for smart merge with version-based conflict resolution
+            const smartMerge = async <T extends { id: string; updatedAt?: string; version?: number }>(
               storeName: string,
               cloudData: T[],
               localData: T[]
@@ -165,20 +165,35 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
                   merged.set(localItem.id, localItem);
                   await addToSyncQueue(`UPDATE_${storeName.toUpperCase()}`, localItem);
                   console.log(`📤 Local-only ${storeName}:`, localItem.id);
-                } else if (localItem.updatedAt && cloudItem.updatedAt) {
-                  // Both have timestamps, use last-write-wins
-                  const localTime = new Date(localItem.updatedAt).getTime();
-                  const cloudTime = new Date(cloudItem.updatedAt).getTime();
+                } else {
+                  // Both exist - use version numbers if available, fallback to timestamps
+                  const localVersion = localItem.version ?? 0;
+                  const cloudVersion = cloudItem.version ?? 0;
 
-                  if (localTime > cloudTime) {
-                    // Local is newer, use it and queue for sync
+                  if (localVersion > cloudVersion) {
+                    // Local has higher version, use it
                     merged.set(localItem.id, localItem);
                     await addToSyncQueue(`UPDATE_${storeName.toUpperCase()}`, localItem);
-                    console.log(`🔄 Local ${storeName} is newer:`, localItem.id);
+                    console.log(`🔄 Local ${storeName} is newer (v${localVersion} > v${cloudVersion}):`, localItem.id);
+                  } else if (localVersion === cloudVersion && localItem.updatedAt && cloudItem.updatedAt) {
+                    // Same version, use timestamps as tiebreaker
+                    try {
+                      const localTime = new Date(localItem.updatedAt).getTime();
+                      const cloudTime = new Date(cloudItem.updatedAt).getTime();
+
+                      if (!isNaN(localTime) && !isNaN(cloudTime) && localTime > cloudTime) {
+                        // Local is newer by timestamp
+                        merged.set(localItem.id, localItem);
+                        await addToSyncQueue(`UPDATE_${storeName.toUpperCase()}`, localItem);
+                        console.log(`🔄 Local ${storeName} is newer by timestamp:`, localItem.id);
+                      }
+                    } catch (error) {
+                      console.warn(`⚠️ Invalid timestamp for ${storeName}:`, localItem.id);
+                      // Keep cloud version on timestamp error
+                    }
                   }
-                  // else: cloud is newer or equal, already in merged
+                  // else: cloud version is higher or equal with newer timestamp, keep cloud
                 }
-                // else: no timestamps, cloud wins (already in merged)
               }
 
               return Array.from(merged.values());
@@ -454,77 +469,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   }, []);
 
   // ------------------------------------------------------------------
-  // 2. CLOUD SYNCHRONIZATION LOOP
-  // Checks for pending jobs in the queue and sends them to Cloud.
-  // Enhanced with retry tracking and failure handling.
-  // ------------------------------------------------------------------
-  useEffect(() => {
-    // Track retry attempts per job key (in memory, resets on page reload)
-    const retryCountsRef: Record<number, number> = {};
-    const MAX_RETRIES = 5;
-
-    const syncData = async () => {
-      // If we have no internet, we cannot sync.
-      if (!isOnline) return;
-
-      const db = await dbPromise();
-      // Get keys and values separately since IDB auto-increment keys aren't in the value
-      const keys = await db.getAllKeys('syncQueue');
-      const values = await db.getAll('syncQueue');
-
-      if (keys.length > 0) {
-        setIsSyncing(true);
-        console.log(`☁️ Starting Sync: ${keys.length} items pending...`);
-
-        // Process queue items one by one
-        for (let i = 0; i < keys.length; i++) {
-          const jobKey = keys[i];
-          const job = values[i];
-          const retryCount = retryCountsRef[jobKey] || 0;
-
-          // Skip permanently failed jobs (will be cleaned up or handled manually)
-          if (retryCount >= MAX_RETRIES) {
-            console.error(`❌ Job ${jobKey} (${job.type}) exceeded max retries. Moving to next item.`);
-            // Optionally: Move to a dead-letter queue or delete
-            // For now, delete to prevent queue blockage
-            await db.delete('syncQueue', jobKey);
-            delete retryCountsRef[jobKey];
-            continue;
-          }
-
-          // Call our Cloud Service (Supabase)
-          const success = await pushToCloud(job.type, job.payload);
-
-          if (success) {
-            // If cloud accepted it, remove from local queue
-            await db.delete('syncQueue', jobKey);
-            delete retryCountsRef[jobKey];
-            console.log(`✅ Synced: ${job.type}`);
-          } else {
-            // Increment retry count and continue to next item
-            retryCountsRef[jobKey] = retryCount + 1;
-            console.warn(`⚠️ Sync job ${job.type} failed (attempt ${retryCount + 1}/${MAX_RETRIES}). Will retry.`);
-            // Don't break - try other items in queue
-          }
-        }
-
-        setIsSyncing(false);
-      }
-    };
-
-    // Run the sync check every 5 seconds
-    const interval = setInterval(syncData, 5000);
-
-    // Also run immediately if we just came online
-    if (isOnline) syncData();
-
-    return () => clearInterval(interval);
-  }, [isOnline]); // Only re-run when online status changes
-
-  // ------------------------------------------------------------------
-  // 3. SESSION MANAGEMENT
-  // Auto-logout after 5 minutes of inactivity
-  // ------------------------------------------------------------------
   useEffect(() => {
     if (!currentUser) return;
 
@@ -715,67 +659,85 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   /**
    * PROCESS SALE
    * The core function of the POS. Handles money and inventory deduction.
-   * CRITICAL FIX: Added stock validation, unitsSold tracking, and product sale logs.
+   * CRITICAL FIX: Added race condition protection with database locking.
    */
   const processSale = async (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT', splitPayment?: { cashAmount: number; mobileAmount: number }) => {
     if (!currentUser) return undefined;
 
-    // CRITICAL: Validate stock availability BEFORE processing sale
-    for (const item of items) {
-      const product = products.find(p => p.id === item.productId);
-      if (!product) {
-        alert(`Product not found: ${item.productName}`);
-        throw new Error(`Product not found: ${item.productName}`);
-      }
-      if (product.stock < item.quantity) {
-        alert(`Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
-        throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
-      }
+    // RACE CONDITION PROTECTION: Lock to prevent concurrent sales
+    if (isSyncLocked) {
+      throw new Error('Another sale is being processed. Please wait.');
     }
-
-    const totalAmount = items.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
-    const totalCost = items.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
-
-    const newSale: Sale = {
-      id: Date.now().toString(),
-      timestamp: new Date().toISOString(),
-      cashierId: currentUser.id,
-      cashierName: currentUser.name,
-      totalAmount,
-      totalCost,
-      paymentMethod,
-      items,
-      splitPayment: paymentMethod === 'SPLIT' ? splitPayment : undefined,
-    };
-
-    // DB Transaction: We need to update Products, save Sale, AND create product sale logs atomically
-    const db = await dbPromise();
-    const tx = db.transaction(['products', 'sales', 'productSaleLogs', 'syncQueue'], 'readwrite');
+    setIsSyncLocked(true);
 
     try {
-      // 1. Update Inventory locally (with stock deduction AND unitsSold increment)
-      const updatedProducts = [...products];
-      const newProductSaleLogs: ProductSaleLog[] = [];
-
+      // CRITICAL: Validate stock availability from DATABASE (not state) to avoid race conditions
+      const db = await dbPromise();
       for (const item of items) {
-        const idx = updatedProducts.findIndex(p => p.id === item.productId);
-        if (idx > -1) {
-          const currentProduct = updatedProducts[idx];
+        const dbProduct = await db.get('products', item.productId);
+        if (!dbProduct) {
+          throw new Error(`Product not found: ${item.productName}`);
+        }
+        if (dbProduct.stock < item.quantity) {
+          throw new Error(`Insufficient stock for ${dbProduct.name}. Available: ${dbProduct.stock}, Requested: ${item.quantity}`);
+        }
+      }
+
+      const totalAmount = items.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
+      const totalCost = items.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
+
+      const newSale: Sale = {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        cashierId: currentUser.id,
+        cashierName: currentUser.name,
+        totalAmount,
+        totalCost,
+        paymentMethod,
+        items,
+        splitPayment: paymentMethod === 'SPLIT' ? splitPayment : undefined,
+      };
+
+      // DB Transaction: We need to update Products, save Sale, AND create product sale logs atomically
+      const tx = db.transaction(['products', 'sales', 'productSaleLogs', 'syncQueue'], 'readwrite');
+
+      try {
+        // 1. Update Inventory from DATABASE (not state) to avoid race conditions
+        const updatedProducts = [...products];
+        const newProductSaleLogs: ProductSaleLog[] = [];
+
+        for (const item of items) {
+          // Get fresh product data from DB
+          const dbProduct = await tx.objectStore('products').get(item.productId);
+          if (!dbProduct) {
+            throw new Error(`Product ${item.productId} not found in database`);
+          }
+
+          // Double-check stock again (race condition protection)
+          if (dbProduct.stock < item.quantity) {
+            throw new Error(`Insufficient stock for ${dbProduct.name}. Available: ${dbProduct.stock}, Requested: ${item.quantity}`);
+          }
 
           // CRITICAL FIX: Update both stock AND unitsSold
-          updatedProducts[idx] = {
-            ...currentProduct,
-            stock: currentProduct.stock - item.quantity,
-            unitsSold: (currentProduct.unitsSold || 0) + item.quantity
+          const updatedProduct = {
+            ...dbProduct,
+            stock: dbProduct.stock - item.quantity,
+            unitsSold: (dbProduct.unitsSold || 0) + item.quantity
           };
 
+          // Update in local state array
+          const idx = updatedProducts.findIndex(p => p.id === item.productId);
+          if (idx > -1) {
+            updatedProducts[idx] = updatedProduct;
+          }
+
           // Update product in DB
-          await tx.objectStore('products').put(updatedProducts[idx]);
+          await tx.objectStore('products').put(updatedProduct);
 
           // Queue the product update so Cloud inventory matches
           await tx.objectStore('syncQueue').add({
             type: 'UPDATE_PRODUCT',
-            payload: updatedProducts[idx],
+            payload: updatedProduct,
             timestamp: Date.now()
           });
 
@@ -805,31 +767,34 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             timestamp: Date.now()
           });
         }
+
+        // 2. Save Sale to DB
+        await tx.objectStore('sales').put(newSale);
+        await tx.objectStore('syncQueue').add({
+          type: 'SALE',
+          payload: newSale,
+          timestamp: Date.now()
+        });
+
+        // Commit transaction atomically
+        await tx.done;
+
+        // Update React State only after successful transaction
+        setProducts(updatedProducts);
+        setSales(prev => [newSale, ...prev]);
+        setProductSaleLogs(prev => [...newProductSaleLogs, ...prev]);
+
+        await addLog('SALE', `Sale #${newSale.id} processed for ${CURRENCY_FORMATTER.format(totalAmount)} via ${paymentMethod}`);
+
+        return newSale;
+      } catch (error) {
+        // Transaction will auto-rollback on error
+        console.error('Sale processing failed:', error);
+        throw error;
       }
-
-      // 2. Save Sale to DB
-      await tx.objectStore('sales').put(newSale);
-      await tx.objectStore('syncQueue').add({
-        type: 'SALE',
-        payload: newSale,
-        timestamp: Date.now()
-      });
-
-      // Commit transaction atomically
-      await tx.done;
-
-      // Update React State only after successful transaction
-      setProducts(updatedProducts);
-      setSales(prev => [newSale, ...prev]);
-      setProductSaleLogs(prev => [...newProductSaleLogs, ...prev]);
-
-      await addLog('SALE', `Sale #${newSale.id} processed for ${CURRENCY_FORMATTER.format(totalAmount)} via ${paymentMethod}`);
-
-      return newSale;
-    } catch (error) {
-      // Transaction will auto-rollback on error
-      console.error('Sale processing failed:', error);
-      throw error;
+    } finally {
+      // Always release the lock
+      setIsSyncLocked(false);
     }
   };
 
@@ -954,14 +919,94 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     await addToSyncQueue('ADD_PRODUCT', newProduct);
   };
 
-  const updateProduct = async (product: Product) => {
-    const productWithTimestamp = { ...product, updatedAt: new Date().toISOString() };
-    setProducts(prev => prev.map(p => p.id === product.id ? productWithTimestamp : p));
+  const updateProduct = async (product: Product, skipConflictCheck: boolean = false) => {
+    if (!currentUser) throw new Error('No user logged in');
 
     const db = await dbPromise();
-    await db.put('products', productWithTimestamp);
-    await addLog('PRODUCT_EDIT', `Updated product: ${product.name} (${product.size})`);
-    await addToSyncQueue('UPDATE_PRODUCT', productWithTimestamp);
+    
+    // CONFLICT DETECTION: Check if product was modified by someone else
+    if (!skipConflictCheck) {
+      const currentProduct = products.find(p => p.id === product.id);
+      const dbProduct = await db.get('products', product.id);
+      
+      if (dbProduct && currentProduct) {
+        // Check version mismatch (optimistic locking)
+        if (product.version !== undefined && dbProduct.version !== undefined) {
+          if (product.version < dbProduct.version) {
+            throw new Error(
+              `CONFLICT: This product was modified by ${dbProduct.lastModifiedByName || 'another user'}. ` +
+              `Please refresh and try again. Your version: ${product.version}, Current version: ${dbProduct.version}`
+            );
+          }
+        }
+        
+        // Check timestamp mismatch
+        if (product.updatedAt && dbProduct.updatedAt) {
+          const productTime = new Date(product.updatedAt).getTime();
+          const dbTime = new Date(dbProduct.updatedAt).getTime();
+          
+          if (productTime < dbTime) {
+            throw new Error(
+              `CONFLICT: This product was modified by ${dbProduct.lastModifiedByName || 'another user'} ` +
+              `at ${new Date(dbProduct.updatedAt).toLocaleString()}. Please refresh and try again.`
+            );
+          }
+        }
+      }
+    }
+
+    // Track price changes for audit trail
+    const oldProduct = products.find(p => p.id === product.id);
+    const priceHistory = product.priceHistory || oldProduct?.priceHistory || [];
+    
+    if (oldProduct && (oldProduct.costPrice !== product.costPrice || oldProduct.sellingPrice !== product.sellingPrice)) {
+      const priceChange = {
+        timestamp: new Date().toISOString(),
+        userId: currentUser.id,
+        userName: currentUser.name,
+        oldCostPrice: oldProduct.costPrice,
+        newCostPrice: product.costPrice,
+        oldSellingPrice: oldProduct.sellingPrice,
+        newSellingPrice: product.sellingPrice,
+      };
+      priceHistory.push(priceChange);
+      
+      // Log price change
+      await addLog(
+        'PRICE_CHANGE',
+        `${product.name}: Cost ${oldProduct.costPrice} → ${product.costPrice}, ` +
+        `Selling ${oldProduct.sellingPrice} → ${product.sellingPrice}`
+      );
+    }
+
+    const productWithMetadata = {
+      ...product,
+      updatedAt: new Date().toISOString(),
+      version: (product.version || 0) + 1,
+      lastModifiedBy: currentUser.id,
+      lastModifiedByName: currentUser.name,
+      priceHistory,
+    };
+
+    // Atomic transaction: Update product and queue sync together
+    const tx = db.transaction(['products', 'syncQueue'], 'readwrite');
+    try {
+      await tx.objectStore('products').put(productWithMetadata);
+      await tx.objectStore('syncQueue').add({
+        type: 'UPDATE_PRODUCT',
+        payload: productWithMetadata,
+        timestamp: Date.now()
+      });
+      await tx.done;
+
+      // Update React state only after successful DB transaction
+      setProducts(prev => prev.map(p => p.id === product.id ? productWithMetadata : p));
+      
+      await addLog('PRODUCT_EDIT', `Updated product: ${product.name} (${product.size})`);
+    } catch (error) {
+      console.error('Failed to update product:', error);
+      throw error;
+    }
   };
 
   const deleteProduct = async (productId: string) => {
@@ -977,35 +1022,104 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   };
 
   const adjustStock = async (productId: string, change: number, reason: string) => {
-    const product = products.find(p => p.id === productId);
-    if (!product) return;
-
-    const updatedProduct = { ...product, stock: product.stock + change, updatedAt: new Date().toISOString() };
-    setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
-
-    const db = await dbPromise();
-    await db.put('products', updatedProduct);
-    await addLog('INVENTORY_ADJ', `Adjusted ${product.name} by ${change}. Reason: ${reason}`);
-    await addToSyncQueue('ADJUST_STOCK', updatedProduct); // Send full product object to simple overwrite
-  };
-
-  const receiveStock = async (productId: string, quantity: number, newCost?: number) => {
+    if (!currentUser) throw new Error('No user logged in');
+    
     const product = products.find(p => p.id === productId);
     if (!product) return;
 
     const updatedProduct = {
       ...product,
-      stock: product.stock + quantity,
-      costPrice: newCost !== undefined ? newCost : product.costPrice,
-      updatedAt: new Date().toISOString()
+      stock: product.stock + change,
+      updatedAt: new Date().toISOString(),
+      version: (product.version || 0) + 1,
+      lastModifiedBy: currentUser.id,
+      lastModifiedByName: currentUser.name
     };
 
-    setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
-
+    // Atomic transaction
     const db = await dbPromise();
-    await db.put('products', updatedProduct);
-    await addLog('STOCK_RECEIVE', `Received ${quantity} of ${product.name}.`);
-    await addToSyncQueue('RECEIVE_STOCK', updatedProduct);
+    const tx = db.transaction(['products', 'syncQueue'], 'readwrite');
+    
+    try {
+      await tx.objectStore('products').put(updatedProduct);
+      await tx.objectStore('syncQueue').add({
+        type: 'ADJUST_STOCK',
+        payload: updatedProduct,
+        timestamp: Date.now()
+      });
+      await tx.done;
+
+      setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
+      await addLog('INVENTORY_ADJ', `Adjusted ${product.name} by ${change}. Reason: ${reason}`);
+    } catch (error) {
+      console.error('Failed to adjust stock:', error);
+      throw error;
+    }
+  };
+
+  const receiveStock = async (productId: string, quantity: number, newCost?: number) => {
+    if (!currentUser) throw new Error('No user logged in');
+    
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+
+    // Track price changes in history
+    const priceHistory = product.priceHistory || [];
+    const priceChanged = newCost !== undefined && newCost !== product.costPrice;
+    
+    if (priceChanged) {
+      const priceChange = {
+        timestamp: new Date().toISOString(),
+        userId: currentUser.id,
+        userName: currentUser.name,
+        oldCostPrice: product.costPrice,
+        newCostPrice: newCost!,
+        oldSellingPrice: product.sellingPrice,
+        newSellingPrice: product.sellingPrice,
+        reason: `Stock receipt: ${quantity} units received`
+      };
+      priceHistory.push(priceChange);
+      
+      await addLog(
+        'PRICE_CHANGE',
+        `${product.name}: Cost price changed from ${product.costPrice} to ${newCost} during stock receipt`
+      );
+    }
+
+    const updatedProduct = {
+      ...product,
+      stock: product.stock + quantity,
+      costPrice: newCost !== undefined ? newCost : product.costPrice,
+      updatedAt: new Date().toISOString(),
+      version: (product.version || 0) + 1,
+      lastModifiedBy: currentUser.id,
+      lastModifiedByName: currentUser.name,
+      priceHistory
+    };
+
+    // Atomic transaction
+    const db = await dbPromise();
+    const tx = db.transaction(['products', 'syncQueue'], 'readwrite');
+    
+    try {
+      await tx.objectStore('products').put(updatedProduct);
+      await tx.objectStore('syncQueue').add({
+        type: 'RECEIVE_STOCK',
+        payload: updatedProduct,
+        timestamp: Date.now()
+      });
+      await tx.done;
+
+      setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
+      
+      const logMessage = priceChanged 
+        ? `Received ${quantity} of ${product.name}. Cost price updated to ${newCost}.`
+        : `Received ${quantity} of ${product.name}.`;
+      await addLog('STOCK_RECEIVE', logMessage);
+    } catch (error) {
+      console.error('Failed to receive stock:', error);
+      throw error;
+    }
   };
 
   /**

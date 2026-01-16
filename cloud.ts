@@ -33,53 +33,79 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
 
     // Map internal action types to Supabase Database Tables
     switch (type) {
+      // --- CRITICAL FIX: DELTA STOCK SYNC ---
+      case 'SALE_STOCK_UPDATE':
+        try {
+          // We call the Postgres function 'decrement_stock' to avoid overwriting other devices
+          // payload is { productId: string, quantity: number }
+          const { error: stockError } = await supabase.rpc('decrement_stock', {
+            product_id: payload.productId,
+            quantity_to_subtract: payload.quantity
+          });
+          
+          if (stockError) throw stockError;
+          return true;
+        } catch (error) {
+          console.error('[Cloud Error] Stock update failed:', error);
+          return false;
+        }
+
       case 'SALE':
       case 'UPDATE_SALE':
         table = 'sales';
         break;
+        
       case 'ADD_PRODUCT':
       case 'UPDATE_PRODUCT':
       case 'ADJUST_STOCK':
       case 'RECEIVE_STOCK':
         // All these result in changes to the 'products' table
-        // Note: For stock adjustments, we usually sync the final product state
-        // to keep the cloud in sync with the local device.
         table = 'products';
         break;
+        
       case 'ADD_USER':
       case 'UPDATE_USER':
         table = 'users';
         break;
+        
       case 'DELETE_USER':
         table = 'users';
         action = 'delete';
         break;
+        
       case 'DELETE_PRODUCT':
         table = 'products';
         action = 'delete';
         break;
+        
       case 'DELETE_SALE':
         table = 'sales';
         action = 'delete';
         break;
+        
       case 'DELETE_PRODUCT_SALE_LOG':
         table = 'product_sale_logs';
         action = 'delete';
         break;
+        
       case 'OPEN_SHIFT':
       case 'CLOSE_SHIFT':
         table = 'shifts';
         break;
+        
       case 'LOG':
         table = 'audit_logs';
         break;
+        
       case 'UPDATE_SETTINGS':
         table = 'business_settings';
         break;
+        
       case 'VOID_REQUEST':
       case 'VOID_REJECTED':
         table = 'void_requests';
         break;
+        
       case 'VOID_APPROVED':
         // For approved voids, we need to sync both the void request and the updated sale
         try {
@@ -94,10 +120,12 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
           console.error('[Cloud Error] Failed to sync VOID_APPROVED:', error);
           return false;
         }
+        
       case 'STOCK_CHANGE_REQUEST':
       case 'STOCK_CHANGE_REJECTED':
         table = 'stock_change_requests';
         break;
+        
       case 'STOCK_CHANGE_APPROVED':
         // For approved stock changes, we need to sync both the request and the updated product
         try {
@@ -112,9 +140,12 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
           console.error('[Cloud Error] Failed to sync STOCK_CHANGE_APPROVED:', error);
           return false;
         }
+        
       case 'PRODUCT_SALE_LOG':
+      case 'UPDATE_PRODUCT_SALE_LOG': // Added this case to support Reports.tsx edits
         table = 'product_sale_logs';
         break;
+        
       default:
         console.warn('Unknown sync type:', type);
         return true; // Skip unknown types to clear queue
@@ -141,7 +172,10 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
 
   } catch (error) {
     console.error(`[Cloud Error] Failed to sync ${type}:`, error);
-    console.error(`[Cloud Error] Payload that failed:`, JSON.stringify(payload, null, 2));
+    // Don't log payload for SALE_STOCK_UPDATE as it might clutter logs, but valid for others
+    if (type !== 'SALE_STOCK_UPDATE') {
+      console.error(`[Cloud Error] Payload that failed:`, JSON.stringify(payload, null, 2));
+    }
     return false; // Failed, keep in queue
   }
 };

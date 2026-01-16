@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, PropsWithChildre
 import {
   User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings, VoidRequest, StockChangeRequest, ProductSaleLog
 } from '../types';
+import { SaleReconciliation, ProductReconciliation } from '../components/ReconciliationDialog';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
 import { dbPromise, addToSyncQueue } from '../db';
 import { pushToCloud, supabase } from '../cloud';
@@ -64,6 +65,8 @@ interface StoreContextType {
   updateBusinessSettings: (settings: BusinessSettings) => Promise<void>;
 
   // --- UTILITY ACTIONS ---
+  prepareDataFix: () => Promise<{ salesChanges: SaleReconciliation[]; productChanges: ProductReconciliation[] }>;
+  applyDataFix: (salesChanges: SaleReconciliation[], productChanges: ProductReconciliation[]) => Promise<{ fixed: number; total: number }>;
   fixCorruptedSales: () => Promise<{ fixed: number; total: number }>;
   reconcileStock: () => Promise<{ reconciled: number; errors: string[] }>;
 }
@@ -510,10 +513,87 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     };
   }, [currentUser, lastActivity]);
 
+  // ------------------------------------------------------------------
+  // BACKGROUND SYNC PROCESSOR
+  // Processes the sync queue every 5 seconds when online
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (!isOnline) return;
+
+    const processSyncQueue = async () => {
+      if (isSyncing) return; // Don't overlap sync operations
+
+      try {
+        const db = await dbPromise();
+        const queueItems = await db.getAll('syncQueue');
+
+        if (queueItems.length === 0) return;
+
+        setIsSyncing(true);
+        console.log(`🔄 Processing ${queueItems.length} items in sync queue...`);
+
+        // Process items in parallel using Promise.all
+        const results = await Promise.all(
+          queueItems.map(async (item) => {
+            try {
+              const success = await pushToCloud(item.type, item.payload);
+              if (success) {
+                // Remove from queue on success
+                await db.delete('syncQueue', item.key!);
+                return { success: true, key: item.key };
+              } else {
+                // Increment retry count
+                const retryCount = (item.retryCount || 0) + 1;
+                if (retryCount >= 5) {
+                  // Move to failed queue after 5 retries
+                  await db.add('failedSyncQueue', {
+                    ...item,
+                    failedAt: Date.now(),
+                    totalRetries: retryCount,
+                    canRetry: true
+                  });
+                  await db.delete('syncQueue', item.key!);
+                  console.error(`❌ Item ${item.key} moved to failed queue after ${retryCount} retries`);
+                } else {
+                  // Update retry count
+                  await db.put('syncQueue', { ...item, retryCount });
+                }
+                return { success: false, key: item.key };
+              }
+            } catch (error) {
+              console.error(`Error syncing item ${item.key}:`, error);
+              return { success: false, key: item.key };
+            }
+          })
+        );
+
+        const successCount = results.filter(r => r.success).length;
+        if (successCount > 0) {
+          console.log(`✅ Successfully synced ${successCount}/${queueItems.length} items to cloud`);
+        }
+      } catch (error) {
+        console.error('Sync queue processing error:', error);
+      } finally {
+        setIsSyncing(false);
+      }
+    };
+
+    // Run immediately on mount
+    processSyncQueue();
+
+    // Then run every 5 seconds
+    const syncInterval = setInterval(processSyncQueue, 5000);
+
+    return () => {
+      clearInterval(syncInterval);
+    };
+  }, [isOnline, isSyncing]);
+
   // Computed value: The currently active shift for the logged-in user
   const currentShift = shifts.find(s => s.status === 'OPEN' && s.cashierId === currentUser?.id) || null;
 
   // ------------------------------------------------------------------
+  // ... (rest of the code remains the same)
   // 3. ACTION HANDLERS
   // ------------------------------------------------------------------
 
@@ -657,10 +737,12 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   };
 
   /**
-   * PROCESS SALE
-   * The core function of the POS. Handles money and inventory deduction.
-   * CRITICAL FIX: Added race condition protection with database locking.
-   */
+     * PROCESS SALE
+     * Updated: 
+     * 1. Validates Cost Price (Hard Stop)
+     * 2. Uses Delta Syncing for Cloud (SALE_STOCK_UPDATE)
+     * 3. Removed unitsSold mutation
+     */
   const processSale = async (items: SaleItem[], paymentMethod: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT', splitPayment?: { cashAmount: number; mobileAmount: number }) => {
     if (!currentUser) return undefined;
 
@@ -673,11 +755,24 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     try {
       // CRITICAL: Validate stock availability from DATABASE (not state) to avoid race conditions
       const db = await dbPromise();
+
+      // 1. Validation Phase
       for (const item of items) {
         const dbProduct = await db.get('products', item.productId);
         if (!dbProduct) {
           throw new Error(`Product not found: ${item.productName}`);
         }
+
+        // --- CRITICAL FIX: PREVENT ZERO-COST SALES ---
+        // This stops corrupted data from ruining profit reports
+        if (!item.costAtSale || item.costAtSale <= 0) {
+          throw new Error(
+            `CRITICAL ERROR: ${item.productName} has no Cost Price. ` +
+            `Processing this would corrupt your profit reports. ` +
+            `Please go to Inventory and update the cost price first.`
+          );
+        }
+
         if (dbProduct.stock < item.quantity) {
           throw new Error(`Insufficient stock for ${dbProduct.name}. Available: ${dbProduct.stock}, Requested: ${item.quantity}`);
         }
@@ -698,50 +793,54 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         splitPayment: paymentMethod === 'SPLIT' ? splitPayment : undefined,
       };
 
-      // DB Transaction: We need to update Products, save Sale, AND create product sale logs atomically
+      // 2. Execution Phase - Atomic Transaction
       const tx = db.transaction(['products', 'sales', 'productSaleLogs', 'syncQueue'], 'readwrite');
 
       try {
-        // 1. Update Inventory from DATABASE (not state) to avoid race conditions
         const updatedProducts = [...products];
         const newProductSaleLogs: ProductSaleLog[] = [];
 
         for (const item of items) {
           // Get fresh product data from DB
           const dbProduct = await tx.objectStore('products').get(item.productId);
-          if (!dbProduct) {
-            throw new Error(`Product ${item.productId} not found in database`);
-          }
+          if (!dbProduct) throw new Error(`Product ${item.productId} not found during transaction`);
 
-          // Double-check stock again (race condition protection)
+          // Double-check stock (race condition protection)
           if (dbProduct.stock < item.quantity) {
-            throw new Error(`Insufficient stock for ${dbProduct.name}. Available: ${dbProduct.stock}, Requested: ${item.quantity}`);
+            throw new Error(`Insufficient stock for ${dbProduct.name}.`);
           }
 
-          // CRITICAL FIX: Update both stock AND unitsSold
+          // --- CRITICAL FIX: REMOVE UNITS SOLD MUTATION ---
+          // We only update stock. unitsSold should be calculated in reports, not stored here.
           const updatedProduct = {
             ...dbProduct,
             stock: dbProduct.stock - item.quantity,
-            unitsSold: (dbProduct.unitsSold || 0) + item.quantity
+            updatedAt: new Date().toISOString()
+            // unitsSold: ... REMOVED to prevent data drift
           };
 
-          // Update in local state array
+          // Update in local state array (for UI)
           const idx = updatedProducts.findIndex(p => p.id === item.productId);
           if (idx > -1) {
             updatedProducts[idx] = updatedProduct;
           }
 
-          // Update product in DB
+          // Update product in Local DB
           await tx.objectStore('products').put(updatedProduct);
 
-          // Queue the product update so Cloud inventory matches
+          // --- CRITICAL FIX: DELTA SYNCING ---
+          // Queue a specific stock subtraction instruction for the cloud
+          // Payload contains ONLY what is needed for the RPC call
           await tx.objectStore('syncQueue').add({
-            type: 'UPDATE_PRODUCT',
-            payload: updatedProduct,
+            type: 'SALE_STOCK_UPDATE',
+            payload: {
+              productId: item.productId,
+              quantity: item.quantity
+            },
             timestamp: Date.now()
           });
 
-          // CRITICAL FIX: Create product sale log for analytics
+          // Create product sale log
           const saleLog: ProductSaleLog = {
             id: `${newSale.id}-${item.productId}-${Date.now()}`,
             productId: item.productId,
@@ -759,8 +858,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
           // Save sale log to DB
           await tx.objectStore('productSaleLogs').put(saleLog);
-
-          // Queue sale log for cloud sync
           await tx.objectStore('syncQueue').add({
             type: 'PRODUCT_SALE_LOG',
             payload: saleLog,
@@ -768,7 +865,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           });
         }
 
-        // 2. Save Sale to DB
+        // Save Sale to DB
         await tx.objectStore('sales').put(newSale);
         await tx.objectStore('syncQueue').add({
           type: 'SALE',
@@ -776,10 +873,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           timestamp: Date.now()
         });
 
-        // Commit transaction atomically
+        // Commit transaction
         await tx.done;
 
-        // Update React State only after successful transaction
+        // Update React State
         setProducts(updatedProducts);
         setSales(prev => [newSale, ...prev]);
         setProductSaleLogs(prev => [...newProductSaleLogs, ...prev]);
@@ -820,7 +917,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
    * Permanently deletes a sale and restores inventory to pre-sale state.
    * This reverses stock deductions and unitsSold increments.
    */
-  const deleteSale = async (saleId: string) => {
+const deleteSale = async (saleId: string) => {
     if (!currentUser) return;
 
     const sale = sales.find(s => s.id === saleId);
@@ -837,25 +934,40 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     const tx = db.transaction(['sales', 'products', 'productSaleLogs', 'syncQueue'], 'readwrite');
 
     try {
-      // 1. Restore inventory (reverse the stock deduction and unitsSold increment)
+      // 1. Restore inventory
       const updatedProducts = [...products];
 
       for (const item of sale.items) {
-        const idx = updatedProducts.findIndex(p => p.id === item.productId);
-        if (idx > -1) {
-          updatedProducts[idx] = {
-            ...updatedProducts[idx],
-            stock: updatedProducts[idx].stock + item.quantity, // Add back stock
-            unitsSold: Math.max(0, (updatedProducts[idx].unitsSold || 0) - item.quantity) // Subtract from unitsSold
+        const dbProduct = await tx.objectStore('products').get(item.productId);
+        
+        if (dbProduct) {
+          // Calculate new stock (Add back the sold amount)
+          const restoredStock = dbProduct.stock + item.quantity;
+          
+          const updatedProduct = {
+            ...dbProduct,
+            stock: restoredStock,
+            updatedAt: new Date().toISOString()
+            // unitsSold: ... REMOVED (Do not touch unitsSold)
           };
 
-          // Update product in DB
-          await tx.objectStore('products').put(updatedProducts[idx]);
+          // Update State
+          const idx = updatedProducts.findIndex(p => p.id === item.productId);
+          if (idx > -1) updatedProducts[idx] = updatedProduct;
 
-          // Queue product update for cloud sync
+          // Update product in DB
+          await tx.objectStore('products').put(updatedProduct);
+
+          // --- CRITICAL FIX: REVERSE DELTA SYNC ---
+          // We use the same SALE_STOCK_UPDATE type.
+          // By sending a NEGATIVE quantity, the cloud's subtraction logic (stock - (-qty))
+          // will mathematically ADD the stock back.
           await tx.objectStore('syncQueue').add({
-            type: 'UPDATE_PRODUCT',
-            payload: updatedProducts[idx],
+            type: 'SALE_STOCK_UPDATE',
+            payload: { 
+              productId: item.productId, 
+              quantity: -item.quantity // Negative means add back
+            },
             timestamp: Date.now()
           });
         }
@@ -867,7 +979,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
       for (const log of logsToDelete) {
         await tx.objectStore('productSaleLogs').delete(log.id);
-        // Queue log deletion for cloud sync
         await tx.objectStore('syncQueue').add({
           type: 'DELETE_PRODUCT_SALE_LOG',
           payload: { id: log.id },
@@ -877,8 +988,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
       // 3. Delete the sale
       await tx.objectStore('sales').delete(saleId);
-
-      // Queue sale deletion for cloud sync
       await tx.objectStore('syncQueue').add({
         type: 'DELETE_SALE',
         payload: { id: saleId },
@@ -893,7 +1002,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       setSales(prev => prev.filter(s => s.id !== saleId));
       setProductSaleLogs(prev => prev.filter(log => log.saleId !== saleId));
 
-      await addLog('SALE_DELETE', `Deleted sale #${saleId.slice(-8)} - Stock restored for ${sale.items.length} items - Total: ${CURRENCY_FORMATTER.format(sale.totalAmount)}`);
+      await addLog('SALE_DELETE', `Deleted sale #${saleId.slice(-8)} - Stock restored for ${sale.items.length} items`);
 
       console.log(`✅ Sale ${saleId} deleted successfully. Stock restored.`);
     } catch (error) {
@@ -923,12 +1032,12 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     if (!currentUser) throw new Error('No user logged in');
 
     const db = await dbPromise();
-    
+
     // CONFLICT DETECTION: Check if product was modified by someone else
     if (!skipConflictCheck) {
       const currentProduct = products.find(p => p.id === product.id);
       const dbProduct = await db.get('products', product.id);
-      
+
       if (dbProduct && currentProduct) {
         // Check version mismatch (optimistic locking)
         if (product.version !== undefined && dbProduct.version !== undefined) {
@@ -939,12 +1048,12 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             );
           }
         }
-        
+
         // Check timestamp mismatch
         if (product.updatedAt && dbProduct.updatedAt) {
           const productTime = new Date(product.updatedAt).getTime();
           const dbTime = new Date(dbProduct.updatedAt).getTime();
-          
+
           if (productTime < dbTime) {
             throw new Error(
               `CONFLICT: This product was modified by ${dbProduct.lastModifiedByName || 'another user'} ` +
@@ -958,7 +1067,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     // Track price changes for audit trail
     const oldProduct = products.find(p => p.id === product.id);
     const priceHistory = product.priceHistory || oldProduct?.priceHistory || [];
-    
+
     if (oldProduct && (oldProduct.costPrice !== product.costPrice || oldProduct.sellingPrice !== product.sellingPrice)) {
       const priceChange = {
         timestamp: new Date().toISOString(),
@@ -970,7 +1079,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         newSellingPrice: product.sellingPrice,
       };
       priceHistory.push(priceChange);
-      
+
       // Log price change
       await addLog(
         'PRICE_CHANGE',
@@ -1001,7 +1110,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
       // Update React state only after successful DB transaction
       setProducts(prev => prev.map(p => p.id === product.id ? productWithMetadata : p));
-      
+
       await addLog('PRODUCT_EDIT', `Updated product: ${product.name} (${product.size})`);
     } catch (error) {
       console.error('Failed to update product:', error);
@@ -1023,7 +1132,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
   const adjustStock = async (productId: string, change: number, reason: string) => {
     if (!currentUser) throw new Error('No user logged in');
-    
+
     const product = products.find(p => p.id === productId);
     if (!product) return;
 
@@ -1039,7 +1148,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     // Atomic transaction
     const db = await dbPromise();
     const tx = db.transaction(['products', 'syncQueue'], 'readwrite');
-    
+
     try {
       await tx.objectStore('products').put(updatedProduct);
       await tx.objectStore('syncQueue').add({
@@ -1059,14 +1168,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
   const receiveStock = async (productId: string, quantity: number, newCost?: number) => {
     if (!currentUser) throw new Error('No user logged in');
-    
+
     const product = products.find(p => p.id === productId);
     if (!product) return;
 
     // Track price changes in history
     const priceHistory = product.priceHistory || [];
     const priceChanged = newCost !== undefined && newCost !== product.costPrice;
-    
+
     if (priceChanged) {
       const priceChange = {
         timestamp: new Date().toISOString(),
@@ -1079,7 +1188,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         reason: `Stock receipt: ${quantity} units received`
       };
       priceHistory.push(priceChange);
-      
+
       await addLog(
         'PRICE_CHANGE',
         `${product.name}: Cost price changed from ${product.costPrice} to ${newCost} during stock receipt`
@@ -1100,7 +1209,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     // Atomic transaction
     const db = await dbPromise();
     const tx = db.transaction(['products', 'syncQueue'], 'readwrite');
-    
+
     try {
       await tx.objectStore('products').put(updatedProduct);
       await tx.objectStore('syncQueue').add({
@@ -1111,10 +1220,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       await tx.done;
 
       setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
-      
-      const logMessage = priceChanged 
-        ? `Received ${quantity} of ${product.name}. Cost price updated to ${newCost}.`
-        : `Received ${quantity} of ${product.name}.`;
+
+      const logMessage = priceChanged
+        ? `Received ${quantity} of ${product.name} (${product.size}). Cost price updated to ${newCost}.`
+        : `Received ${quantity} of ${product.name} (${product.size}).`;
       await addLog('STOCK_RECEIVE', logMessage);
     } catch (error) {
       console.error('Failed to receive stock:', error);
@@ -1148,7 +1257,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     await addToSyncQueue('VOID_REQUEST', newRequest);
   };
 
-  const approveVoid = async (requestId: string, notes?: string) => {
+const approveVoid = async (requestId: string, notes?: string) => {
     if (!currentUser) return;
     const request = voidRequests.find(r => r.id === requestId);
     if (!request || request.status !== 'PENDING') return;
@@ -1170,20 +1279,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       voidReason: request.reason,
     };
 
-    // Restore inventory for voided sale (restore stock AND decrement unitsSold)
-    const updatedProducts = [...products];
-    for (const item of request.sale.items) {
-      const idx = updatedProducts.findIndex(p => p.id === item.productId);
-      if (idx > -1) {
-        updatedProducts[idx] = {
-          ...updatedProducts[idx],
-          stock: updatedProducts[idx].stock + item.quantity,
-          unitsSold: Math.max(0, (updatedProducts[idx].unitsSold || 0) - item.quantity)
-        };
-      }
-    }
-
-    // Update database first
     const db = await dbPromise();
     const tx = db.transaction(['voidRequests', 'sales', 'products', 'syncQueue'], 'readwrite');
 
@@ -1194,14 +1289,38 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       // Update sale
       await tx.objectStore('sales').put(updatedSale);
 
-      // Update all products and queue for sync
-      for (const p of updatedProducts) {
-        await tx.objectStore('products').put(p);
-        await tx.objectStore('syncQueue').add({
-          type: 'UPDATE_PRODUCT',
-          payload: p,
-          timestamp: Date.now()
-        });
+      // Restore inventory
+      const updatedProducts = [...products];
+      
+      for (const item of request.sale.items) {
+        const dbProduct = await tx.objectStore('products').get(item.productId);
+        
+        if (dbProduct) {
+           const updatedProduct = {
+            ...dbProduct,
+            stock: dbProduct.stock + item.quantity, // Restore Stock
+            updatedAt: new Date().toISOString()
+            // unitsSold: ... REMOVED (Do not touch unitsSold)
+          };
+
+          // Update State Array
+          const idx = updatedProducts.findIndex(p => p.id === item.productId);
+          if (idx > -1) updatedProducts[idx] = updatedProduct;
+
+          // Update DB
+          await tx.objectStore('products').put(updatedProduct);
+
+          // --- CRITICAL FIX: REVERSE DELTA SYNC ---
+          // Send negative quantity to add stock back in cloud
+          await tx.objectStore('syncQueue').add({
+            type: 'SALE_STOCK_UPDATE',
+            payload: { 
+              productId: item.productId, 
+              quantity: -item.quantity 
+            },
+            timestamp: Date.now()
+          });
+        }
       }
 
       // Queue void approval for sync
@@ -1213,7 +1332,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
       await tx.done;
 
-      // Update React state after successful DB transaction
+      // Update React state
       setVoidRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));
       setSales(prev => prev.map(s => s.id === request.saleId ? updatedSale : s));
       setProducts(updatedProducts);
@@ -1350,18 +1469,307 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   };
 
   /**
-   * FIX CORRUPTED DATA
-   * 1. Fixes sales where items have 0 cost or 0 price by recalculating from current product data
-   * 2. Recalculates unitsSold for all products based on actual non-voided sales
-   * 3. Fixes products with unrealistic costPrice or stock values
+   * PREPARE DATA FIX
+   * Analyzes corrupted data and returns what will be changed WITHOUT applying fixes
+   * This allows showing a reconciliation dialog to the user
+   */
+  const prepareDataFix = async (): Promise<{ salesChanges: SaleReconciliation[]; productChanges: ProductReconciliation[] }> => {
+    console.log('🔍 Analyzing data for reconciliation...');
+
+    const salesChanges: SaleReconciliation[] = [];
+    const productChanges: ProductReconciliation[] = [];
+
+    // STEP 1: Analyze corrupted sales
+    const corruptedSales = sales.filter(sale =>
+      sale.totalAmount === 0 || sale.totalCost === 0 ||
+      sale.items.some(item => item.priceAtSale === 0 || item.costAtSale === 0)
+    );
+
+    for (const sale of corruptedSales) {
+      const priceChanges: Array<{
+        productName: string;
+        size: string;
+        oldPrice: number;
+        newPrice: number;
+        oldCost: number;
+        newCost: number;
+        quantity: number;
+      }> = [];
+
+      let canFix = true;
+      const updatedItems: SaleItem[] = [];
+
+      for (const item of sale.items) {
+        let product = products.find(p => p.id === item.productId);
+
+        if (!product) {
+          product = products.find(p =>
+            p.name.toLowerCase() === item.productName.toLowerCase() &&
+            p.size === item.size
+          );
+        }
+
+        if (!product) {
+          canFix = false;
+          break;
+        }
+
+        const newPriceAtSale = item.priceAtSale === 0 ? product.sellingPrice : item.priceAtSale;
+        const newCostAtSale = item.costAtSale === 0 ? product.costPrice : item.costAtSale;
+
+        if (newPriceAtSale === 0 || newCostAtSale === 0) {
+          canFix = false;
+          break;
+        }
+
+        // Track if prices changed
+        if (item.priceAtSale !== newPriceAtSale || item.costAtSale !== newCostAtSale) {
+          priceChanges.push({
+            productName: item.productName,
+            size: item.size,
+            oldPrice: item.priceAtSale,
+            newPrice: newPriceAtSale,
+            oldCost: item.costAtSale,
+            newCost: newCostAtSale,
+            quantity: item.quantity
+          });
+        }
+
+        updatedItems.push({
+          ...item,
+          productId: product.id,
+          priceAtSale: newPriceAtSale,
+          costAtSale: newCostAtSale
+        });
+      }
+
+      if (canFix && priceChanges.length > 0) {
+        const newTotalAmount = updatedItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
+        const newTotalCost = updatedItems.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
+
+        salesChanges.push({
+          originalSale: sale,
+          fixedSale: {
+            ...sale,
+            items: updatedItems,
+            totalAmount: newTotalAmount,
+            totalCost: newTotalCost
+          },
+          priceChanges
+        });
+      }
+    }
+
+    // STEP 2: Analyze product unitsSold recalculation
+    const productSalesMap = new Map<string, number>();
+    for (const sale of sales) {
+      if (sale.isVoided) continue;
+      for (const item of sale.items) {
+        const currentCount = productSalesMap.get(item.productId) || 0;
+        productSalesMap.set(item.productId, currentCount + item.quantity);
+      }
+    }
+
+    for (const product of products) {
+      const calculatedUnitsSold = productSalesMap.get(product.id) || 0;
+      const currentUnitsSold = product.unitsSold || 0;
+      const cost = Number(product.costPrice) || 0;
+      const stock = Number(product.stock) || 0;
+
+      let needsUpdate = false;
+      let newStock = stock;
+      let newCostPrice = cost;
+
+      // Check for unrealistic values
+      if (cost > 1000000 || cost < 0) {
+        newCostPrice = 0;
+        needsUpdate = true;
+      }
+      if (stock > 100000 || stock < 0) {
+        newStock = 0;
+        needsUpdate = true;
+      }
+
+      if (calculatedUnitsSold !== currentUnitsSold || needsUpdate) {
+        productChanges.push({
+          product,
+          oldUnitsSold: currentUnitsSold,
+          newUnitsSold: calculatedUnitsSold,
+          oldStock: needsUpdate ? stock : undefined,
+          newStock: needsUpdate ? newStock : undefined,
+          oldCostPrice: (cost > 1000000 || cost < 0) ? cost : undefined,
+          newCostPrice: (cost > 1000000 || cost < 0) ? newCostPrice : undefined
+        });
+      }
+    }
+
+    console.log(`📊 Analysis complete: ${salesChanges.length} sales to fix, ${productChanges.length} products to update`);
+    return { salesChanges, productChanges };
+  };
+
+  /**
+   * APPLY DATA FIX
+   * Applies the fixes that were prepared and shown in the reconciliation dialog
+   */
+  const applyDataFix = async (
+    salesChanges: SaleReconciliation[],
+    productChanges: ProductReconciliation[]
+  ): Promise<{ fixed: number; total: number }> => {
+    console.log('✅ Applying data fixes...');
+    const db = await dbPromise();
+
+    let fixedCount = 0;
+
+    // Apply sales fixes
+    if (salesChanges.length > 0) {
+      const tx = db.transaction(['sales', 'productSaleLogs'], 'readwrite');
+
+      for (const change of salesChanges) {
+        await tx.objectStore('sales').put(change.fixedSale);
+
+        // Update product sale logs
+        for (const item of change.fixedSale.items) {
+          const existingLogs = productSaleLogs.filter(
+            log => log.saleId === change.fixedSale.id && log.productId === item.productId
+          );
+
+          for (const log of existingLogs) {
+            const updatedLog: ProductSaleLog = {
+              ...log,
+              priceAtSale: item.priceAtSale,
+              costAtSale: item.costAtSale
+            };
+            await tx.objectStore('productSaleLogs').put(updatedLog);
+          }
+        }
+        fixedCount++;
+      }
+
+      await tx.done;
+
+      // Update state
+      setSales(prev => prev.map(sale => {
+        const updated = salesChanges.find(c => c.originalSale.id === sale.id);
+        return updated ? updated.fixedSale : sale;
+      }));
+    }
+
+    // Apply product fixes
+    if (productChanges.length > 0) {
+      const tx2 = db.transaction(['products', 'syncQueue'], 'readwrite');
+
+      for (const change of productChanges) {
+        const updatedProduct = {
+          ...change.product,
+          unitsSold: change.newUnitsSold,
+          stock: change.newStock !== undefined ? change.newStock : change.product.stock,
+          costPrice: change.newCostPrice !== undefined ? change.newCostPrice : change.product.costPrice,
+          updatedAt: new Date().toISOString()
+        };
+
+        await tx2.objectStore('products').put(updatedProduct);
+
+        // Add to sync queue so cloud gets updated
+        await tx2.objectStore('syncQueue').add({
+          type: 'UPDATE_PRODUCT',
+          payload: updatedProduct,
+          timestamp: Date.now()
+        });
+
+        fixedCount++;
+      }
+
+      await tx2.done;
+
+      // Update state
+      setProducts(prev => prev.map(product => {
+        const updated = productChanges.find(c => c.product.id === product.id);
+        if (updated) {
+          return {
+            ...product,
+            unitsSold: updated.newUnitsSold,
+            stock: updated.newStock !== undefined ? updated.newStock : product.stock,
+            costPrice: updated.newCostPrice !== undefined ? updated.newCostPrice : product.costPrice,
+            updatedAt: new Date().toISOString()
+          };
+        }
+        return product;
+      }));
+    }
+
+    // CRITICAL: After fixing sales, recalculate unitsSold for affected products
+    if (salesChanges.length > 0) {
+      console.log('📊 Recalculating unitsSold for products affected by sales fixes...');
+      const affectedProductIds = new Set<string>();
+      salesChanges.forEach(change => {
+        change.fixedSale.items.forEach(item => affectedProductIds.add(item.productId));
+      });
+
+      // Get all sales (including the ones we just fixed) from database
+      const allSales = await db.getAll('sales');
+      const productSalesMap = new Map<string, number>();
+
+      for (const sale of allSales) {
+        if (sale.isVoided) continue;
+        for (const item of sale.items) {
+          if (affectedProductIds.has(item.productId)) {
+            const currentCount = productSalesMap.get(item.productId) || 0;
+            productSalesMap.set(item.productId, currentCount + item.quantity);
+          }
+        }
+      }
+
+      // Update products with correct unitsSold
+      const tx3 = db.transaction(['products', 'syncQueue'], 'readwrite');
+      for (const productId of affectedProductIds) {
+        const product = products.find(p => p.id === productId);
+        if (product) {
+          const correctUnitsSold = productSalesMap.get(productId) || 0;
+          if (product.unitsSold !== correctUnitsSold) {
+            const updatedProduct = {
+              ...product,
+              unitsSold: correctUnitsSold,
+              updatedAt: new Date().toISOString()
+            };
+            await tx3.objectStore('products').put(updatedProduct);
+            await tx3.objectStore('syncQueue').add({
+              type: 'UPDATE_PRODUCT',
+              payload: updatedProduct,
+              timestamp: Date.now()
+            });
+            console.log(`  ✓ ${product.name}: unitsSold corrected to ${correctUnitsSold}`);
+
+            // Update state
+            setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
+          }
+        }
+      }
+      await tx3.done;
+    }
+
+    await addLog('DATA_FIX', `Applied data fixes: ${salesChanges.length} sales corrected, ${productChanges.length} products updated`);
+
+    console.log(`✅ Data fix complete: ${fixedCount} items fixed`);
+    return { fixed: fixedCount, total: salesChanges.length + productChanges.length };
+  };
+
+  /**
+   * FIX CORRUPTED DATA - COMPREHENSIVE VERSION
+   * 1. Fixes sales where items have 0 cost or 0 price by looking up price history
+   * 2. FLAGS unfixable sales instead of guessing costs (prevents incorrect historical data)
+   * 3. Detects and creates MISSING product sale logs by comparing sales to logs
+   * 4. Recalculates unitsSold for ALL products based on actual non-voided sales
+   * 5. Fixes products with unrealistic costPrice or stock values
    */
   const fixCorruptedSales = async (): Promise<{ fixed: number; total: number }> => {
-    console.log('🔧 Starting corrupted sales fix and unitsSold recalculation...');
+    console.log('🔧 Starting comprehensive data fix...');
     const db = await dbPromise();
-    const tx = db.transaction(['sales', 'productSaleLogs', 'products'], 'readwrite');
 
     let fixedCount = 0;
     let skippedCount = 0;
+    let missingLogsCreated = 0;
+    const unfixableSales: string[] = [];
+
     const corruptedSales = sales.filter(sale =>
       sale.totalAmount === 0 || sale.totalCost === 0 ||
       sale.items.some(item => item.priceAtSale === 0 || item.costAtSale === 0)
@@ -1371,179 +1779,172 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     const updatedSales: Sale[] = [];
     const updatedLogs: ProductSaleLog[] = [];
+    const newLogs: ProductSaleLog[] = [];
     const updatedProducts: Product[] = [];
+
+    // STEP 1: Fix corrupted sales and flag unfixable ones
+    const tx = db.transaction(['sales', 'productSaleLogs'], 'readwrite');
 
     for (const sale of corruptedSales) {
       let canFix = true;
       const updatedItems: SaleItem[] = [];
-
-      console.log(`Processing sale ${sale.id}:`, {
-        totalAmount: sale.totalAmount,
-        totalCost: sale.totalCost,
-        items: sale.items.length
-      });
+      const unfixableReasons: string[] = [];
 
       for (const item of sale.items) {
-        // Try to find product by ID first
         let product = products.find(p => p.id === item.productId);
-
-        // If not found by ID, try to find by name and size
         if (!product) {
           product = products.find(p =>
-            p.name.toLowerCase() === item.productName.toLowerCase() &&
-            p.size === item.size
+            p.name.toLowerCase() === item.productName.toLowerCase() && p.size === item.size
           );
-          if (product) {
-            console.log(`  ⚠️ Product ID mismatch for ${item.productName}, using name match`);
-          }
         }
 
         if (!product) {
-          console.error(`  ❌ Cannot find product: ${item.productName} (${item.size}), ID: ${item.productId}`);
+          unfixableReasons.push(`Product not found: ${item.productName}`);
           canFix = false;
           break;
         }
 
-        const newPriceAtSale = item.priceAtSale === 0 ? product.sellingPrice : item.priceAtSale;
-        const newCostAtSale = item.costAtSale === 0 ? product.costPrice : item.costAtSale;
+        let newPriceAtSale = item.priceAtSale;
+        let newCostAtSale = item.costAtSale;
+
+        if (item.priceAtSale === 0 || item.costAtSale === 0) {
+          if (product.priceHistory && product.priceHistory.length > 0) {
+            const saleDate = new Date(sale.timestamp).getTime();
+            const relevantPriceChange = product.priceHistory
+              .filter(ph => new Date(ph.timestamp).getTime() <= saleDate)
+              .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+
+            if (relevantPriceChange) {
+              if (item.priceAtSale === 0) newPriceAtSale = relevantPriceChange.newSellingPrice || product.sellingPrice;
+              if (item.costAtSale === 0) newCostAtSale = relevantPriceChange.newCostPrice || product.costPrice;
+            }
+          }
+
+          if (newPriceAtSale === 0) newPriceAtSale = product.sellingPrice;
+          if (newCostAtSale === 0) newCostAtSale = product.costPrice;
+        }
 
         if (newPriceAtSale === 0 || newCostAtSale === 0) {
-          console.error(`  ❌ Product ${product.name} has 0 price/cost in inventory`);
+          unfixableReasons.push(`${product.name}: No valid price/cost data`);
           canFix = false;
           break;
         }
 
         updatedItems.push({
           ...item,
-          productId: product.id, // Update to correct product ID if it was wrong
+          productId: product.id,
           priceAtSale: newPriceAtSale,
           costAtSale: newCostAtSale
         });
-
-        console.log(`  ✓ Fixed item: ${item.productName} - Price: ${newPriceAtSale}, Cost: ${newCostAtSale}`);
       }
 
       if (canFix && updatedItems.length > 0) {
-        // Recalculate totals
         const newTotalAmount = updatedItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
         const newTotalCost = updatedItems.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
+        const updatedSale: Sale = { ...sale, items: updatedItems, totalAmount: newTotalAmount, totalCost: newTotalCost };
 
-        const updatedSale: Sale = {
-          ...sale,
-          items: updatedItems,
-          totalAmount: newTotalAmount,
-          totalCost: newTotalCost
-        };
-
-        console.log(`  ✅ Sale ${sale.id} fixed: Amount ${newTotalAmount}, Cost ${newTotalCost}`);
-
-        // Update in database
         await tx.objectStore('sales').put(updatedSale);
         updatedSales.push(updatedSale);
         fixedCount++;
 
-        // Update product sale logs
         for (const item of updatedItems) {
           const existingLogs = productSaleLogs.filter(log => log.saleId === sale.id && log.productId === item.productId);
-
           if (existingLogs.length > 0) {
             for (const log of existingLogs) {
-              const updatedLog: ProductSaleLog = {
-                ...log,
-                priceAtSale: item.priceAtSale,
-                costAtSale: item.costAtSale
-              };
+              const updatedLog: ProductSaleLog = { ...log, priceAtSale: item.priceAtSale, costAtSale: item.costAtSale };
               await tx.objectStore('productSaleLogs').put(updatedLog);
               updatedLogs.push(updatedLog);
             }
+          } else {
+            const newLog: ProductSaleLog = {
+              id: `${sale.id}-${item.productId}-${Date.now()}`,
+              productId: item.productId,
+              productName: item.productName,
+              saleId: sale.id,
+              quantity: item.quantity,
+              priceAtSale: item.priceAtSale,
+              costAtSale: item.costAtSale,
+              timestamp: sale.timestamp,
+              cashierId: sale.cashierId,
+              cashierName: sale.cashierName
+            };
+            await tx.objectStore('productSaleLogs').put(newLog);
+            newLogs.push(newLog);
+            missingLogsCreated++;
           }
         }
       } else {
-        console.warn(`  ⚠️ Skipping sale ${sale.id} - cannot fix`);
+        unfixableSales.push(`Sale #${sale.id.slice(-8)}: ${unfixableReasons.join(', ')}`);
         skippedCount++;
       }
     }
-
     await tx.done;
 
-    // STEP 2: Recalculate unitsSold for ALL products based on actual non-voided sales
-    console.log('📊 Recalculating unitsSold for all products...');
-    const productSalesMap = new Map<string, number>();
-
-    // Count units sold per product from all non-voided sales
+    // STEP 2: Detect missing logs for ALL sales
+    console.log('📊 Checking for missing logs across all sales...');
+    const tx1b = db.transaction(['productSaleLogs'], 'readwrite');
     for (const sale of sales) {
-      if (sale.isVoided) continue; // Skip voided sales
+      if (sale.isVoided) continue;
+      for (const item of sale.items) {
+        const existingLog = productSaleLogs.find(log => log.saleId === sale.id && log.productId === item.productId);
+        if (!existingLog) {
+          const newLog: ProductSaleLog = {
+            id: `${sale.id}-${item.productId}-${Date.now()}-${Math.random()}`,
+            productId: item.productId,
+            productName: item.productName,
+            saleId: sale.id,
+            quantity: item.quantity,
+            priceAtSale: item.priceAtSale,
+            costAtSale: item.costAtSale,
+            timestamp: sale.timestamp,
+            cashierId: sale.cashierId,
+            cashierName: sale.cashierName
+          };
+          await tx1b.objectStore('productSaleLogs').put(newLog);
+          newLogs.push(newLog);
+          missingLogsCreated++;
+        }
+      }
+    }
+    await tx1b.done;
+    console.log(`📝 Created ${missingLogsCreated} missing logs`);
 
+    // STEP 3: Recalculate unitsSold for ALL products
+    console.log('📊 Recalculating unitsSold...');
+    const productSalesMap = new Map<string, number>();
+    for (const sale of sales) {
+      if (sale.isVoided) continue;
       for (const item of sale.items) {
         const currentCount = productSalesMap.get(item.productId) || 0;
         productSalesMap.set(item.productId, currentCount + item.quantity);
       }
     }
 
-    // Update products with recalculated unitsSold
     const tx2 = db.transaction(['products'], 'readwrite');
     let unitsFixedCount = 0;
-
     for (const product of products) {
       const calculatedUnitsSold = productSalesMap.get(product.id) || 0;
-      const currentUnitsSold = product.unitsSold || 0;
-
-      if (calculatedUnitsSold !== currentUnitsSold) {
-        const updatedProduct = {
-          ...product,
-          unitsSold: calculatedUnitsSold,
-          updatedAt: new Date().toISOString()
-        };
-
+      if (calculatedUnitsSold !== (product.unitsSold || 0)) {
+        const updatedProduct = { ...product, unitsSold: calculatedUnitsSold, updatedAt: new Date().toISOString() };
         await tx2.objectStore('products').put(updatedProduct);
         updatedProducts.push(updatedProduct);
         unitsFixedCount++;
-
-        console.log(`  ✓ ${product.name}: ${currentUnitsSold} → ${calculatedUnitsSold} units sold`);
       }
     }
-
     await tx2.done;
-    console.log(`📊 Recalculated unitsSold for ${unitsFixedCount} products`);
 
-    // STEP 3: Fix products with unrealistic costPrice or stock values
-    console.log('🔧 Fixing products with unrealistic values...');
+    // STEP 4: Fix unrealistic values
+    console.log('🔧 Fixing unrealistic values...');
     const tx3 = db.transaction(['products'], 'readwrite');
     let valueFixedCount = 0;
-
     for (const product of products) {
       const cost = Number(product.costPrice) || 0;
       const stock = Number(product.stock) || 0;
-      const value = cost * stock;
       let needsFix = false;
       let updatedProduct = { ...product };
 
-      // Fix unrealistic cost prices (over 1M Ksh per unit)
-      if (cost > 1000000) {
-        console.warn(`  ⚠️ ${product.name}: Cost price too high (${cost}), setting to 0`);
-        updatedProduct.costPrice = 0;
-        needsFix = true;
-      }
-
-      // Fix unrealistic stock levels (over 100,000 units)
-      if (stock > 100000) {
-        console.warn(`  ⚠️ ${product.name}: Stock too high (${stock}), setting to 0`);
-        updatedProduct.stock = 0;
-        needsFix = true;
-      }
-
-      // Fix negative values
-      if (cost < 0) {
-        console.warn(`  ⚠️ ${product.name}: Negative cost price (${cost}), setting to 0`);
-        updatedProduct.costPrice = 0;
-        needsFix = true;
-      }
-
-      if (stock < 0) {
-        console.warn(`  ⚠️ ${product.name}: Negative stock (${stock}), setting to 0`);
-        updatedProduct.stock = 0;
-        needsFix = true;
-      }
+      if (cost > 1000000 || cost < 0) { updatedProduct.costPrice = 0; needsFix = true; }
+      if (stock > 100000 || stock < 0) { updatedProduct.stock = 0; needsFix = true; }
 
       if (needsFix) {
         updatedProduct.updatedAt = new Date().toISOString();
@@ -1552,39 +1953,28 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         valueFixedCount++;
       }
     }
-
     await tx3.done;
-    console.log(`🔧 Fixed unrealistic values for ${valueFixedCount} products`);
 
     // Update state
-    if (updatedSales.length > 0 || updatedProducts.length > 0) {
-      if (updatedSales.length > 0) {
-        setSales(prev => prev.map(sale => {
-          const updated = updatedSales.find(s => s.id === sale.id);
-          return updated || sale;
-        }));
-      }
+    if (updatedSales.length > 0) setSales(prev => prev.map(sale => updatedSales.find(s => s.id === sale.id) || sale));
+    if (updatedLogs.length > 0 || newLogs.length > 0) {
+      setProductSaleLogs(prev => {
+        const updated = prev.map(log => updatedLogs.find(l => l.id === log.id) || log);
+        return [...newLogs, ...updated];
+      });
+    }
+    if (updatedProducts.length > 0) setProducts(prev => prev.map(product => updatedProducts.find(p => p.id === product.id) || product));
 
-      if (updatedLogs.length > 0) {
-        setProductSaleLogs(prev => prev.map(log => {
-          const updated = updatedLogs.find(l => l.id === log.id);
-          return updated || log;
-        }));
-      }
+    await addLog('DATA_FIX', `Fixed ${fixedCount} sales, created ${missingLogsCreated} logs, recalculated ${unitsFixedCount} products, fixed ${valueFixedCount} unrealistic values (${skippedCount} unfixable)`);
 
-      if (updatedProducts.length > 0) {
-        setProducts(prev => prev.map(product => {
-          const updated = updatedProducts.find(p => p.id === product.id);
-          return updated || product;
-        }));
-      }
-
-      await addLog('DATA_FIX', `Fixed ${fixedCount} corrupted sales, recalculated unitsSold for ${unitsFixedCount} products, and fixed unrealistic values for ${valueFixedCount} products (${skippedCount} sales skipped)`);
+    if (unfixableSales.length > 0) {
+      console.warn('🚫 UNFIXABLE SALES:', unfixableSales);
     }
 
-    console.log(`✅ Fix complete: ${fixedCount} sales fixed, ${unitsFixedCount} products unitsSold recalculated, ${valueFixedCount} products values fixed, ${skippedCount} skipped, ${corruptedSales.length} total corrupted`);
-    return { fixed: fixedCount + unitsFixedCount + valueFixedCount, total: corruptedSales.length + unitsFixedCount + valueFixedCount };
+    console.log(`✅ Fix complete: ${fixedCount} sales, ${missingLogsCreated} logs, ${unitsFixedCount} unitsSold, ${valueFixedCount} values`);
+    return { fixed: fixedCount + missingLogsCreated + unitsFixedCount + valueFixedCount, total: corruptedSales.length + unitsFixedCount + valueFixedCount };
   };
+
 
   /**
    * RECONCILE STOCK
@@ -1675,6 +2065,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       productSaleLogs,
       businessSettings,
       updateBusinessSettings,
+      prepareDataFix,
+      applyDataFix,
       fixCorruptedSales,
       reconcileStock,
     }}>

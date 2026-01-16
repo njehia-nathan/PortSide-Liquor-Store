@@ -52,14 +52,13 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
     return { startDate, endDate };
   };
 
-  // Filter sales for this specific product
+  // Filter sales for this specific product (including voided sales to show in red)
   const filteredProductSales = useMemo(() => {
     if (!sales || !Array.isArray(sales)) return [];
 
     const { startDate, endDate } = getDateBounds();
 
     return sales.filter(sale => {
-      if (sale.isVoided) return false;
       if (!sale.items.some(item => item.productId === product.id)) return false;
 
       const saleDate = new Date(sale.timestamp);
@@ -101,6 +100,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
     const saleActivityLogs = filteredProductSales.map(sale => {
       const qty = sale.productItems.reduce((sum, item) => sum + item.quantity, 0);
       const total = sale.productItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
+      const voidedText = sale.isVoided ? ' [VOIDED]' : '';
 
       return {
         id: `sale-${sale.id}`,
@@ -108,7 +108,8 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
         userId: sale.cashierId,
         userName: sale.cashierName,
         action: 'SALE',
-        details: `Sold ${qty} unit${qty > 1 ? 's' : ''} of ${product.name} for ${CURRENCY_FORMATTER.format(total)} via ${sale.paymentMethod}`
+        details: `Sold ${qty} unit${qty > 1 ? 's' : ''} of ${product.name} (${product.size}) for ${CURRENCY_FORMATTER.format(total)} via ${sale.paymentMethod}${voidedText}`,
+        isVoided: sale.isVoided
       };
     });
 
@@ -119,22 +120,28 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
 
   // Calculate comprehensive analytics
   const analytics = useMemo(() => {
-    // Units sold in the selected period (from filtered sales)
-    const periodUnitsSold = filteredProductSales.reduce((sum, sale) =>
-      sum + sale.productItems.reduce((itemSum, item) => itemSum + item.quantity, 0), 0);
+    // Units sold in the selected period (from filtered sales, excluding voided)
+    const periodUnitsSold = filteredProductSales
+      .filter(sale => !sale.isVoided)
+      .reduce((sum, sale) =>
+        sum + sale.productItems.reduce((itemSum, item) => itemSum + item.quantity, 0), 0);
 
-    const totalRevenue = filteredProductSales.reduce((sum, sale) =>
-      sum + sale.productItems.reduce((itemSum, item) => itemSum + (item.priceAtSale * item.quantity), 0), 0);
+    const totalRevenue = filteredProductSales
+      .filter(sale => !sale.isVoided)
+      .reduce((sum, sale) =>
+        sum + sale.productItems.reduce((itemSum, item) => itemSum + (item.priceAtSale * item.quantity), 0), 0);
 
-    const totalCost = filteredProductSales.reduce((sum, sale) =>
-      sum + sale.productItems.reduce((itemSum, item) => itemSum + (item.costAtSale * item.quantity), 0), 0);
+    const totalCost = filteredProductSales
+      .filter(sale => !sale.isVoided)
+      .reduce((sum, sale) =>
+        sum + sale.productItems.reduce((itemSum, item) => itemSum + (item.costAtSale * item.quantity), 0), 0);
 
     const totalProfit = totalRevenue - totalCost;
     const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
     const avgPricePerUnit = periodUnitsSold > 0 ? totalRevenue / periodUnitsSold : product.sellingPrice;
 
-    // Activity counts
-    const salesCount = filteredLogs.filter(log => log.action === 'SALE').length;
+    // Activity counts (excluding voided sales)
+    const salesCount = filteredLogs.filter(log => log.action === 'SALE' && !(log as any).isVoided).length;
     const adjustCount = filteredLogs.filter(log => log.action === 'STOCK_ADJUST').length;
     const receiveCount = filteredLogs.filter(log => log.action === 'STOCK_RECEIVE').length;
     const editCount = filteredLogs.filter(log => log.action === 'PRODUCT_EDIT').length;
@@ -168,7 +175,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
       editCount,
       totalUnitsReceived,
       initialStock,  // Calculated starting inventory
-      totalTransactions: filteredProductSales.length,
+      totalTransactions: filteredProductSales.filter(s => !s.isVoided).length,
       totalActivities: filteredLogs.length,
     };
   }, [filteredProductSales, filteredLogs, product.sellingPrice, product.unitsSold]);
@@ -230,7 +237,8 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
     return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
   };
 
-  const getActionColor = (action: string) => {
+  const getActionColor = (action: string, isVoided?: boolean) => {
+    if (isVoided) return 'text-red-600 bg-red-50 border-red-200';
     switch (action) {
       case 'SALE': return 'text-green-600 bg-green-50 border-green-200';
       case 'PRODUCT_ADD': return 'text-blue-600 bg-blue-50 border-blue-200';
@@ -411,15 +419,15 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                   <span className="text-[10px] text-gray-500 font-medium uppercase">Period Sold</span>
                 </div>
                 <p className="text-xl font-bold text-blue-600">{analytics.periodUnitsSold}</p>
-                <p className="text-[9px] text-gray-500 mt-0.5">{analytics.totalTransactions} sales</p>
+                <p className="text-[9px] text-gray-500 mt-0.5">{dateRange === 'all' ? 'All time' : `In selected period`} ({analytics.totalTransactions} sales)</p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-purple-200 shadow-sm">
                 <div className="flex items-center gap-2 mb-1">
                   <Hash size={14} className="text-purple-500" />
-                  <span className="text-[10px] text-gray-500 font-medium uppercase">Lifetime Sold</span>
+                  <span className="text-[10px] text-gray-500 font-medium uppercase">Lifetime Total</span>
                 </div>
                 <p className="text-xl font-bold text-purple-600">{analytics.lifetimeUnitsSold}</p>
-                <p className="text-[9px] text-gray-500 mt-0.5">All time total</p>
+                <p className="text-[9px] text-gray-500 mt-0.5">All time (non-voided)</p>
               </div>
               <div className="bg-white rounded-lg p-3 border border-cyan-200 shadow-sm">
                 <div className="flex items-center gap-2 mb-1">
@@ -628,35 +636,36 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                           const unitPrice = sale.productItems[0]?.priceAtSale || 0;
                           const unitCost = sale.productItems[0]?.costAtSale || 0;
                           const saleDate = new Date(sale.timestamp);
+                          const isVoided = sale.isVoided;
 
                           return (
-                            <tr key={sale.id} className="hover:bg-gray-100 border-b border-black">
-                              <td className="px-2 py-1.5 text-gray-500 font-mono text-xs sticky left-0 bg-white border-r border-black">{idx + 1}</td>
-                              <td className="px-2 py-1.5 text-gray-700 font-mono text-[10px] border-r border-black">#{sale.id.slice(-8)}</td>
-                              <td className="px-2 py-1.5 text-gray-800 text-xs whitespace-nowrap border-r border-black">
+                            <tr key={sale.id} className={`hover:bg-gray-100 border-b border-black ${isVoided ? 'bg-red-50' : ''}`}>
+                              <td className={`px-2 py-1.5 font-mono text-xs sticky left-0 border-r border-black ${isVoided ? 'text-red-500 bg-red-50' : 'text-gray-500 bg-white'}`}>{idx + 1}</td>
+                              <td className={`px-2 py-1.5 font-mono text-[10px] border-r border-black ${isVoided ? 'text-red-700' : 'text-gray-700'}`}>#{sale.id.slice(-8)}</td>
+                              <td className={`px-2 py-1.5 text-xs whitespace-nowrap border-r border-black ${isVoided ? 'text-red-700' : 'text-gray-800'}`}>
                                 {saleDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                               </td>
-                              <td className="px-2 py-1.5 text-gray-800 text-xs whitespace-nowrap border-r border-black">
+                              <td className={`px-2 py-1.5 text-xs whitespace-nowrap border-r border-black ${isVoided ? 'text-red-700' : 'text-gray-800'}`}>
                                 {saleDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                               </td>
-                              <td className="px-2 py-1.5 text-gray-800 text-xs font-medium border-r border-black">{sale.cashierName}</td>
-                              <td className="px-2 py-1.5 text-center font-bold text-gray-900 border-r border-black">{qty}</td>
-                              <td className="px-2 py-1.5 text-right text-gray-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(unitCost)}</td>
-                              <td className="px-2 py-1.5 text-right text-gray-800 text-xs font-semibold border-r border-black">{CURRENCY_FORMATTER.format(unitPrice)}</td>
-                              <td className="px-2 py-1.5 text-right text-gray-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(totalCost)}</td>
-                              <td className="px-2 py-1.5 text-right font-bold text-gray-900 border-r border-black">{CURRENCY_FORMATTER.format(totalSale)}</td>
-                              <td className="px-2 py-1.5 text-right font-bold text-green-700 border-r border-black">{CURRENCY_FORMATTER.format(profit)}</td>
+                              <td className={`px-2 py-1.5 text-xs font-medium border-r border-black ${isVoided ? 'text-red-700' : 'text-gray-800'}`}>{sale.cashierName}</td>
+                              <td className={`px-2 py-1.5 text-center font-bold border-r border-black ${isVoided ? 'text-red-700' : 'text-gray-900'}`}>{qty}{isVoided ? ' (VOID)' : ''}</td>
+                              <td className={`px-2 py-1.5 text-right text-xs border-r border-black ${isVoided ? 'text-red-700 line-through' : 'text-gray-700'}`}>{CURRENCY_FORMATTER.format(unitCost)}</td>
+                              <td className={`px-2 py-1.5 text-right text-xs font-semibold border-r border-black ${isVoided ? 'text-red-700 line-through' : 'text-gray-800'}`}>{CURRENCY_FORMATTER.format(unitPrice)}</td>
+                              <td className={`px-2 py-1.5 text-right text-xs border-r border-black ${isVoided ? 'text-red-700 line-through' : 'text-gray-700'}`}>{CURRENCY_FORMATTER.format(totalCost)}</td>
+                              <td className={`px-2 py-1.5 text-right font-bold border-r border-black ${isVoided ? 'text-red-700 line-through' : 'text-gray-900'}`}>{CURRENCY_FORMATTER.format(totalSale)}</td>
+                              <td className={`px-2 py-1.5 text-right font-bold border-r border-black ${isVoided ? 'text-red-700 line-through' : 'text-green-700'}`}>{CURRENCY_FORMATTER.format(profit)}</td>
                               <td className="px-2 py-1.5 text-right text-xs border-r border-black">
-                                <span className={`font-bold ${margin >= 30 ? 'text-green-700' : margin >= 15 ? 'text-amber-700' : 'text-red-700'}`}>
+                                <span className={`font-bold ${isVoided ? 'text-red-700 line-through' : margin >= 30 ? 'text-green-700' : margin >= 15 ? 'text-amber-700' : 'text-red-700'}`}>
                                   {margin.toFixed(1)}%
                                 </span>
                               </td>
                               <td className="px-2 py-1.5 text-center">
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-800 border-green-800' :
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${isVoided ? 'bg-red-100 text-red-800 border-red-800' : sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-800 border-green-800' :
                                   sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-800 border-blue-800' :
                                     'bg-purple-100 text-purple-800 border-purple-800'
                                   }`}>
-                                  {sale.paymentMethod}
+                                  {isVoided ? 'VOIDED' : sale.paymentMethod}
                                 </span>
                               </td>
                             </tr>
@@ -718,22 +727,23 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                       <tbody>
                         {filteredLogs.map((log, idx) => {
                           const logDate = new Date(log.timestamp);
+                          const isVoided = (log as any).isVoided;
                           return (
-                            <tr key={log.id} className="hover:bg-gray-100 border-b border-black">
-                              <td className="px-2 py-1.5 text-gray-500 font-mono text-xs sticky left-0 bg-white border-r border-black">{idx + 1}</td>
+                            <tr key={log.id} className={`hover:bg-gray-100 border-b border-black ${isVoided ? 'bg-red-50' : ''}`}>
+                              <td className={`px-2 py-1.5 font-mono text-xs sticky left-0 border-r border-black ${isVoided ? 'text-red-500 bg-red-50' : 'text-gray-500 bg-white'}`}>{idx + 1}</td>
                               <td className="px-2 py-1.5 border-r border-black">
-                                <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold border ${getActionColor(log.action)}`}>
+                                <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-bold border ${getActionColor(log.action, isVoided)}`}>
                                   {getActionLabel(log.action)}
                                 </span>
                               </td>
-                              <td className="px-2 py-1.5 text-gray-800 text-xs whitespace-nowrap border-r border-black">
+                              <td className={`px-2 py-1.5 text-xs whitespace-nowrap border-r border-black ${isVoided ? 'text-red-700' : 'text-gray-800'}`}>
                                 {logDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                               </td>
-                              <td className="px-2 py-1.5 text-gray-800 text-xs whitespace-nowrap border-r border-black">
+                              <td className={`px-2 py-1.5 text-xs whitespace-nowrap border-r border-black ${isVoided ? 'text-red-700' : 'text-gray-800'}`}>
                                 {logDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                               </td>
-                              <td className="px-2 py-1.5 text-gray-800 text-xs font-semibold border-r border-black">{log.userName}</td>
-                              <td className="px-2 py-1.5 text-gray-700 text-xs">{log.details}</td>
+                              <td className={`px-2 py-1.5 text-xs font-semibold border-r border-black ${isVoided ? 'text-red-700' : 'text-gray-800'}`}>{log.userName}</td>
+                              <td className={`px-2 py-1.5 text-xs ${isVoided ? 'text-red-700 font-semibold' : 'text-gray-700'}`}>{log.details}</td>
                             </tr>
                           );
                         })}

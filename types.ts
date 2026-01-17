@@ -189,5 +189,6 @@ export interface BusinessSettings {
   evolutionApiUrl?: string;
   evolutionApiKey?: string;
   evolutionInstance?: string;
+  salesValidationDismissed?: boolean; // Whether sales validation warnings have been dismissed
   updatedAt?: string; // Timestamp for conflict resolution in multi-device sync
 }

@@ -5,6 +5,7 @@ import { useStore } from '../context/StoreContext';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { dbPromise } from '../db';
+import { ProductSaleLog } from '../types';
 import { notifySuccess, notifyError, notifyWarning } from '../utils/notifications';
 import {
   LogOut,
@@ -31,7 +32,7 @@ import {
 } from 'lucide-react';
 
 const AppLayout = ({ children }: PropsWithChildren) => {
-  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings, products, updateProduct, sales, productSaleLogs, isLoading, dataLoadedTimestamp, refreshProductSaleLogs } = useStore();
+  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings, products, updateProduct, sales, productSaleLogs, setProductSaleLogs, isLoading, dataLoadedTimestamp, refreshProductSaleLogs } = useStore();
   const pathname = usePathname();
   const router = useRouter();
   const [lastSaved, setLastSaved] = useState<string>('');
@@ -43,7 +44,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const [editCostPrice, setEditCostPrice] = useState('');
   const [editSellingPrice, setEditSellingPrice] = useState('');
   const [savedProductIds, setSavedProductIds] = useState<Set<string>>(new Set());
-  
+
   // Sales validation state
   const [showSalesWarning, setShowSalesWarning] = useState(false);
   const [corruptedSales, setCorruptedSales] = useState<any[]>([]);
@@ -54,6 +55,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const [editItemPrice, setEditItemPrice] = useState('');
   const [fixedSaleItemIds, setFixedSaleItemIds] = useState<Set<string>>(new Set());
   const [isBulkOperationInProgress, setIsBulkOperationInProgress] = useState(false);
+  const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
 
   useEffect(() => {
     if (auditLogs.length > 0) {
@@ -65,16 +67,12 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   }, [auditLogs]);
 
   useEffect(() => {
-    // Show banner when going offline
     if (!isOnline) {
       setShowOfflineBanner(true);
     }
   }, [isOnline]);
 
   useEffect(() => {
-    // Detect products with 0 cost or selling price
-    // Only run detection when dataLoadedTimestamp > 0 (meaning all data including productSaleLogs is ready)
-    // This prevents false positives from race conditions where isLoading becomes false before state updates
     if (currentUser && currentUser.permissions?.includes('ADMIN') && dataLoadedTimestamp > 0 && products.length > 0) {
       const issueProducts = products.filter(p =>
         p.costPrice === 0 || p.sellingPrice === 0 ||
@@ -83,43 +81,112 @@ const AppLayout = ({ children }: PropsWithChildren) => {
 
       setProductsWithIssues(issueProducts);
 
-      // Always show warning if there are issues (until all are fixed)
       if (issueProducts.length > 0) {
         setShowProductWarning(true);
       } else {
         setShowProductWarning(false);
-        setSavedProductIds(new Set()); // Reset saved state when all fixed
+        setSavedProductIds(new Set());
       }
     }
   }, [currentUser, products, dataLoadedTimestamp]);
 
   useEffect(() => {
-    // Check for corrupted sales and missing logs when admin logs in
-    // Only run detection when dataLoadedTimestamp > 0 (meaning all data including productSaleLogs is ready)
-    // This prevents the race condition where isLoading=false but productSaleLogs state hasn't updated yet
-    // Skip detection during bulk operations to avoid race conditions
-    if (currentUser && currentUser.permissions?.includes('ADMIN') && dataLoadedTimestamp > 0 && !isBulkOperationInProgress) {
-      // Check if user dismissed the dialog in this session
-      const dismissed = sessionStorage.getItem('sales_validation_dismissed');
+    // SMART DETECTION: Only run when data is ready and no operations in progress
+    if (currentUser && currentUser.permissions?.includes('ADMIN') && dataLoadedTimestamp > 0 && !isBulkOperationInProgress && !isRefreshingLogs) {
 
-      // Find sales with 0 cost or price items (including NaN and undefined)
-      const badSales = sales.filter(sale => {
-        if (sale.isVoided) return false;
-        return sale.items.some(item =>
-          !item.costAtSale || item.costAtSale === 0 || isNaN(item.costAtSale) ||
-          !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale)
-        );
-      });
+      const runDetection = async () => {
+        console.log('🔍 === DETECTION STARTED ===');
+        console.log('📊 Detection conditions:', {
+          isAdmin: currentUser.permissions?.includes('ADMIN'),
+          dataLoadedTimestamp,
+          isBulkOperationInProgress,
+          isRefreshingLogs
+        });
 
-      // Find sales with missing product sale logs
-      const missingLogs: any[] = [];
-      sales.forEach(sale => {
-        if (sale.isVoided) return;
-        sale.items.forEach(item => {
-          const logExists = productSaleLogs.some(log =>
-            log.saleId === sale.id && log.productId === item.productId
+        // Check if dismissed in cloud settings
+        const dismissed = businessSettings?.salesValidationDismissed;
+        console.log('🔕 Dismissed status:', dismissed);
+
+        // STEP 1: Get FRESH data from IndexedDB to avoid stale state
+        const db = await dbPromise();
+        const freshLogs = await db.getAll('productSaleLogs');
+        const freshSales = await db.getAll('sales');
+        console.log('📦 Fresh data loaded:', {
+          logsCount: freshLogs.length,
+          salesCount: freshSales.length
+        });
+
+        // STEP 2: Build lookup maps for O(1) searches
+        const logLookup = new Map<string, ProductSaleLog[]>();
+        freshLogs.forEach(log => {
+          const key = `${log.saleId}-${log.productId}`;
+          if (!logLookup.has(key)) {
+            logLookup.set(key, []);
+          }
+          logLookup.get(key)!.push(log);
+        });
+        console.log('🗺️ Log lookup map built:', logLookup.size, 'unique sale-product combinations');
+
+        // STEP 3: Detect corrupted sales (0 cost/price)
+        console.log('🔍 Step 3: Checking for corrupted sales...');
+        const badSales = freshSales.filter(sale => {
+          if (sale.isVoided) return false;
+          return sale.items.some(item =>
+            !item.costAtSale || item.costAtSale === 0 || isNaN(item.costAtSale) ||
+            !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale)
           );
-          if (!logExists) {
+        });
+        console.log('💰 Corrupted sales found:', badSales.length);
+        if (badSales.length > 0) {
+          console.log('📋 Sample corrupted sale:', badSales[0]);
+        }
+
+        // STEP 4: Detect TRULY missing logs (fuzzy matching)
+        console.log('🔍 Step 4: Checking for missing logs with fuzzy matching...');
+        const missingLogs: any[] = [];
+        let exactMatchCount = 0;
+        let fuzzyMatch1Count = 0;
+        let fuzzyMatch2Count = 0;
+        
+        for (const sale of freshSales) {
+          if (sale.isVoided) continue;
+
+          for (const item of sale.items) {
+            const exactKey = `${sale.id}-${item.productId}`;
+
+            // Check exact match first
+            if (logLookup.has(exactKey)) {
+              exactMatchCount++;
+              continue; // Log exists, skip
+            }
+
+            // FUZZY SEARCH: Check for logs with same sale ID and product
+            const saleIdMatch = freshLogs.find(log =>
+              log.saleId === sale.id &&
+              log.productId === item.productId
+            );
+
+            if (saleIdMatch) {
+              fuzzyMatch1Count++;
+              console.log(`✅ Fuzzy match 1: ${saleIdMatch.id} for sale ${sale.id} - product ${item.productId}`);
+              continue; // Found via fuzzy search, not missing
+            }
+
+            // FUZZY SEARCH 2: Check by timestamp + product (in case sale ID changed)
+            const timestampMatch = freshLogs.find(log =>
+              Math.abs(new Date(log.timestamp).getTime() - new Date(sale.timestamp).getTime()) < 5000 && // Within 5 seconds
+              log.productId === item.productId &&
+              log.quantity === item.quantity
+            );
+
+            if (timestampMatch) {
+              fuzzyMatch2Count++;
+              console.log(`✅ Fuzzy match 2 (timestamp): ${timestampMatch.id} for sale ${sale.id}`);
+              continue; // Found via timestamp matching
+            }
+
+            // TRULY MISSING - no exact or fuzzy match found
+            console.log(`❌ MISSING LOG: Sale ${sale.id.slice(-8)} - Product ${item.productName} (${item.productId})`);
             missingLogs.push({
               saleId: sale.id,
               saleTimestamp: sale.timestamp,
@@ -127,50 +194,66 @@ const AppLayout = ({ children }: PropsWithChildren) => {
               item: item
             });
           }
+        }
+        
+        console.log('📊 Matching summary:', {
+          exactMatches: exactMatchCount,
+          fuzzyMatch1: fuzzyMatch1Count,
+          fuzzyMatch2: fuzzyMatch2Count,
+          trulyMissing: missingLogs.length
         });
-      });
 
-      // Find duplicate logs (same saleId + productId)
-      const logMap = new Map<string, any[]>();
-      productSaleLogs.forEach(log => {
-        const key = `${log.saleId}-${log.productId}`;
-        if (!logMap.has(key)) {
-          logMap.set(key, []);
+        // STEP 5: Detect duplicates (same saleId-productId key, multiple IDs)
+        console.log('🔍 Step 5: Checking for duplicate logs...');
+        const duplicates: any[] = [];
+        logLookup.forEach((logs, key) => {
+          if (logs.length > 1) {
+            console.log(`🔁 Duplicate found for ${key}: ${logs.length} logs`);
+            // Sort by timestamp, keep newest
+            logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+            // Mark all except the first (newest) as duplicates
+            logs.slice(1).forEach(log => {
+              duplicates.push(log);
+            });
+          }
+        });
+        console.log('🔁 Total duplicates found:', duplicates.length);
+
+        // STEP 6: Update state with fresh detection results
+        console.log('📝 Updating state with detection results...');
+        setCorruptedSales(badSales);
+        setMissingSaleLogs(missingLogs);
+        setDuplicateLogs(duplicates);
+
+        const hasIssues = badSales.length > 0 || missingLogs.length > 0 || duplicates.length > 0;
+
+        console.log(`🔍 === DETECTION COMPLETE ===`);
+        console.log(`📊 Final results: ${badSales.length} corrupted, ${missingLogs.length} missing, ${duplicates.length} duplicates`);
+        console.log(`⚠️ Has issues: ${hasIssues}`);
+        console.log(`🔕 Dismissed: ${dismissed}`);
+
+        if (hasIssues) {
+          if (!dismissed) {
+            console.log('🚨 SHOWING DIALOG (issues found and not dismissed)');
+            setShowSalesWarning(true);
+          } else {
+            console.log('🔕 NOT showing dialog (dismissed by user)');
+          }
+        } else {
+          console.log('✅ NO ISSUES - Clearing dismissal and hiding dialog');
+          localStorage.removeItem('sales_validation_dismissed');
+          setShowSalesWarning(false);
+          setFixedSaleItemIds(new Set());
         }
-        logMap.get(key)!.push(log);
+      };
+
+      // Run detection with error handling
+      runDetection().catch(error => {
+        console.error('❌ Detection failed:', error);
       });
-
-      const duplicates: any[] = [];
-      logMap.forEach((logs, key) => {
-        if (logs.length > 1) {
-          // Keep the first log, mark others as duplicates
-          logs.slice(1).forEach(log => {
-            duplicates.push(log);
-          });
-        }
-      });
-
-      // Always update the detection state
-      setCorruptedSales(badSales);
-      setMissingSaleLogs(missingLogs);
-      setDuplicateLogs(duplicates);
-
-      const hasIssues = badSales.length > 0 || missingLogs.length > 0 || duplicates.length > 0;
-
-      if (hasIssues) {
-        // Only show dialog if not dismissed
-        if (!dismissed) {
-          setShowSalesWarning(true);
-        }
-        // If dismissed, keep dialog hidden
-      } else {
-        // No issues - clear dismissal flag and hide dialog
-        sessionStorage.removeItem('sales_validation_dismissed');
-        setShowSalesWarning(false);
-        setFixedSaleItemIds(new Set());
-      }
     }
-  }, [currentUser, sales, productSaleLogs, dataLoadedTimestamp, isBulkOperationInProgress]);
+  }, [currentUser, sales, productSaleLogs, dataLoadedTimestamp, isBulkOperationInProgress, isRefreshingLogs, businessSettings]);
 
   if (!currentUser) {
     return <>{children}</>;
@@ -218,12 +301,11 @@ const AppLayout = ({ children }: PropsWithChildren) => {
     }
 
     try {
-      // Use Promise.all for parallel execution
       await Promise.all(
         productsWithIssues.map(async (product) => {
           const costPrice = product.costPrice === 0 || isNaN(product.costPrice) ? 0.01 : product.costPrice;
           const sellingPrice = product.sellingPrice === 0 || isNaN(product.sellingPrice) ? 0.01 : product.sellingPrice;
-          
+
           await updateProduct({ ...product, costPrice, sellingPrice });
           setSavedProductIds(prev => new Set(prev).add(product.id));
         })
@@ -255,7 +337,6 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       const db = await dbPromise();
       const tx = db.transaction(['sales', 'productSaleLogs', 'syncQueue'], 'readwrite');
 
-      // Update the sale item
       const updatedItems = [...sale.items];
       updatedItems[itemIndex] = {
         ...updatedItems[itemIndex],
@@ -263,7 +344,6 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         priceAtSale
       };
 
-      // Recalculate totals
       const newTotalAmount = updatedItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
       const newTotalCost = updatedItems.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
 
@@ -281,9 +361,8 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         timestamp: Date.now()
       });
 
-      // Update or create product sale log
       const item = updatedItems[itemIndex];
-      const existingLog = productSaleLogs.find(log => 
+      const existingLog = productSaleLogs.find(log =>
         log.saleId === sale.id && log.productId === item.productId
       );
 
@@ -300,9 +379,9 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           timestamp: Date.now()
         });
       } else {
-        // Create missing log
+        // ✅ FIX: Use deterministic log ID (saleId-productId)
         const newLog = {
-          id: `${sale.id}-${item.productId}-${Date.now()}`,
+          id: `${sale.id}-${item.productId}`,
           productId: item.productId,
           productName: item.productName,
           saleId: sale.id,
@@ -329,7 +408,6 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       setEditItemCost('');
       setEditItemPrice('');
 
-      // Force re-render by updating the corrupted sales list
       setCorruptedSales(prev => prev.map(s => s.id === sale.id ? updatedSale : s));
     } catch (error) {
       console.error('Failed to fix sale item:', error);
@@ -346,14 +424,34 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const handleCreateMissingLog = async (missingLog: any) => {
     try {
       const db = await dbPromise();
-      
-      // Look up product and check price history for accurate historical prices
+
+      // STEP 1: Check if log already exists (fuzzy search)
+      const allLogs = await db.getAll('productSaleLogs');
+      const existingLog = allLogs.find(log =>
+        (log.saleId === missingLog.saleId && log.productId === missingLog.item.productId) ||
+        (Math.abs(new Date(log.timestamp).getTime() - new Date(missingLog.saleTimestamp).getTime()) < 5000 &&
+          log.productId === missingLog.item.productId &&
+          log.quantity === missingLog.item.quantity)
+      );
+
+      if (existingLog) {
+        console.log(`✅ Log already exists: ${existingLog.id}`);
+
+        // Remove from missing list without creating
+        setMissingSaleLogs(prev => prev.filter(log =>
+          !(log.saleId === missingLog.saleId && log.item.productId === missingLog.item.productId)
+        ));
+
+        notifySuccess('Log already exists - removed from list');
+        return;
+      }
+
+      // STEP 2: Get prices (existing logic)
       const product = products.find(p => p.id === missingLog.item.productId);
       let costAtSale = missingLog.item.costAtSale;
       let priceAtSale = missingLog.item.priceAtSale;
 
       if (product) {
-        // Check price history first for prices at the time of sale
         if (product.priceHistory && product.priceHistory.length > 0) {
           const saleDate = new Date(missingLog.saleTimestamp).getTime();
           const relevantPriceChange = product.priceHistory
@@ -370,7 +468,6 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           }
         }
 
-        // Fallback to current prices if no history found
         if (!costAtSale || costAtSale === 0 || isNaN(costAtSale)) {
           costAtSale = product.costPrice || 0;
         }
@@ -380,14 +477,13 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       }
 
       if (!costAtSale || costAtSale === 0 || !priceAtSale || priceAtSale === 0) {
-        alert(`Cannot create log: Product "${missingLog.item.productName}" has no valid prices. Please update product prices in inventory first.`);
+        alert(`Cannot create log: Product "${missingLog.item.productName}" has no valid prices.`);
         return;
       }
 
-      const tx = db.transaction(['productSaleLogs', 'syncQueue'], 'readwrite');
-
+      // STEP 3: Create log with deterministic ID
       const newLog = {
-        id: `${missingLog.saleId}-${missingLog.item.productId}-${Date.now()}`,
+        id: `${missingLog.saleId}-${missingLog.item.productId}`, // Deterministic!
         productId: missingLog.item.productId,
         productName: missingLog.item.productName,
         saleId: missingLog.saleId,
@@ -399,27 +495,27 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         cashierName: missingLog.cashierName
       };
 
+      // STEP 4: Save to DB
+      const tx = db.transaction(['productSaleLogs', 'syncQueue'], 'readwrite');
       await tx.objectStore('productSaleLogs').put(newLog);
       await tx.objectStore('syncQueue').add({
         type: 'PRODUCT_SALE_LOG',
         payload: newLog,
         timestamp: Date.now()
       });
-
       await tx.done;
 
-      // Refresh the productSaleLogs state to include the newly created log
-      await refreshProductSaleLogs();
+      // STEP 5: Update state immediately to prevent re-detection
+      setProductSaleLogs(prev => [...prev, newLog]);
 
-      // Remove from missing logs list
       setMissingSaleLogs(prev => prev.filter(log =>
         !(log.saleId === missingLog.saleId && log.item.productId === missingLog.item.productId)
       ));
 
-      notifySuccess('Missing log created successfully');
+      notifySuccess('Log created successfully');
     } catch (error) {
-      console.error('Failed to create missing log:', error);
-      notifyError('Failed to create missing log. Please try again.');
+      console.error('Failed to create log:', error);
+      notifyError('Failed to create log. Please try again.');
     }
   };
 
@@ -427,11 +523,10 @@ const AppLayout = ({ children }: PropsWithChildren) => {
     let fixableCount = 0;
     let unfixableCount = 0;
 
-    // Count fixable items
     corruptedSales.forEach(sale => {
       sale.items.forEach((item: any) => {
         const hasIssue = !item.costAtSale || item.costAtSale === 0 || isNaN(item.costAtSale) ||
-                        !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale);
+          !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale);
         if (hasIssue) {
           const product = products.find(p => p.id === item.productId);
           if (product && product.costPrice > 0 && product.sellingPrice > 0) {
@@ -450,8 +545,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
 
     try {
       const db = await dbPromise();
-      
-      // Use Promise.all for parallel processing
+
       await Promise.all(
         corruptedSales.map(async (sale) => {
           let saleUpdated = false;
@@ -460,16 +554,15 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           for (let itemIndex = 0; itemIndex < sale.items.length; itemIndex++) {
             const item = sale.items[itemIndex];
             const hasIssue = !item.costAtSale || item.costAtSale === 0 || isNaN(item.costAtSale) ||
-                            !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale);
-            
+              !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale);
+
             if (hasIssue) {
               const product = products.find(p => p.id === item.productId);
-              
+
               if (product) {
                 let newCostAtSale = item.costAtSale;
                 let newPriceAtSale = item.priceAtSale;
 
-                // Check price history for prices at the time of sale
                 if (product.priceHistory && product.priceHistory.length > 0) {
                   const saleDate = new Date(sale.timestamp).getTime();
                   const relevantPriceChange = product.priceHistory
@@ -486,7 +579,6 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                   }
                 }
 
-                // Fallback to current prices if no history found
                 if (!newPriceAtSale || newPriceAtSale === 0 || isNaN(newPriceAtSale)) {
                   newPriceAtSale = product.sellingPrice;
                 }
@@ -494,7 +586,6 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                   newCostAtSale = product.costPrice;
                 }
 
-                // Only update if we have valid prices
                 if (newCostAtSale > 0 && newPriceAtSale > 0) {
                   updatedItems[itemIndex] = {
                     ...item,
@@ -512,7 +603,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
 
           if (saleUpdated) {
             const tx = db.transaction(['sales', 'productSaleLogs', 'syncQueue'], 'readwrite');
-            
+
             const newTotalAmount = updatedItems.reduce((sum, item) => sum + (item.priceAtSale * item.quantity), 0);
             const newTotalCost = updatedItems.reduce((sum, item) => sum + (item.costAtSale * item.quantity), 0);
 
@@ -530,9 +621,8 @@ const AppLayout = ({ children }: PropsWithChildren) => {
               timestamp: Date.now()
             });
 
-            // Update logs - prevent duplicates
             for (const item of updatedItems) {
-              const existingLog = productSaleLogs.find(log => 
+              const existingLog = productSaleLogs.find(log =>
                 log.saleId === sale.id && log.productId === item.productId
               );
 
@@ -555,12 +645,12 @@ const AppLayout = ({ children }: PropsWithChildren) => {
             setCorruptedSales(prev => prev.map(s => s.id === sale.id ? updatedSale : s));
           }
         })
-      )
+      );
 
       const message = unfixableCount > 0
         ? `Fixed ${fixableCount} items. ${unfixableCount} items need manual fixing.`
         : `Successfully fixed ${fixableCount} items`;
-      
+
       notifySuccess(message);
     } catch (error) {
       console.error('Bulk fix failed:', error);
@@ -570,21 +660,18 @@ const AppLayout = ({ children }: PropsWithChildren) => {
 
   const handleDeleteDuplicateLog = async (log: any) => {
     try {
-      // STEP 1: Update Supabase FIRST if online
       if (isOnline) {
         const { pushToCloud } = await import('../cloud');
         const success = await pushToCloud('DELETE_PRODUCT_SALE_LOG', { id: log.id });
-        
+
         if (!success) {
           throw new Error('Failed to delete from Supabase');
         }
       }
 
-      // STEP 2: Then update local IndexedDB
       const db = await dbPromise();
       await db.delete('productSaleLogs', log.id);
 
-      // STEP 3: If offline, queue for later sync
       if (!isOnline) {
         await db.add('syncQueue', {
           type: 'DELETE_PRODUCT_SALE_LOG',
@@ -593,7 +680,6 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         });
       }
 
-      // Remove from duplicates list
       setDuplicateLogs(prev => prev.filter(l => l.id !== log.id));
 
       notifySuccess(`Deleted duplicate log for ${log.productName}`);
@@ -604,13 +690,11 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   };
 
   const handleBulkDeleteDuplicates = async () => {
-    // Prevent detection from running during bulk operation
     setIsBulkOperationInProgress(true);
 
     try {
       const count = duplicateLogs.length;
 
-      // STEP 1: Update Supabase FIRST if online
       if (isOnline) {
         const { pushToCloud } = await import('../cloud');
         const results = await Promise.all(
@@ -619,20 +703,17 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           )
         );
 
-        // Check if any failed
         const failedCount = results.filter(r => !r).length;
         if (failedCount > 0) {
           throw new Error(`Failed to delete ${failedCount} logs from Supabase`);
         }
       }
 
-      // STEP 2: Then update local IndexedDB
       const db = await dbPromise();
       await Promise.all(
         duplicateLogs.map(log => db.delete('productSaleLogs', log.id))
       );
 
-      // STEP 3: If offline, queue for later sync
       if (!isOnline) {
         await Promise.all(
           duplicateLogs.map(log =>
@@ -645,14 +726,15 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         );
       }
 
-      // Refresh state after bulk delete
-      await refreshProductSaleLogs();
       setDuplicateLogs([]);
 
-      // If all issues are resolved, close the dialog
+      setIsRefreshingLogs(true);
+      await refreshProductSaleLogs();
+      setIsRefreshingLogs(false);
+
       if (corruptedSales.length === 0 && missingSaleLogs.length === 0) {
         setShowSalesWarning(false);
-        sessionStorage.removeItem('sales_validation_dismissed');
+        localStorage.removeItem('sales_validation_dismissed');
       }
 
       notifySuccess(`Successfully deleted ${count} duplicate logs`);
@@ -660,203 +742,155 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       console.error('Bulk delete failed:', error);
       notifyError('Bulk delete failed. Please try again.');
     } finally {
-      // Re-enable detection after bulk operation completes
       setIsBulkOperationInProgress(false);
     }
   };
 
   const handleBulkCreateLogs = async () => {
-    // Prevent detection from running during bulk operation
     setIsBulkOperationInProgress(true);
 
     try {
       const db = await dbPromise();
+
+      // STEP 1: Get FRESH logs from IndexedDB
+      const allExistingLogs = await db.getAll('productSaleLogs');
+      const existingLogsSet = new Set(
+        allExistingLogs.map(log => `${log.saleId}-${log.productId}`)
+      );
+
       let createdCount = 0;
       let downloadedCount = 0;
       let skippedCount = 0;
-      const downloadedLogs: any[] = [];
-      const newlyCreatedLogs: any[] = [];
 
-      // STEP 1: Check Supabase for existing logs if online
+      // STEP 2: Filter out logs that already exist
+      const trulyMissing = missingSaleLogs.filter(log => {
+        const key = `${log.saleId}-${log.item.productId}`;
+
+        // Skip if exact key exists
+        if (existingLogsSet.has(key)) {
+          console.log(`⏭️ Skipping ${key} - already exists`);
+          skippedCount++;
+          return false;
+        }
+
+        // Fuzzy check: same sale ID + product ID
+        const fuzzyMatch = allExistingLogs.find(existing =>
+          existing.saleId === log.saleId && existing.productId === log.item.productId
+        );
+
+        if (fuzzyMatch) {
+          console.log(`⏭️ Skipping ${key} - found via fuzzy match: ${fuzzyMatch.id}`);
+          skippedCount++;
+          return false;
+        }
+
+        return true; // Truly missing
+      });
+
+      console.log(`📊 Filtered: ${trulyMissing.length} truly missing, ${skippedCount} already exist`);
+
+      if (trulyMissing.length === 0) {
+        notifySuccess(`All logs already exist! (${skippedCount} skipped)`);
+        setMissingSaleLogs([]);
+        setIsBulkOperationInProgress(false);
+        return;
+      }
+
+      // STEP 3: Check cloud if online
       if (isOnline) {
         const { supabase } = await import('../cloud');
-        
-        // Get all sale IDs that need logs
-        const saleIds = [...new Set(missingSaleLogs.map(log => log.saleId))];
-        
-        // Fetch existing logs from Supabase for these sales
+        const saleIds = [...new Set(trulyMissing.map(log => log.saleId))];
+
         const { data: cloudLogs, error } = await supabase
           .from('product_sale_logs')
           .select('*')
           .in('saleId', saleIds);
 
-        if (error) {
-          console.error('Failed to fetch logs from Supabase:', error);
-          throw new Error('Failed to check existing logs in cloud');
-        }
-
-        // Download existing logs to local IndexedDB
-        if (cloudLogs && cloudLogs.length > 0) {
+        if (!error && cloudLogs && cloudLogs.length > 0) {
+          // Download cloud logs
           for (const cloudLog of cloudLogs) {
-            // Check if this log is in our missing list
-            const isMissing = missingSaleLogs.some(ml => 
-              ml.saleId === cloudLog.saleId && ml.item.productId === cloudLog.productId
-            );
-
-            if (isMissing) {
+            const key = `${cloudLog.saleId}-${cloudLog.productId}`;
+            if (!existingLogsSet.has(key)) {
               await db.put('productSaleLogs', cloudLog);
-              downloadedLogs.push(cloudLog);
+              existingLogsSet.add(key);
               downloadedCount++;
             }
           }
+
+          // Re-filter to remove downloaded logs
+          const stillMissing = trulyMissing.filter(log => {
+            const key = `${log.saleId}-${log.item.productId}`;
+            return !existingLogsSet.has(key);
+          });
+
+          if (stillMissing.length === 0) {
+            notifySuccess(`Downloaded ${downloadedCount} logs from cloud! No logs needed creation.`);
+            setMissingSaleLogs([]);
+            await refreshProductSaleLogs();
+            setIsBulkOperationInProgress(false);
+            return;
+          }
+
+          // Continue with stillMissing
+          trulyMissing.length = 0;
+          trulyMissing.push(...stillMissing);
         }
-
-        // Filter out logs that now exist (either locally or downloaded from cloud)
-        const remainingMissing = missingSaleLogs.filter(log => {
-          const existsInCloud = cloudLogs?.some(cl => 
-            cl.saleId === log.saleId && cl.productId === log.item.productId
-          );
-          const existsLocally = productSaleLogs.some(pl => 
-            pl.saleId === log.saleId && pl.productId === log.item.productId
-          );
-          return !existsInCloud && !existsLocally;
-        });
-
-        // STEP 2: Create only truly missing logs
-        if (remainingMissing.length > 0) {
-          const tx = db.transaction(['productSaleLogs', 'syncQueue'], 'readwrite');
-
-          await Promise.all(
-            remainingMissing.map(async (log) => {
-              const product = products.find(p => p.id === log.item.productId);
-              let costAtSale = log.item.costAtSale;
-              let priceAtSale = log.item.priceAtSale;
-
-              if (product) {
-                if (product.priceHistory && product.priceHistory.length > 0) {
-                  const saleDate = new Date(log.saleTimestamp).getTime();
-                  const relevantPriceChange = product.priceHistory
-                    .filter(ph => new Date(ph.timestamp).getTime() <= saleDate)
-                    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-
-                  if (relevantPriceChange) {
-                    if (!priceAtSale || priceAtSale === 0 || isNaN(priceAtSale)) {
-                      priceAtSale = relevantPriceChange.newSellingPrice || product.sellingPrice;
-                    }
-                    if (!costAtSale || costAtSale === 0 || isNaN(costAtSale)) {
-                      costAtSale = relevantPriceChange.newCostPrice || product.costPrice;
-                    }
-                  }
-                }
-
-                if (!costAtSale || costAtSale === 0 || isNaN(costAtSale)) {
-                  costAtSale = product.costPrice || 0;
-                }
-                if (!priceAtSale || priceAtSale === 0 || isNaN(priceAtSale)) {
-                  priceAtSale = product.sellingPrice || 0;
-                }
-              }
-
-              if (!costAtSale || costAtSale === 0 || !priceAtSale || priceAtSale === 0) {
-                console.warn(`Skipping log for ${log.item.productName}: No valid prices`);
-                skippedCount++;
-                return;
-              }
-
-              const newLog = {
-                id: `${log.saleId}-${log.item.productId}-${Date.now()}-${Math.random()}`,
-                productId: log.item.productId,
-                productName: log.item.productName,
-                saleId: log.saleId,
-                quantity: log.item.quantity,
-                priceAtSale,
-                costAtSale,
-                timestamp: log.saleTimestamp,
-                cashierId: log.item.cashierId || 'unknown',
-                cashierName: log.cashierName
-              };
-
-              await tx.objectStore('productSaleLogs').put(newLog);
-              await tx.objectStore('syncQueue').add({
-                type: 'PRODUCT_SALE_LOG',
-                payload: newLog,
-                timestamp: Date.now()
-              });
-
-              newlyCreatedLogs.push(newLog);
-              createdCount++;
-            })
-          );
-
-          await tx.done;
-        }
-      } else {
-        // Offline: Create all missing logs locally and queue for sync
-        const tx = db.transaction(['productSaleLogs', 'syncQueue'], 'readwrite');
-
-        await Promise.all(
-          missingSaleLogs.map(async (log) => {
-            const existingLog = productSaleLogs.find(existing => 
-              existing.saleId === log.saleId && existing.productId === log.item.productId
-            );
-
-            if (existingLog) {
-              skippedCount++;
-              return;
-            }
-
-            const product = products.find(p => p.id === log.item.productId);
-            let costAtSale = log.item.costAtSale || product?.costPrice || 0;
-            let priceAtSale = log.item.priceAtSale || product?.sellingPrice || 0;
-
-            if (!costAtSale || !priceAtSale) {
-              skippedCount++;
-              return;
-            }
-
-            const newLog = {
-              id: `${log.saleId}-${log.item.productId}-${Date.now()}-${Math.random()}`,
-              productId: log.item.productId,
-              productName: log.item.productName,
-              saleId: log.saleId,
-              quantity: log.item.quantity,
-              priceAtSale,
-              costAtSale,
-              timestamp: log.saleTimestamp,
-              cashierId: log.item.cashierId || 'unknown',
-              cashierName: log.cashierName
-            };
-
-            await tx.objectStore('productSaleLogs').put(newLog);
-            await tx.objectStore('syncQueue').add({
-              type: 'PRODUCT_SALE_LOG',
-              payload: newLog,
-              timestamp: Date.now()
-            });
-
-            newlyCreatedLogs.push(newLog);
-            createdCount++;
-          })
-        );
-
-        await tx.done;
       }
 
-      // Refresh the productSaleLogs state from IndexedDB to include newly created/downloaded logs
-      // This prevents the detection logic from finding them as "missing" again
-      await refreshProductSaleLogs();
+      // STEP 4: Create truly missing logs
+      const tx = db.transaction(['productSaleLogs', 'syncQueue'], 'readwrite');
+      const newLogs: ProductSaleLog[] = [];
 
-      // Clear missing logs immediately - they've been created/downloaded
+      for (const log of trulyMissing) {
+        const product = products.find(p => p.id === log.item.productId);
+        let costAtSale = log.item.costAtSale || product?.costPrice || 0;
+        let priceAtSale = log.item.priceAtSale || product?.sellingPrice || 0;
+
+        if (!costAtSale || !priceAtSale) {
+          console.warn(`⏭️ Skipping ${log.item.productName} - no valid prices`);
+          skippedCount++;
+          continue;
+        }
+
+        const newLog = {
+          id: `${log.saleId}-${log.item.productId}`, // Deterministic!
+          productId: log.item.productId,
+          productName: log.item.productName,
+          saleId: log.saleId,
+          quantity: log.item.quantity,
+          priceAtSale,
+          costAtSale,
+          timestamp: log.saleTimestamp,
+          cashierId: log.item.cashierId || 'unknown',
+          cashierName: log.cashierName
+        };
+
+        await tx.objectStore('productSaleLogs').put(newLog);
+        await tx.objectStore('syncQueue').add({
+          type: 'PRODUCT_SALE_LOG',
+          payload: newLog,
+          timestamp: Date.now()
+        });
+
+        newLogs.push(newLog);
+        createdCount++;
+      }
+
+      await tx.done;
+
+      // STEP 5: Update state immediately
+      setProductSaleLogs(prev => [...prev, ...newLogs]);
       setMissingSaleLogs([]);
 
-      // If all issues are resolved, close the dialog
+      // Clear dialog if all issues resolved
+      // Clear dialog if all issues resolved
       if (corruptedSales.length === 0 && duplicateLogs.length === 0) {
         setShowSalesWarning(false);
-        sessionStorage.removeItem('sales_validation_dismissed');
+        localStorage.removeItem('sales_validation_dismissed');
       }
 
       const message = downloadedCount > 0
-        ? `Downloaded ${downloadedCount} existing logs, created ${createdCount} new logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}`
+        ? `Downloaded ${downloadedCount} logs, created ${createdCount} new logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}`
         : `Created ${createdCount} logs${skippedCount > 0 ? `, skipped ${skippedCount}` : ''}`;
 
       notifySuccess(message);
@@ -864,7 +898,6 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       console.error('Bulk create failed:', error);
       notifyError('Failed to create logs. Please try again.');
     } finally {
-      // Re-enable detection after bulk operation completes
       setIsBulkOperationInProgress(false);
     }
   };
@@ -1081,7 +1114,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
             <div className="flex-1 overflow-hidden flex flex-col">
               <div className="p-4 bg-amber-50 border-b border-amber-200">
                 <p className="text-sm text-amber-900">
-                  <strong>Action Required:</strong> Update the cost and selling prices below. Rows turn green when saved. 
+                  <strong>Action Required:</strong> Update the cost and selling prices below. Rows turn green when saved.
                   The dialog will close automatically when all products are fixed.
                 </p>
               </div>
@@ -1103,15 +1136,14 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                     {productsWithIssues.map((product, index) => {
                       const isSaved = savedProductIds.has(product.id);
                       const isEditing = editingProductId === product.id;
-                      
+
                       return (
-                        <tr 
+                        <tr
                           key={product.id}
-                          className={`border-b transition-colors ${
-                            isSaved 
-                              ? 'bg-green-50 hover:bg-green-100' 
-                              : 'bg-white hover:bg-red-50'
-                          }`}
+                          className={`border-b transition-colors ${isSaved
+                            ? 'bg-green-50 hover:bg-green-100'
+                            : 'bg-white hover:bg-red-50'
+                            }`}
                         >
                           <td className="px-3 py-3 font-mono text-sm text-slate-600 border-r border-slate-200">
                             {index + 1}
@@ -1141,11 +1173,10 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                                 autoFocus
                               />
                             ) : (
-                              <span className={`text-sm font-mono ${
-                                product.costPrice === 0 || isNaN(product.costPrice)
-                                  ? 'text-red-600 font-bold' 
-                                  : 'text-slate-700'
-                              }`}>
+                              <span className={`text-sm font-mono ${product.costPrice === 0 || isNaN(product.costPrice)
+                                ? 'text-red-600 font-bold'
+                                : 'text-slate-700'
+                                }`}>
                                 {product.costPrice === 0 || isNaN(product.costPrice) ? 'MISSING' : `KES ${product.costPrice}`}
                               </span>
                             )}
@@ -1162,11 +1193,10 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                                 placeholder="0.00"
                               />
                             ) : (
-                              <span className={`text-sm font-mono ${
-                                product.sellingPrice === 0 || isNaN(product.sellingPrice)
-                                  ? 'text-red-600 font-bold' 
-                                  : 'text-slate-700'
-                              }`}>
+                              <span className={`text-sm font-mono ${product.sellingPrice === 0 || isNaN(product.sellingPrice)
+                                ? 'text-red-600 font-bold'
+                                : 'text-slate-700'
+                                }`}>
                                 {product.sellingPrice === 0 || isNaN(product.sellingPrice) ? 'MISSING' : `KES ${product.sellingPrice}`}
                               </span>
                             )}
@@ -1230,7 +1260,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       )}
 
       {/* Sales Validation Dialog */}
-      {showSalesWarning && (corruptedSales.length > 0 || missingSaleLogs.length > 0) && (
+      {showSalesWarning && (corruptedSales.length > 0 || missingSaleLogs.length > 0 || duplicateLogs.length > 0) && (
         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
             <div className="p-6 border-b border-slate-200 bg-gradient-to-r from-orange-500 to-orange-600">
@@ -1251,11 +1281,11 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                 </div>
                 <button
                   onClick={() => {
-                    sessionStorage.setItem('sales_validation_dismissed', 'true');
+                    localStorage.setItem('sales_validation_dismissed', 'true');
                     setShowSalesWarning(false);
                   }}
                   className="p-2 hover:bg-white/20 rounded-full transition-colors"
-                  title="Dismiss for this session"
+                  title="Dismiss (persists across reloads)"
                 >
                   <X size={24} className="text-white" />
                 </button>
@@ -1265,7 +1295,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
             <div className="flex-1 overflow-hidden flex flex-col">
               <div className="p-4 bg-red-50 border-b border-red-200">
                 <p className="text-sm text-red-900">
-                  <strong>Critical:</strong> These sales have zero cost/price data, missing logs, or duplicate logs. 
+                  <strong>Critical:</strong> These sales have zero cost/price data, missing logs, or duplicate logs.
                   Fix them to ensure accurate profit reports. Rows turn green when fixed.
                 </p>
               </div>
@@ -1297,17 +1327,17 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                         </tr>
                       </thead>
                       <tbody>
-                        {corruptedSales.flatMap((sale, saleIdx) => 
+                        {corruptedSales.flatMap((sale, saleIdx) =>
                           sale.items.map((item: any, itemIndex: number) => {
                             // Match the detection logic exactly
                             const hasIssue = !item.costAtSale || item.costAtSale === 0 || isNaN(item.costAtSale) ||
-                                           !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale);
+                              !item.priceAtSale || item.priceAtSale === 0 || isNaN(item.priceAtSale);
                             if (!hasIssue) return null;
 
                             const uniqueId = `${sale.id}-${itemIndex}`;
                             const isFixed = fixedSaleItemIds.has(uniqueId);
                             const isEditing = editingSaleItemId === uniqueId;
-                            const rowNumber = corruptedSales.slice(0, saleIdx).reduce((acc, s) => 
+                            const rowNumber = corruptedSales.slice(0, saleIdx).reduce((acc, s) =>
                               acc + s.items.filter((i: any) => !i.costAtSale || i.costAtSale === 0 || isNaN(i.costAtSale) || !i.priceAtSale || i.priceAtSale === 0 || isNaN(i.priceAtSale)).length, 0
                             ) + sale.items.slice(0, itemIndex).filter((i: any) => !i.costAtSale || i.costAtSale === 0 || isNaN(i.costAtSale) || !i.priceAtSale || i.priceAtSale === 0 || isNaN(i.priceAtSale)).length + 1;
 
@@ -1316,14 +1346,14 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                             let historicalCost = null;
                             let historicalPrice = null;
                             let historicalInfo = null;
-                            
+
                             if (product) {
                               const saleDate = new Date(sale.timestamp).getTime();
-                              
+
                               // Get all valid sales of this product (excluding this corrupted sale)
                               const validSales = productSaleLogs
-                                .filter(log => 
-                                  log.productId === item.productId && 
+                                .filter(log =>
+                                  log.productId === item.productId &&
                                   log.saleId !== sale.id &&
                                   log.costAtSale > 0 && log.priceAtSale > 0
                                 )
@@ -1332,17 +1362,17 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                                   timeDiff: Math.abs(new Date(log.timestamp).getTime() - saleDate)
                                 }))
                                 .sort((a, b) => a.timeDiff - b.timeDiff);
-                              
+
                               if (validSales.length > 0) {
                                 // Use the closest sale (before or after)
                                 const closestSale = validSales[0];
                                 historicalCost = closestSale.costAtSale;
                                 historicalPrice = closestSale.priceAtSale;
-                                
+
                                 const logDate = new Date(closestSale.timestamp).getTime();
                                 const daysDiff = Math.floor(Math.abs(saleDate - logDate) / (1000 * 60 * 60 * 24));
                                 const direction = logDate < saleDate ? 'before' : 'after';
-                                
+
                                 if (daysDiff === 0) {
                                   historicalInfo = 'Same day';
                                 } else {
@@ -1354,7 +1384,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                                   const relevantPriceChange = product.priceHistory
                                     .filter(ph => new Date(ph.timestamp).getTime() <= saleDate)
                                     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-                                  
+
                                   if (relevantPriceChange) {
                                     historicalCost = relevantPriceChange.newCostPrice;
                                     historicalPrice = relevantPriceChange.newSellingPrice;
@@ -1365,13 +1395,12 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                             }
 
                             return (
-                              <tr 
+                              <tr
                                 key={uniqueId}
-                                className={`border-b transition-colors ${
-                                  isFixed 
-                                    ? 'bg-green-50 hover:bg-green-100' 
-                                    : 'bg-white hover:bg-orange-50'
-                                }`}
+                                className={`border-b transition-colors ${isFixed
+                                  ? 'bg-green-50 hover:bg-green-100'
+                                  : 'bg-white hover:bg-orange-50'
+                                  }`}
                               >
                                 <td className="px-2 py-2 font-mono text-xs text-slate-600 border-r border-slate-200">
                                   {rowNumber}
@@ -1412,11 +1441,10 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                                       autoFocus
                                     />
                                   ) : (
-                                    <span className={`text-xs font-mono ${
-                                      item.costAtSale === 0 || isNaN(item.costAtSale)
-                                        ? 'text-red-600 font-bold' 
-                                        : 'text-slate-700'
-                                    }`}>
+                                    <span className={`text-xs font-mono ${item.costAtSale === 0 || isNaN(item.costAtSale)
+                                      ? 'text-red-600 font-bold'
+                                      : 'text-slate-700'
+                                      }`}>
                                       {item.costAtSale === 0 || isNaN(item.costAtSale) ? 'MISSING' : `KES ${item.costAtSale}`}
                                     </span>
                                   )}
@@ -1433,11 +1461,10 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                                       placeholder="0.00"
                                     />
                                   ) : (
-                                    <span className={`text-xs font-mono ${
-                                      item.priceAtSale === 0 || isNaN(item.priceAtSale)
-                                        ? 'text-red-600 font-bold' 
-                                        : 'text-slate-700'
-                                    }`}>
+                                    <span className={`text-xs font-mono ${item.priceAtSale === 0 || isNaN(item.priceAtSale)
+                                      ? 'text-red-600 font-bold'
+                                      : 'text-slate-700'
+                                      }`}>
                                       {item.priceAtSale === 0 || isNaN(item.priceAtSale) ? 'MISSING' : `KES ${item.priceAtSale}`}
                                     </span>
                                   )}
@@ -1645,7 +1672,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
-                      sessionStorage.setItem('sales_validation_dismissed', 'true');
+                      localStorage.setItem('sales_validation_dismissed', 'true');
                       setShowSalesWarning(false);
                     }}
                     className="px-4 py-2 bg-slate-500 hover:bg-slate-600 text-white rounded-lg text-sm font-bold transition-colors"
@@ -1679,7 +1706,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                 </div>
               </div>
               <div className="text-center text-xs text-slate-600">
-                This dialog will remain visible until all issues are fixed or dismissed. Dismissed dialogs won't reappear until next login.
+                This dialog will remain visible until all issues are fixed or dismissed. Dismissed dialogs persist across page reloads.
               </div>
             </div>
           </div>

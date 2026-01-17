@@ -396,7 +396,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             // Fetch ALL product sale logs using pagination
             let allCloudLogs: any[] = [];
             let page = 0;
-            const PageSize = 1000000;
+            const pageSize = 1000000;
             let hasMore = true;
 
             while (hasMore) {

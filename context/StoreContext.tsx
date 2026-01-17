@@ -217,13 +217,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             // Fetch ALL sales using pagination
             let allCloudSales: any[] = [];
             let salesPage = 0;
+            const salesPageSize = 1000000;
             let salesHasMore = true;
 
             while (salesHasMore) {
               const { data: cloudSales, error } = await supabase
                 .from('sales')
                 .select('*')
-                .range(salesPage * 1000, (salesPage + 1) * 1000 - 1)
+                .range(salesPage * salesPageSize, (salesPage + 1) * salesPageSize - 1)
                 .order('timestamp', { ascending: false });
 
               if (error) {
@@ -234,7 +235,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               if (cloudSales && cloudSales.length > 0) {
                 allCloudSales = [...allCloudSales, ...cloudSales];
                 console.log(`📥 Fetched sales page ${salesPage + 1}: ${cloudSales.length} sales (total: ${allCloudSales.length})`);
-                if (cloudSales.length < 1000) salesHasMore = false;
+                if (cloudSales.length < salesPageSize) salesHasMore = false;
                 salesPage++;
               } else {
                 salesHasMore = false;
@@ -259,13 +260,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             // Fetch ALL shifts using pagination
             let allCloudShifts: any[] = [];
             let shiftsPage = 0;
+            const shiftsPageSize = 1000000;
             let shiftsHasMore = true;
 
             while (shiftsHasMore) {
               const { data: cloudShifts, error } = await supabase
                 .from('shifts')
                 .select('*')
-                .range(shiftsPage * 1000, (shiftsPage + 1) * 1000 - 1)
+                .range(shiftsPage * shiftsPageSize, (shiftsPage + 1) * shiftsPageSize - 1)
                 .order('startTime', { ascending: false });
 
               if (error) {
@@ -276,7 +278,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               if (cloudShifts && cloudShifts.length > 0) {
                 allCloudShifts = [...allCloudShifts, ...cloudShifts];
                 console.log(`📥 Fetched shifts page ${shiftsPage + 1}: ${cloudShifts.length} shifts (total: ${allCloudShifts.length})`);
-                if (cloudShifts.length < 1000) shiftsHasMore = false;
+                if (cloudShifts.length < shiftsPageSize) shiftsHasMore = false;
                 shiftsPage++;
               } else {
                 shiftsHasMore = false;
@@ -292,13 +294,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             // Fetch ALL audit logs using pagination
             let allCloudAuditLogs: any[] = [];
             let auditPage = 0;
+            const auditPageSize = 1000000;
             let auditHasMore = true;
 
             while (auditHasMore) {
               const { data: cloudLogs, error } = await supabase
                 .from('audit_logs')
                 .select('*')
-                .range(auditPage * 1000, (auditPage + 1) * 1000 - 1)
+                .range(auditPage * auditPageSize, (auditPage + 1) * auditPageSize - 1)
                 .order('timestamp', { ascending: false });
 
               if (error) {
@@ -309,7 +312,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               if (cloudLogs && cloudLogs.length > 0) {
                 allCloudAuditLogs = [...allCloudAuditLogs, ...cloudLogs];
                 console.log(`📥 Fetched audit logs page ${auditPage + 1}: ${cloudLogs.length} logs (total: ${allCloudAuditLogs.length})`);
-                if (cloudLogs.length < 1000) auditHasMore = false;
+                if (cloudLogs.length < auditPageSize) auditHasMore = false;
                 auditPage++;
               } else {
                 auditHasMore = false;
@@ -325,13 +328,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             // Fetch ALL void requests using pagination
             let allCloudVoidRequests: any[] = [];
             let voidPage = 0;
+            const voidPageSize = 1000000;
             let voidHasMore = true;
 
             while (voidHasMore) {
               const { data: cloudVoidRequests, error } = await supabase
                 .from('void_requests')
                 .select('*')
-                .range(voidPage * 1000, (voidPage + 1) * 1000 - 1)
+                .range(voidPage * voidPageSize, (voidPage + 1) * voidPageSize - 1)
                 .order('requestedAt', { ascending: false });
 
               if (error) {
@@ -342,7 +346,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               if (cloudVoidRequests && cloudVoidRequests.length > 0) {
                 allCloudVoidRequests = [...allCloudVoidRequests, ...cloudVoidRequests];
                 console.log(`📥 Fetched void requests page ${voidPage + 1}: ${cloudVoidRequests.length} requests (total: ${allCloudVoidRequests.length})`);
-                if (cloudVoidRequests.length < 1000) voidHasMore = false;
+                if (cloudVoidRequests.length < voidPageSize) voidHasMore = false;
                 voidPage++;
               } else {
                 voidHasMore = false;
@@ -358,13 +362,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             // Fetch ALL stock change requests using pagination
             let allCloudStockRequests: any[] = [];
             let stockPage = 0;
+            const stockPageSize = 1000000;
             let stockHasMore = true;
 
             while (stockHasMore) {
               const { data: cloudStockRequests, error } = await supabase
                 .from('stock_change_requests')
                 .select('*')
-                .range(stockPage * 1000, (stockPage + 1) * 1000 - 1)
+                .range(stockPage * stockPageSize, (stockPage + 1) * stockPageSize - 1)
                 .order('requestedAt', { ascending: false });
 
               if (error) {
@@ -375,7 +380,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               if (cloudStockRequests && cloudStockRequests.length > 0) {
                 allCloudStockRequests = [...allCloudStockRequests, ...cloudStockRequests];
                 console.log(`📥 Fetched stock requests page ${stockPage + 1}: ${cloudStockRequests.length} requests (total: ${allCloudStockRequests.length})`);
-                if (cloudStockRequests.length < 1000) stockHasMore = false;
+                if (cloudStockRequests.length < stockPageSize) stockHasMore = false;
                 stockPage++;
               } else {
                 stockHasMore = false;
@@ -391,7 +396,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             // Fetch ALL product sale logs using pagination
             let allCloudLogs: any[] = [];
             let page = 0;
-            const pageSize = 1000;
+            const PageSize = 1000000;
             let hasMore = true;
 
             while (hasMore) {

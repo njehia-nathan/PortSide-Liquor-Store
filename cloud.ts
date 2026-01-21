@@ -14,6 +14,35 @@ const IS_CONFIGURED = (SUPABASE_URL as string) !== 'https://xyzcompany.supabase.
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /**
+ * Normalize product payload for Supabase (convert camelCase to snake_case and remove duplicates)
+ * This fixes the issue where local data uses camelCase but Supabase expects snake_case
+ */
+const normalizeProductPayload = (payload: any): any => {
+  // Create a clean object with only snake_case fields that Supabase expects
+  return {
+    id: payload.id,
+    name: payload.name,
+    type: payload.type,
+    size: payload.size,
+    brand: payload.brand,
+    sku: payload.sku || '',
+    costPrice: payload.costPrice,
+    sellingPrice: payload.sellingPrice,
+    supplier: payload.supplier || null,
+    stock: payload.stock,
+    lowStockThreshold: payload.lowStockThreshold || 5,
+    barcode: payload.barcode || '',
+    unitsSold: payload.unitsSold || 0,
+    // Use camelCase version if available, otherwise fall back to snake_case
+    updated_at: payload.updatedAt || payload.updated_at || new Date().toISOString(),
+    version: payload.version || 1,
+    last_modified_by: payload.lastModifiedBy || payload.last_modified_by || null,
+    last_modified_by_name: payload.lastModifiedByName || payload.last_modified_by_name || null,
+    price_history: payload.priceHistory || payload.price_history || []
+  };
+};
+
+/**
  * Syncs a single item from the local queue to the Cloud DB.
  * 
  * @param type - The type of action (e.g., 'SALE', 'ADD_PRODUCT')
@@ -33,53 +62,79 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
 
     // Map internal action types to Supabase Database Tables
     switch (type) {
+      // --- CRITICAL FIX: DELTA STOCK SYNC ---
+      case 'SALE_STOCK_UPDATE':
+        try {
+          // We call the Postgres function 'decrement_stock' to avoid overwriting other devices
+          // payload is { productId: string, quantity: number }
+          const { error: stockError } = await supabase.rpc('decrement_stock', {
+            product_id: payload.productId,
+            quantity_to_subtract: payload.quantity
+          });
+          
+          if (stockError) throw stockError;
+          return true;
+        } catch (error) {
+          console.error('[Cloud Error] Stock update failed:', error);
+          return false;
+        }
+
       case 'SALE':
       case 'UPDATE_SALE':
         table = 'sales';
         break;
+        
       case 'ADD_PRODUCT':
       case 'UPDATE_PRODUCT':
       case 'ADJUST_STOCK':
       case 'RECEIVE_STOCK':
         // All these result in changes to the 'products' table
-        // Note: For stock adjustments, we usually sync the final product state
-        // to keep the cloud in sync with the local device.
         table = 'products';
         break;
+        
       case 'ADD_USER':
       case 'UPDATE_USER':
         table = 'users';
         break;
+        
       case 'DELETE_USER':
         table = 'users';
         action = 'delete';
         break;
+        
       case 'DELETE_PRODUCT':
         table = 'products';
         action = 'delete';
         break;
+        
       case 'DELETE_SALE':
         table = 'sales';
         action = 'delete';
         break;
+        
       case 'DELETE_PRODUCT_SALE_LOG':
         table = 'product_sale_logs';
         action = 'delete';
         break;
+        
       case 'OPEN_SHIFT':
       case 'CLOSE_SHIFT':
         table = 'shifts';
         break;
+        
       case 'LOG':
         table = 'audit_logs';
         break;
+        
       case 'UPDATE_SETTINGS':
         table = 'business_settings';
         break;
+        
       case 'VOID_REQUEST':
       case 'VOID_REJECTED':
         table = 'void_requests';
         break;
+        
       case 'VOID_APPROVED':
         // For approved voids, we need to sync both the void request and the updated sale
         try {
@@ -94,10 +149,12 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
           console.error('[Cloud Error] Failed to sync VOID_APPROVED:', error);
           return false;
         }
+        
       case 'STOCK_CHANGE_REQUEST':
       case 'STOCK_CHANGE_REJECTED':
         table = 'stock_change_requests';
         break;
+        
       case 'STOCK_CHANGE_APPROVED':
         // For approved stock changes, we need to sync both the request and the updated product
         try {
@@ -112,9 +169,12 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
           console.error('[Cloud Error] Failed to sync STOCK_CHANGE_APPROVED:', error);
           return false;
         }
+        
       case 'PRODUCT_SALE_LOG':
+      case 'UPDATE_PRODUCT_SALE_LOG': // Added this case to support Reports.tsx edits
         table = 'product_sale_logs';
         break;
+        
       default:
         console.warn('Unknown sync type:', type);
         return true; // Skip unknown types to clear queue
@@ -125,8 +185,11 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
       const { error } = await supabase.from(table).delete().eq('id', payload.id);
       if (error) throw error;
     } else {
+      // Normalize payload for products table to fix camelCase/snake_case mismatch
+      const normalizedPayload = table === 'products' ? normalizeProductPayload(payload) : payload;
+
       // Upsert handles both Insert (New) and Update (Existing ID)
-      const { error } = await supabase.from(table).upsert(payload);
+      const { error } = await supabase.from(table).upsert(normalizedPayload);
 
       if (error) {
         // Help debug schema issues
@@ -141,7 +204,10 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
 
   } catch (error) {
     console.error(`[Cloud Error] Failed to sync ${type}:`, error);
-    console.error(`[Cloud Error] Payload that failed:`, JSON.stringify(payload, null, 2));
+    // Don't log payload for SALE_STOCK_UPDATE as it might clutter logs, but valid for others
+    if (type !== 'SALE_STOCK_UPDATE') {
+      console.error(`[Cloud Error] Payload that failed:`, JSON.stringify(payload, null, 2));
+    }
     return false; // Failed, keep in queue
   }
 };

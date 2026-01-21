@@ -44,6 +44,15 @@ export interface POSDB extends DBSchema {
     value: SyncQueueItem;
     autoIncrement: true  // IDB automatically generates 1, 2, 3...
   };
+
+  // FAILED SYNC QUEUE (Dead-Letter Queue)
+  // Items that failed to sync after max retries are moved here
+  // for manual review and retry
+  failedSyncQueue: {
+    key: number;
+    value: FailedSyncQueueItem;
+    autoIncrement: true
+  };
 }
 
 export interface SyncQueueItem {
@@ -51,11 +60,19 @@ export interface SyncQueueItem {
   type: string;        // What happened? (e.g., 'SALE')
   payload: any;        // The data (e.g., The Sale Object)
   timestamp: number;   // When it happened
+  retryCount?: number; // Number of retry attempts
+  lastError?: string;  // Last error message
+}
+
+export interface FailedSyncQueueItem extends SyncQueueItem {
+  failedAt: number;    // When it was moved to failed queue
+  totalRetries: number; // Total number of retries attempted
+  canRetry: boolean;   // Whether manual retry is allowed
 }
 
 // Name of the database in the browser's developer tools
 const DB_NAME = 'GrabBottlePOS_DB';
-const DB_VERSION = 6; // Bumped for productSaleLogs store and unitsSold field
+const DB_VERSION = 7; // Bumped for failedSyncQueue store and retry tracking
 
 /**
  * INITIALIZE DATABASE
@@ -95,6 +112,9 @@ export const initDB = async (): Promise<IDBPDatabase<POSDB>> => {
 
       // Create 'syncQueue' table with auto-incrementing numbers for keys
       if (!db.objectStoreNames.contains('syncQueue')) db.createObjectStore('syncQueue', { keyPath: 'key', autoIncrement: true });
+
+      // Create 'failedSyncQueue' table for items that failed to sync
+      if (!db.objectStoreNames.contains('failedSyncQueue')) db.createObjectStore('failedSyncQueue', { keyPath: 'key', autoIncrement: true });
     },
   });
 };

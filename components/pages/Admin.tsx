@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { AlcoholType, Product, Role, User } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { PlusCircle, UserCog, UserPlus, Trash2, Barcode, Camera, Search, Filter, ArrowUpDown, Clock, User as UserIcon, Activity } from 'lucide-react';
+import { PlusCircle, UserCog, UserPlus, Trash2, Barcode, Camera, Search, Filter, ArrowUpDown, Clock, User as UserIcon, Activity, AlertTriangle } from 'lucide-react';
+import { validatePrice, validateStock, sanitizePriceInput, sanitizeStockInput, debounce } from '../../utils/validation';
 
 const Admin = () => {
   const { products, auditLogs, users, currentUser, addProduct, updateProduct, deleteProduct, updateUser, addUser, deleteUser, fixCorruptedSales } = useStore();
@@ -25,6 +26,9 @@ const Admin = () => {
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'product' | 'user'; id: string; name: string } | null>(null);
   const [isFixingSales, setIsFixingSales] = useState(false);
   const [fixResult, setFixResult] = useState<{ fixed: number; total: number } | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const [conflictError, setConflictError] = useState<string | null>(null);
 
   const filteredProducts = useMemo(() => {
     if (!productSearch) return products;
@@ -61,9 +65,115 @@ const Admin = () => {
     return logs;
   }, [auditLogs, logSearch, logFilterAction, logFilterUser, logSortOrder]);
 
-  const handleEditProduct = (product: Product) => { setEditingProduct(product); setProductFormData(product); setIsProductFormOpen(true); };
-  const handleCreateProduct = () => { setEditingProduct(null); setProductFormData({ name: '', type: AlcoholType.WHISKEY, size: '', brand: '', sku: '', barcode: '', costPrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5 }); setIsProductFormOpen(true); };
-  const handleProductSubmit = (e: React.FormEvent) => { e.preventDefault(); const payload = productFormData as Product; if (editingProduct) { updateProduct(payload); } else { const { id, ...rest } = payload; rest.brand = rest.name; addProduct(rest); } setIsProductFormOpen(false); };
+  const handleEditProduct = (product: Product) => {
+    setEditingProduct(product);
+    setProductFormData(product);
+    setValidationErrors({});
+    setConflictError(null);
+    setIsProductFormOpen(true);
+  };
+
+  const handleCreateProduct = () => {
+    setEditingProduct(null);
+    setProductFormData({ name: '', type: AlcoholType.WHISKEY, size: '', brand: '', sku: '', barcode: '', costPrice: 0, sellingPrice: 0, stock: 0, lowStockThreshold: 5 });
+    setValidationErrors({});
+    setConflictError(null);
+    setIsProductFormOpen(true);
+  };
+
+  const validateProductForm = (): boolean => {
+    const errors: Record<string, string> = {};
+
+    if (!productFormData.name?.trim()) {
+      errors.name = 'Product name is required';
+    }
+
+    if (!productFormData.size?.trim()) {
+      errors.size = 'Size is required';
+    }
+
+    const costValidation = validatePrice(productFormData.costPrice || 0, 'Cost price');
+    if (!costValidation.isValid) {
+      errors.costPrice = costValidation.error!;
+    }
+
+    const sellingValidation = validatePrice(productFormData.sellingPrice || 0, 'Selling price');
+    if (!sellingValidation.isValid) {
+      errors.sellingPrice = sellingValidation.error!;
+    }
+
+    const stockValidation = validateStock(productFormData.stock || 0);
+    if (!stockValidation.isValid) {
+      errors.stock = stockValidation.error!;
+    }
+
+    setValidationErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const handleProductSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!validateProductForm()) {
+      return;
+    }
+
+    setIsSaving(true);
+    setConflictError(null);
+
+    try {
+      const payload = productFormData as Product;
+      
+      if (editingProduct) {
+        // Refresh product data from store to detect conflicts
+        const currentProduct = products.find(p => p.id === editingProduct.id);
+        if (currentProduct && currentProduct.version !== undefined && payload.version !== undefined) {
+          if (currentProduct.version > payload.version) {
+            setConflictError(
+              `This product was modified by ${currentProduct.lastModifiedByName || 'another user'}. ` +
+              `Please close and reopen the form to see the latest changes.`
+            );
+            setIsSaving(false);
+            return;
+          }
+        }
+        
+        await updateProduct(payload);
+      } else {
+        const { id, ...rest } = payload;
+        rest.brand = rest.name;
+        await addProduct(rest);
+      }
+      
+      setIsProductFormOpen(false);
+      setValidationErrors({});
+      setConflictError(null);
+    } catch (error: any) {
+      if (error.message?.includes('CONFLICT')) {
+        setConflictError(error.message);
+      } else {
+        alert(`Failed to save product: ${error.message || error}`);
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handlePriceChange = useCallback(
+    debounce((field: 'costPrice' | 'sellingPrice', value: string) => {
+      const sanitized = sanitizePriceInput(value);
+      setProductFormData(prev => ({ ...prev, [field]: sanitized }));
+    }, 300),
+    []
+  );
+
+  const handleStockChange = useCallback(
+    debounce((value: string) => {
+      const sanitized = sanitizeStockInput(value);
+      setProductFormData(prev => ({ ...prev, stock: sanitized }));
+    }, 300),
+    []
+  );
   const handleEditUser = (user: User) => { setEditingUser(user); setUserFormData({ ...user }); setIsUserFormOpen(true); };
   const handleCreateUser = () => { setEditingUser(null); setUserFormData({ name: '', pin: '', role: Role.CASHIER, permissions: ['POS'] }); setIsUserFormOpen(true); };
   const handleUserSubmit = (e: React.FormEvent) => { e.preventDefault(); if (!userFormData.name || !userFormData.pin) { alert('Name and PIN are required'); return; } if (editingUser) { updateUser({ ...editingUser, ...userFormData } as User); } else { addUser(userFormData as Omit<User, 'id'>); } setIsUserFormOpen(false); };
@@ -357,16 +467,118 @@ const Admin = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-end lg:items-center justify-center p-0 lg:p-4">
           <div className="bg-white rounded-t-2xl lg:rounded-xl shadow-2xl p-4 lg:p-6 w-full lg:max-w-2xl max-h-[90vh] overflow-y-auto">
             <h2 className="text-lg lg:text-xl font-bold mb-4 lg:mb-6">{editingProduct ? 'Edit Product' : 'Create Product'}</h2>
+            
+            {/* Conflict Warning */}
+            {conflictError && (
+              <div className="mb-4 p-4 bg-red-50 border-2 border-red-200 rounded-lg">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle size={20} className="text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <h3 className="font-bold text-red-900 mb-1">Conflict Detected</h3>
+                    <p className="text-sm text-red-700">{conflictError}</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConflictError(null);
+                        setIsProductFormOpen(false);
+                      }}
+                      className="mt-2 text-sm font-medium text-red-600 hover:text-red-800 underline"
+                    >
+                      Close and Refresh
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            
             <form onSubmit={handleProductSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-3 lg:gap-4">
-              <div className="sm:col-span-2"><label className="block text-sm font-medium mb-1">Product Name</label><input required type="text" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.name} onChange={e => setProductFormData({...productFormData, name: e.target.value})} /></div>
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-medium mb-1">Product Name</label>
+                <input 
+                  required 
+                  type="text" 
+                  className={`w-full border p-2.5 rounded-lg text-sm ${
+                    validationErrors.name ? 'border-red-500 bg-red-50' : ''
+                  }`}
+                  value={productFormData.name} 
+                  onChange={e => setProductFormData({...productFormData, name: e.target.value})} 
+                />
+                {validationErrors.name && (
+                  <p className="text-xs text-red-600 mt-1">{validationErrors.name}</p>
+                )}
+              </div>
               <div><label className="block text-sm font-medium mb-1">Type</label><select className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.type} onChange={e => setProductFormData({...productFormData, type: e.target.value as AlcoholType})}>{Object.values(AlcoholType).map(t => <option key={t} value={t}>{t}</option>)}</select></div>
-              <div><label className="block text-sm font-medium mb-1">Size</label><input required type="text" placeholder="e.g. 750ml" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.size} onChange={e => setProductFormData({...productFormData, size: e.target.value})} /></div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Size</label>
+                <input 
+                  required 
+                  type="text" 
+                  placeholder="e.g. 750ml" 
+                  className={`w-full border p-2.5 rounded-lg text-sm ${
+                    validationErrors.size ? 'border-red-500 bg-red-50' : ''
+                  }`}
+                  value={productFormData.size} 
+                  onChange={e => setProductFormData({...productFormData, size: e.target.value})} 
+                />
+                {validationErrors.size && (
+                  <p className="text-xs text-red-600 mt-1">{validationErrors.size}</p>
+                )}
+              </div>
               <div><label className="block text-sm font-medium mb-1">SKU</label><input type="text" placeholder="Optional" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.sku} onChange={e => setProductFormData({...productFormData, sku: e.target.value})} /></div>
               <div><label className="block text-sm font-medium mb-1 flex items-center gap-1"><Barcode size={14} /> Barcode</label><div className="flex gap-2"><input type="text" placeholder="Scan or enter barcode" className="flex-1 border p-2.5 rounded-lg text-sm font-mono" value={productFormData.barcode || ''} onChange={e => setProductFormData({...productFormData, barcode: e.target.value})} /><button type="button" onClick={() => setIsScanningBarcode(true)} className="px-3 py-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 flex items-center gap-1 text-sm"><Camera size={16} /> Scan</button></div></div>
               <div><label className="block text-sm font-medium mb-1 text-red-600">Low Stock Alert</label><input required type="number" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.lowStockThreshold} onChange={e => setProductFormData({...productFormData, lowStockThreshold: parseInt(e.target.value) || 0})} /></div>
-              <div><label className="block text-sm font-medium mb-1">Cost Price</label><input required type="number" step="0.01" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.costPrice} onChange={e => setProductFormData({...productFormData, costPrice: parseFloat(e.target.value) || 0})} /></div>
-              <div><label className="block text-sm font-medium mb-1">Selling Price</label><input required type="number" step="0.01" className="w-full border p-2.5 rounded-lg text-sm" value={productFormData.sellingPrice} onChange={e => setProductFormData({...productFormData, sellingPrice: parseFloat(e.target.value) || 0})} /></div>
-              <div className="sm:col-span-2 flex gap-3 mt-4 lg:mt-6"><button type="submit" className="flex-1 bg-slate-900 text-white py-3 rounded-lg font-bold text-sm">Save Product</button><button type="button" onClick={() => setIsProductFormOpen(false)} className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500 text-sm">Cancel</button></div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Cost Price</label>
+                <input 
+                  required 
+                  type="number" 
+                  step="0.01" 
+                  className={`w-full border p-2.5 rounded-lg text-sm ${
+                    validationErrors.costPrice ? 'border-red-500 bg-red-50' : ''
+                  }`}
+                  value={productFormData.costPrice} 
+                  onChange={e => handlePriceChange('costPrice', e.target.value)} 
+                />
+                {validationErrors.costPrice && (
+                  <p className="text-xs text-red-600 mt-1">{validationErrors.costPrice}</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Selling Price</label>
+                <input 
+                  required 
+                  type="number" 
+                  step="0.01" 
+                  className={`w-full border p-2.5 rounded-lg text-sm ${
+                    validationErrors.sellingPrice ? 'border-red-500 bg-red-50' : ''
+                  }`}
+                  value={productFormData.sellingPrice} 
+                  onChange={e => handlePriceChange('sellingPrice', e.target.value)} 
+                />
+                {validationErrors.sellingPrice && (
+                  <p className="text-xs text-red-600 mt-1">{validationErrors.sellingPrice}</p>
+                )}
+              </div>
+              <div className="sm:col-span-2 flex gap-3 mt-4 lg:mt-6">
+                <button 
+                  type="submit" 
+                  disabled={isSaving || !!conflictError}
+                  className="flex-1 bg-slate-900 text-white py-3 rounded-lg font-bold text-sm disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isSaving ? 'Saving...' : 'Save Product'}
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    setIsProductFormOpen(false);
+                    setValidationErrors({});
+                    setConflictError(null);
+                  }} 
+                  className="flex-1 border border-slate-300 py-3 rounded-lg font-bold text-slate-500 text-sm hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
             </form>
           </div>
         </div>

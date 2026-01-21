@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Product, AlcoholType, Role } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
@@ -24,13 +24,6 @@ import {
   Camera,
   Calendar,
 } from 'lucide-react';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import {
   Table,
@@ -42,7 +35,7 @@ import {
 } from '@/components/ui/table';
 
 const Inventory = () => {
-  const { products, receiveStock, adjustStock, updateProduct, addProduct, requestStockChange, auditLogs, sales, currentUser } = useStore();
+  const { products, updateProduct, addProduct, requestStockChange, auditLogs, sales, currentUser } = useStore();
 
   const [activeTab, setActiveTab] = useState<'VIEW' | 'RECEIVE' | 'ADJUST' | 'ALERTS'>('VIEW');
   const [searchTerm, setSearchTerm] = useState('');
@@ -69,24 +62,37 @@ const Inventory = () => {
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
 
-  // Global barcode scanner listener - scan anytime without clicking
+  // --- CRITICAL FIX: Calculate Units Sold on the Fly ---
+  // Since we stopped updating product.unitsSold in the database to prevent errors,
+  // we now calculate it live from the sales history.
+  const unitsSoldMap = useMemo(() => {
+    const map = new Map<string, number>();
+    sales.forEach(sale => {
+      if (!sale.isVoided) {
+        sale.items.forEach(item => {
+          const current = map.get(item.productId) || 0;
+          map.set(item.productId, current + item.quantity);
+        });
+      }
+    });
+    return map;
+  }, [sales]);
+
+  // Global barcode scanner listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if typing in an input field
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
         return;
       }
 
       const now = Date.now();
-      // If more than 100ms between keys, start fresh (barcode scanners are fast)
       if (now - lastKeyTime.current > 100) {
         setGlobalBarcodeBuffer('');
       }
       lastKeyTime.current = now;
 
       if (e.key === 'Enter' && globalBarcodeBuffer.length > 0) {
-        // Process the scanned barcode
         const product = products.find(p => p.barcode === globalBarcodeBuffer || p.sku === globalBarcodeBuffer);
         if (product) {
           setSelectedProductId(product.id);
@@ -115,12 +121,12 @@ const Inventory = () => {
 
   const filteredProducts = products.filter(p => {
     const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
       p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (p.barcode && p.barcode.includes(searchTerm));
     
     if (!matchesSearch) return false;
     
-    // Date filtering - filter products that had activity in the date range
     if (dateFilter !== 'all') {
       const now = new Date();
       let startDate: Date | null = null;
@@ -147,7 +153,6 @@ const Inventory = () => {
         const endDate = dateFilter === 'custom' && customEndDate ? new Date(customEndDate) : now;
         endDate.setHours(23, 59, 59, 999);
         
-        // Check if product had any sales in this date range
         const hadActivity = sales.some(sale => {
           const saleDate = new Date(sale.timestamp);
           return !sale.isVoided && 
@@ -174,7 +179,10 @@ const Inventory = () => {
         comparison = a.stock - b.stock;
         break;
       case 'unitsSold':
-        comparison = (a.unitsSold || 0) - (b.unitsSold || 0);
+        // --- FIX: Use calculated map instead of static property ---
+        const unitsA = unitsSoldMap.get(a.id) || 0;
+        const unitsB = unitsSoldMap.get(b.id) || 0;
+        comparison = unitsA - unitsB;
         break;
       case 'value':
         comparison = ((Number(a.costPrice) || 0) * (Number(a.stock) || 0)) - ((Number(b.costPrice) || 0) * (Number(b.stock) || 0));
@@ -184,54 +192,17 @@ const Inventory = () => {
     return sortDirection === 'asc' ? comparison : -comparison;
   });
 
-  const sortedProducts = [...products].sort((a, b) => a.name.localeCompare(b.name));
-  const productOptions = sortedProducts.map(p => ({
-    value: p.id,
-    label: `${p.name} - ${p.size} (Stock: ${p.stock})`
-  }));
-
   const lowStockProducts = products.filter(p => p.stock <= (p.lowStockThreshold || 5));
-
-  // Debug: Check for products with extremely high values
-  const problematicProducts = products.filter(p => {
-    const cost = Number(p.costPrice) || 0;
-    const stock = Number(p.stock) || 0;
-    const value = cost * stock;
-    return value > 1000000; // Products with value over 1M
-  });
-  
-  if (problematicProducts.length > 0) {
-    console.error('🚨 Products with extremely high values:', problematicProducts.map(p => ({
-      name: p.name,
-      costPrice: p.costPrice,
-      stock: p.stock,
-      value: (Number(p.costPrice) || 0) * (Number(p.stock) || 0)
-    })));
-  }
   
   const totalInventoryValue = products.reduce((sum, p) => {
     const cost = Number(p.costPrice) || 0;
     const stock = Number(p.stock) || 0;
     const productValue = cost * stock;
-    
-    // Skip products with unrealistic values in calculation
-    if (productValue > 1000000) {
-      console.warn(`⚠️ Skipping ${p.name} - value too high: ${productValue}`);
-      return sum;
-    }
-    
+    if (productValue > 1000000) return sum;
     return sum + productValue;
   }, 0);
+  
   const totalItems = products.reduce((sum, p) => sum + (Number(p.stock) || 0), 0);
-
-  // Debug: Log products to check unitsSold values
-  useEffect(() => {
-    if (products.length > 0) {
-      console.log('📦 Products loaded:', products.length);
-      console.log('📊 Sample product with unitsSold:', products.find(p => p.unitsSold && p.unitsSold > 0));
-      console.log('📊 All products unitsSold:', products.map(p => ({ name: p.name, unitsSold: p.unitsSold })));
-    }
-  }, [products]);
 
   const handleBarcodeScanned = (barcode: string) => {
     const product = products.find(p => p.barcode === barcode || p.sku === barcode);
@@ -407,7 +378,6 @@ const Inventory = () => {
                   value={searchTerm}
                   onChange={e => setSearchTerm(e.target.value)}
                 />
-                 {/* Date Range Filter */}
               <div className="flex flex-wrap items-center gap-2">
                 <Calendar size={14} className="text-slate-500" />
                 <span className="text-xs font-medium text-slate-600">Period:</span>
@@ -447,8 +417,6 @@ const Inventory = () => {
                   <PlusCircle size={16} /> Add Product
                 </button>
               </div>
-              
-             
             </div>
 
             {/* Mobile Card View */}
@@ -526,7 +494,8 @@ const Inventory = () => {
                           </span>
                         </TableCell>
                         <TableCell className="px-3 py-1.5 text-center font-bold text-blue-700 text-xs border-r border-black">
-                          {p.unitsSold !== undefined && p.unitsSold !== null ? p.unitsSold : 0}
+                           {/* --- FIX: Display Calculated Units Sold --- */}
+                          {unitsSoldMap.get(p.id) || 0}
                         </TableCell>
                         <TableCell className="px-3 py-1.5 text-right font-bold text-slate-900 text-xs">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</TableCell>
                       </TableRow>

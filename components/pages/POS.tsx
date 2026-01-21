@@ -38,7 +38,7 @@ const POS = () => {
   const [closedShiftData, setClosedShiftData] = useState<{ shift: Shift; salesCount: number; revenue: number; cashSales: number; expectedCash: number; closingCash: number } | null>(null);
   const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
   const lastKeyTime = useRef<number>(0);
-  
+
   // Sales Dashboard Filters
   const [filterUser, setFilterUser] = useState<string>('current');
   const [filterShift, setFilterShift] = useState<string>('all');
@@ -346,7 +346,11 @@ const POS = () => {
       return s.cashierId === currentShift.cashierId && saleTime >= startTime && !s.isVoided;
     });
     const revenue = shiftSales.reduce((sum, s) => sum + s.totalAmount, 0);
-    const cashSalesTotal = shiftSales.filter(s => s.paymentMethod === 'CASH').reduce((sum, s) => sum + s.totalAmount, 0);
+    const cashSalesTotal = shiftSales.reduce((sum, s) => {
+      if (s.paymentMethod === 'CASH') return sum + s.totalAmount;
+      if (s.paymentMethod === 'SPLIT' && s.splitPayment) return sum + s.splitPayment.cashAmount;
+      return sum;
+    }, 0);
     const expectedCash = currentShift.openingCash + cashSalesTotal;
 
     // Store shift data for report
@@ -1239,7 +1243,11 @@ const POS = () => {
               </div>
               <div className="bg-white rounded-lg p-2 border border-slate-200 text-center">
                 <p className="text-[10px] text-slate-500 font-medium">Cash</p>
-                <p className="text-sm font-bold text-emerald-600">{CURRENCY_FORMATTER.format(sales.filter(s => !s.isVoided && s.paymentMethod === 'CASH').reduce((sum, s) => sum + s.totalAmount, 0))}</p>
+                <p className="text-sm font-bold text-emerald-600">{CURRENCY_FORMATTER.format(sales.filter(s => !s.isVoided).reduce((sum, s) => {
+                  if (s.paymentMethod === 'CASH') return sum + s.totalAmount;
+                  if (s.paymentMethod === 'SPLIT' && s.splitPayment) return sum + s.splitPayment.cashAmount;
+                  return sum;
+                }, 0))}</p>
               </div>
               <div className="bg-white rounded-lg p-2 border border-red-200 text-center">
                 <p className="text-[10px] text-red-500 font-medium">Voided</p>

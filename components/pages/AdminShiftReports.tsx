@@ -59,23 +59,43 @@ const AdminShiftReports = () => {
   const selectedShiftSales = selectedShift ? getShiftSales(selectedShift.cashierId, selectedShift.startTime, selectedShift.endTime) : [];
   const selectedShiftRevenue = selectedShiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
   // Payment method breakdown for Z-Report
-  const selectedShiftCashSales = selectedShiftSales.filter(s => s.paymentMethod === 'CASH' && !s.isVoided);
-  const selectedShiftCardSales = selectedShiftSales.filter(s => s.paymentMethod === 'CARD' && !s.isVoided);
-  const selectedShiftMobileSales = selectedShiftSales.filter(s => s.paymentMethod === 'MOBILE' && !s.isVoided);
   const selectedShiftVoidedSales = selectedShiftSales.filter(s => s.isVoided);
-  
-  const cashTotal = selectedShiftCashSales.reduce((acc, s) => acc + s.totalAmount, 0);
-  const cardTotal = selectedShiftCardSales.reduce((acc, s) => acc + s.totalAmount, 0);
-  const mobileTotal = selectedShiftMobileSales.reduce((acc, s) => acc + s.totalAmount, 0);
+
+  // Revised payment breakdown to handle split payments
+  const paymentBreakdown = selectedShiftSales.reduce((acc, s) => {
+    if (s.isVoided) return acc;
+
+    if (s.paymentMethod === 'SPLIT' && s.splitPayment) {
+      acc.cash += s.splitPayment.cashAmount;
+      acc.mobile += s.splitPayment.mobileAmount;
+      acc.cashCount++;
+      acc.mobileCount++;
+    } else if (s.paymentMethod === 'CASH') {
+      acc.cash += s.totalAmount;
+      acc.cashCount++;
+    } else if (s.paymentMethod === 'CARD') {
+      acc.card += s.totalAmount;
+      acc.cardCount++;
+    } else if (s.paymentMethod === 'MOBILE') {
+      acc.mobile += s.totalAmount;
+      acc.mobileCount++;
+    }
+
+    return acc;
+  }, { cash: 0, card: 0, mobile: 0, cashCount: 0, cardCount: 0, mobileCount: 0 });
+
+  const cashTotal = paymentBreakdown.cash;
+  const cardTotal = paymentBreakdown.card;
+  const mobileTotal = paymentBreakdown.mobile;
   const voidedTotal = 0; // Voided sales should show 0 total
 
   const handlePrintZReport = () => {
     const printContent = document.getElementById('z-report-content');
     if (!printContent) return;
-    
+
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
-    
+
     printWindow.document.write(`
       <html>
         <head>
@@ -186,7 +206,7 @@ const AdminShiftReports = () => {
 
   const handleExportExcel = () => {
     if (!selectedShift) return;
-    
+
     // Create CSV content
     const headers = ['#', 'Time', 'Items', 'Payment Method', 'Amount', 'Status'];
     const rows = selectedShiftSales.map((sale, idx) => [
@@ -197,7 +217,7 @@ const AdminShiftReports = () => {
       sale.totalAmount,
       sale.isVoided ? 'VOIDED' : 'VALID'
     ]);
-    
+
     // Add summary rows
     rows.push([]);
     rows.push(['SUMMARY']);
@@ -209,12 +229,12 @@ const AdminShiftReports = () => {
     rows.push(['Cash Sales', cashTotal]);
     rows.push(['Card Sales', cardTotal]);
     rows.push(['M-Pesa Sales', mobileTotal]);
-    
+
     const csvContent = [
       headers.join(','),
       ...rows.map(row => row.join(','))
     ].join('\n');
-    
+
     // Download file
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
@@ -281,7 +301,7 @@ const AdminShiftReports = () => {
         <div className="p-4 border-b border-slate-100 bg-slate-50">
           <h2 className="font-bold text-slate-800">Shift History</h2>
         </div>
-        
+
         {allShifts.length === 0 ? (
           <div className="p-8 text-center">
             <Clock size={48} className="mx-auto text-slate-300 mb-4" />
@@ -296,7 +316,7 @@ const AdminShiftReports = () => {
                 const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
                 const startDT = formatDateTime(shift.startTime);
                 const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
-                
+
                 return (
                   <div key={shift.id} className="p-3 hover:bg-slate-50" onClick={() => setSelectedShift(shift)}>
                     <div className="flex justify-between items-start mb-2">
@@ -341,7 +361,7 @@ const AdminShiftReports = () => {
                     const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
                     const startDT = formatDateTime(shift.startTime);
                     const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
-                    
+
                     return (
                       <tr key={shift.id} className="hover:bg-slate-50">
                         <td className="px-4 py-3 font-mono text-slate-400">#{index + 1}</td>
@@ -488,11 +508,10 @@ const AdminShiftReports = () => {
                           </div>
                         </td>
                         <td className="px-3 py-3">
-                          <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                            sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-700' :
+                          <span className={`px-2 py-0.5 rounded text-xs font-bold ${sale.paymentMethod === 'CASH' ? 'bg-green-100 text-green-700' :
                             sale.paymentMethod === 'CARD' ? 'bg-blue-100 text-blue-700' :
-                            'bg-purple-100 text-purple-700'
-                          }`}>
+                              'bg-purple-100 text-purple-700'
+                            }`}>
                             {sale.paymentMethod}
                           </span>
                         </td>
@@ -617,15 +636,15 @@ const AdminShiftReports = () => {
                 {/* Payment Breakdown */}
                 <div className="section-title font-bold text-[10px] uppercase mb-1">Payment Breakdown</div>
                 <div className="row flex justify-between my-1">
-                  <span>💵 Cash ({selectedShiftCashSales.length}):</span>
+                  <span>💵 Cash ({paymentBreakdown.cashCount}):</span>
                   <span>{CURRENCY_FORMATTER.format(cashTotal)}</span>
                 </div>
                 <div className="row flex justify-between my-1">
-                  <span>💳 Card ({selectedShiftCardSales.length}):</span>
+                  <span>💳 Card ({paymentBreakdown.cardCount}):</span>
                   <span>{CURRENCY_FORMATTER.format(cardTotal)}</span>
                 </div>
                 <div className="row flex justify-between my-1">
-                  <span>📱 M-Pesa ({selectedShiftMobileSales.length}):</span>
+                  <span>📱 M-Pesa ({paymentBreakdown.mobileCount}):</span>
                   <span>{CURRENCY_FORMATTER.format(mobileTotal)}</span>
                 </div>
                 {voidedTotal > 0 && (

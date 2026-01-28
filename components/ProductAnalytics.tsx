@@ -146,6 +146,14 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
     const receiveCount = filteredLogs.filter(log => log.action === 'STOCK_RECEIVE').length;
     const editCount = filteredLogs.filter(log => log.action === 'PRODUCT_EDIT').length;
 
+    // --- FIX: Calculate lifetime units sold from ALL sales (not just filtered) ---
+    const lifetimeUnitsSold = sales
+      .filter(sale => !sale.isVoided)
+      .reduce((sum, sale) => {
+        const productItems = sale.items.filter(item => item.productId === product.id);
+        return sum + productItems.reduce((itemSum, item) => itemSum + item.quantity, 0);
+      }, 0);
+
     // Calculate units received from STOCK_RECEIVE logs (restocking operations)
     const restockingUnits = filteredLogs
       .filter(log => log.action === 'STOCK_RECEIVE')
@@ -156,14 +164,14 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
       }, 0);
 
     // Calculate initial stock: Current Stock + Lifetime Sold - Restocking
-    const initialStock = product.stock + (product.unitsSold || 0) - restockingUnits;
+    const initialStock = product.stock + lifetimeUnitsSold - restockingUnits;
 
     // Total Units Received = Initial Stock + All Restocking
     const totalUnitsReceived = initialStock + restockingUnits;
 
     return {
       periodUnitsSold,  // Units sold in selected date range
-      lifetimeUnitsSold: product.unitsSold || 0,  // Lifetime total from product record
+      lifetimeUnitsSold,  // Calculated from actual sales data
       totalRevenue,
       totalCost,
       totalProfit,
@@ -178,7 +186,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
       totalTransactions: filteredProductSales.filter(s => !s.isVoided).length,
       totalActivities: filteredLogs.length,
     };
-  }, [filteredProductSales, filteredLogs, product.sellingPrice, product.unitsSold]);
+  }, [filteredProductSales, filteredLogs, product.sellingPrice, product.id, product.stock, sales]);
 
   // Sales by day for chart
   const salesByDay = useMemo(() => {
@@ -570,7 +578,7 @@ export const ProductAnalytics: React.FC<ProductAnalyticsProps> = ({ product, aud
                   </div>
                   <div className="p-2 bg-gray-50 rounded">
                     <p className="text-[10px] text-gray-500 uppercase">Total Units Sold</p>
-                    <p className="font-semibold text-gray-900">{product.unitsSold || 0}</p>
+                    <p className="font-semibold text-gray-900">{analytics.lifetimeUnitsSold}</p>
                   </div>
                   <div className="p-2 bg-gray-50 rounded">
                     <p className="text-[10px] text-gray-500 uppercase">Low Stock Alert</p>

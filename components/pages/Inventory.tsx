@@ -23,6 +23,10 @@ import {
   PlusCircle,
   Camera,
   Calendar,
+  Download,
+  Filter,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import {
@@ -61,6 +65,23 @@ const Inventory = () => {
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month' | 'year' | 'custom'>('all');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
+  const [showColumnFilter, setShowColumnFilter] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState({
+    number: true,
+    barcode: true,
+    product: true,
+    type: true,
+    size: true,
+    brand: true,
+    sku: true,
+    costPrice: true,
+    sellingPrice: true,
+    supplier: true,
+    stock: true,
+    unitsSold: true,
+    lowStockThreshold: true,
+    value: true,
+  });
 
   // --- CRITICAL FIX: Calculate Units Sold on the Fly ---
   // Since we stopped updating product.unitsSold in the database to prevent errors,
@@ -270,6 +291,57 @@ const Inventory = () => {
     }
   };
 
+  const exportToCSV = () => {
+    const headers = [];
+    if (visibleColumns.number) headers.push('#');
+    if (visibleColumns.barcode) headers.push('Barcode');
+    if (visibleColumns.product) headers.push('Product');
+    if (visibleColumns.type) headers.push('Type');
+    if (visibleColumns.size) headers.push('Size');
+    if (visibleColumns.brand) headers.push('Brand');
+    if (visibleColumns.sku) headers.push('SKU');
+    if (visibleColumns.costPrice) headers.push('Cost Price');
+    if (visibleColumns.sellingPrice) headers.push('Selling Price');
+    if (visibleColumns.supplier) headers.push('Supplier');
+    if (visibleColumns.stock) headers.push('Stock');
+    if (visibleColumns.unitsSold) headers.push('Units Sold');
+    if (visibleColumns.lowStockThreshold) headers.push('Low Stock Alert');
+    if (visibleColumns.value) headers.push('Value');
+
+    const rows = filteredProducts.map((p, index) => {
+      const row = [];
+      if (visibleColumns.number) row.push(index + 1);
+      if (visibleColumns.barcode) row.push(p.barcode || '-');
+      if (visibleColumns.product) row.push(`"${p.name}"`);
+      if (visibleColumns.type) row.push(p.type);
+      if (visibleColumns.size) row.push(p.size);
+      if (visibleColumns.brand) row.push(p.brand || '-');
+      if (visibleColumns.sku) row.push(p.sku || '-');
+      if (visibleColumns.costPrice) row.push(p.costPrice);
+      if (visibleColumns.sellingPrice) row.push(p.sellingPrice);
+      if (visibleColumns.supplier) row.push(p.supplier || '-');
+      if (visibleColumns.stock) row.push(p.stock);
+      if (visibleColumns.unitsSold) row.push(unitsSoldMap.get(p.id) || 0);
+      if (visibleColumns.lowStockThreshold) row.push(p.lowStockThreshold || 5);
+      if (visibleColumns.value) row.push((p.costPrice * p.stock).toFixed(2));
+      return row.join(',');
+    });
+
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventory-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+    showSuccess('✓ Inventory exported to CSV');
+  };
+
+  const toggleColumn = (column: keyof typeof visibleColumns) => {
+    setVisibleColumns(prev => ({ ...prev, [column]: !prev[column] }));
+  };
+
   return (
     <div className="p-3 lg:p-6 max-w-7xl mx-auto">
       {/* Success Toast */}
@@ -378,38 +450,92 @@ const Inventory = () => {
                   value={searchTerm}
                   onChange={e => setSearchTerm(e.target.value)}
                 />
-              <div className="flex flex-wrap items-center gap-2">
-                <Calendar size={14} className="text-slate-500" />
-                <span className="text-xs font-medium text-slate-600">Period:</span>
-                {(['all', 'today', 'week', 'month', 'year', 'custom'] as const).map(range => (
-                  <button
-                    key={range}
-                    onClick={() => setDateFilter(range)}
-                    className={`px-2.5 py-1 rounded text-xs font-medium transition ${
-                      dateFilter === range ? 'bg-blue-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                    }`}
-                  >
-                    {range === 'all' ? 'All Time' : range === 'today' ? 'Today' : range === 'week' ? '7 Days' : range === 'month' ? '30 Days' : range === 'year' ? 'Year' : 'Custom'}
-                  </button>
-                ))}
-                {dateFilter === 'custom' && (
-                  <div className="flex items-center gap-2 ml-2">
-                    <input
-                      type="date"
-                      value={customStartDate}
-                      onChange={(e) => setCustomStartDate(e.target.value)}
-                      className="px-2 py-1 text-xs border border-slate-200 rounded"
-                    />
-                    <span className="text-slate-400">to</span>
-                    <input
-                      type="date"
-                      value={customEndDate}
-                      onChange={(e) => setCustomEndDate(e.target.value)}
-                      className="px-2 py-1 text-xs border border-slate-200 rounded"
-                    />
+                <div className="flex gap-2">
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowColumnFilter(!showColumnFilter)}
+                      className="flex items-center gap-2 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"
+                    >
+                      <Filter size={16} /> Columns {showColumnFilter ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    {showColumnFilter && (
+                      <div className="absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
+                        <div className="p-3 border-b border-slate-200 bg-slate-50">
+                          <h3 className="font-semibold text-sm text-slate-700">Toggle Columns</h3>
+                        </div>
+                        <div className="p-2">
+                          {[
+                            { key: 'number', label: '#' },
+                            { key: 'barcode', label: 'Barcode' },
+                            { key: 'product', label: 'Product' },
+                            { key: 'type', label: 'Type' },
+                            { key: 'size', label: 'Size' },
+                            { key: 'brand', label: 'Brand' },
+                            { key: 'sku', label: 'SKU' },
+                            { key: 'costPrice', label: 'Cost Price' },
+                            { key: 'sellingPrice', label: 'Selling Price' },
+                            { key: 'supplier', label: 'Supplier' },
+                            { key: 'stock', label: 'Stock' },
+                            { key: 'unitsSold', label: 'Units Sold' },
+                            { key: 'lowStockThreshold', label: 'Low Stock Alert' },
+                            { key: 'value', label: 'Value' },
+                          ].map(({ key, label }) => (
+                            <label
+                              key={key}
+                              className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={visibleColumns[key as keyof typeof visibleColumns]}
+                                onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
+                                className="w-4 h-4 text-amber-500 border-slate-300 rounded focus:ring-amber-500"
+                              />
+                              <span className="text-sm text-slate-700">{label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                  <button
+                    onClick={exportToCSV}
+                    className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"
+                  >
+                    <Download size={16} /> Export CSV
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Calendar size={14} className="text-slate-500" />
+                  <span className="text-xs font-medium text-slate-600">Period:</span>
+                  {(['all', 'today', 'week', 'month', 'year', 'custom'] as const).map(range => (
+                    <button
+                      key={range}
+                      onClick={() => setDateFilter(range)}
+                      className={`px-2.5 py-1 rounded text-xs font-medium transition ${
+                        dateFilter === range ? 'bg-blue-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                      }`}
+                    >
+                      {range === 'all' ? 'All Time' : range === 'today' ? 'Today' : range === 'week' ? '7 Days' : range === 'month' ? '30 Days' : range === 'year' ? 'Year' : 'Custom'}
+                    </button>
+                  ))}
+                  {dateFilter === 'custom' && (
+                    <div className="flex items-center gap-2 ml-2">
+                      <input
+                        type="date"
+                        value={customStartDate}
+                        onChange={(e) => setCustomStartDate(e.target.value)}
+                        className="px-2 py-1 text-xs border border-slate-200 rounded"
+                      />
+                      <span className="text-slate-400">to</span>
+                      <input
+                        type="date"
+                        value={customEndDate}
+                        onChange={(e) => setCustomEndDate(e.target.value)}
+                        className="px-2 py-1 text-xs border border-slate-200 rounded"
+                      />
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => setShowAddProductModal(true)}
                   className="flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"
@@ -449,30 +575,36 @@ const Inventory = () => {
               <Table className="border-collapse">
                 <TableHeader className="bg-blue-600 sticky top-0 z-10">
                   <TableRow className="border-b-2 border-black hover:bg-blue-600">
-                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">#</TableHead>
-                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">Barcode</TableHead>
-                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('name')}>
-                      Product {sortField === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </TableHead>
-                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('type')}>
-                      Type {sortField === 'type' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </TableHead>
-                    <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">Size</TableHead>
-                    <TableHead className="px-3 py-2 text-center text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('stock')}>
-                      Stock {sortField === 'stock' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </TableHead>
-                    <TableHead className="px-3 py-2 text-center text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('unitsSold')}>
-                      Units Sold {sortField === 'unitsSold' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </TableHead>
-                    <TableHead className="px-3 py-2 text-right text-[10px] font-bold text-white uppercase cursor-pointer hover:bg-blue-700" onClick={() => handleSort('value')}>
-                      Value {sortField === 'value' && (sortDirection === 'asc' ? '↑' : '↓')}
-                    </TableHead>
+                    {visibleColumns.number && <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">#</TableHead>}
+                    {visibleColumns.barcode && <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">Barcode</TableHead>}
+                    {visibleColumns.product && <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('name')}>
+                      <div className="flex items-center gap-1">Product {sortField === 'name' ? (sortDirection === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ChevronDown size={12} className="opacity-30" />}</div>
+                    </TableHead>}
+                    {visibleColumns.type && <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('type')}>
+                      <div className="flex items-center gap-1">Type {sortField === 'type' ? (sortDirection === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ChevronDown size={12} className="opacity-30" />}</div>
+                    </TableHead>}
+                    {visibleColumns.size && <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">Size</TableHead>}
+                    {visibleColumns.brand && <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">Brand</TableHead>}
+                    {visibleColumns.sku && <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">SKU</TableHead>}
+                    {visibleColumns.costPrice && <TableHead className="px-3 py-2 text-right text-[10px] font-bold text-white uppercase border-r border-black">Cost Price</TableHead>}
+                    {visibleColumns.sellingPrice && <TableHead className="px-3 py-2 text-right text-[10px] font-bold text-white uppercase border-r border-black">Selling Price</TableHead>}
+                    {visibleColumns.supplier && <TableHead className="px-3 py-2 text-left text-[10px] font-bold text-white uppercase border-r border-black">Supplier</TableHead>}
+                    {visibleColumns.stock && <TableHead className="px-3 py-2 text-center text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('stock')}>
+                      <div className="flex items-center justify-center gap-1">Stock {sortField === 'stock' ? (sortDirection === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ChevronDown size={12} className="opacity-30" />}</div>
+                    </TableHead>}
+                    {visibleColumns.unitsSold && <TableHead className="px-3 py-2 text-center text-[10px] font-bold text-white uppercase border-r border-black cursor-pointer hover:bg-blue-700" onClick={() => handleSort('unitsSold')}>
+                      <div className="flex items-center justify-center gap-1">Units Sold {sortField === 'unitsSold' ? (sortDirection === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ChevronDown size={12} className="opacity-30" />}</div>
+                    </TableHead>}
+                    {visibleColumns.lowStockThreshold && <TableHead className="px-3 py-2 text-center text-[10px] font-bold text-white uppercase border-r border-black">Low Stock Alert</TableHead>}
+                    {visibleColumns.value && <TableHead className="px-3 py-2 text-right text-[10px] font-bold text-white uppercase cursor-pointer hover:bg-blue-700" onClick={() => handleSort('value')}>
+                      <div className="flex items-center justify-end gap-1">Value {sortField === 'value' ? (sortDirection === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ChevronDown size={12} className="opacity-30" />}</div>
+                    </TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredProducts.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center py-8 text-slate-500">
+                      <TableCell colSpan={Object.values(visibleColumns).filter(Boolean).length} className="text-center py-8 text-slate-500">
                         No products found
                       </TableCell>
                     </TableRow>
@@ -483,21 +615,26 @@ const Inventory = () => {
                         className="hover:bg-blue-50 cursor-pointer border-b border-black"
                         onClick={() => handleProductClick(p)}
                       >
-                        <TableCell className="px-3 py-1.5 font-mono text-slate-500 text-xs border-r border-black">#{index + 1}</TableCell>
-                        <TableCell className="px-3 py-1.5 font-mono text-xs text-slate-600 border-r border-black">{p.barcode || '-'}</TableCell>
-                        <TableCell className="px-3 py-1.5 font-semibold text-slate-900 text-xs border-r border-black">{p.name}</TableCell>
-                        <TableCell className="px-3 py-1.5 text-slate-700 text-xs border-r border-black">{p.type}</TableCell>
-                        <TableCell className="px-3 py-1.5 text-slate-700 text-xs border-r border-black">{p.size}</TableCell>
-                        <TableCell className="px-3 py-1.5 text-center border-r border-black">
+                        {visibleColumns.number && <TableCell className="px-3 py-1.5 font-mono text-slate-500 text-xs border-r border-black">#{index + 1}</TableCell>}
+                        {visibleColumns.barcode && <TableCell className="px-3 py-1.5 font-mono text-xs text-slate-600 border-r border-black">{p.barcode || '-'}</TableCell>}
+                        {visibleColumns.product && <TableCell className="px-3 py-1.5 font-semibold text-slate-900 text-xs border-r border-black">{p.name}</TableCell>}
+                        {visibleColumns.type && <TableCell className="px-3 py-1.5 text-slate-700 text-xs border-r border-black">{p.type}</TableCell>}
+                        {visibleColumns.size && <TableCell className="px-3 py-1.5 text-slate-700 text-xs border-r border-black">{p.size}</TableCell>}
+                        {visibleColumns.brand && <TableCell className="px-3 py-1.5 text-slate-700 text-xs border-r border-black">{p.brand || '-'}</TableCell>}
+                        {visibleColumns.sku && <TableCell className="px-3 py-1.5 font-mono text-xs text-slate-600 border-r border-black">{p.sku || '-'}</TableCell>}
+                        {visibleColumns.costPrice && <TableCell className="px-3 py-1.5 text-right text-slate-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(p.costPrice)}</TableCell>}
+                        {visibleColumns.sellingPrice && <TableCell className="px-3 py-1.5 text-right text-slate-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(p.sellingPrice)}</TableCell>}
+                        {visibleColumns.supplier && <TableCell className="px-3 py-1.5 text-slate-700 text-xs border-r border-black">{p.supplier || '-'}</TableCell>}
+                        {visibleColumns.stock && <TableCell className="px-3 py-1.5 text-center border-r border-black">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${p.stock <= (p.lowStockThreshold || 5) ? 'bg-red-100 text-red-800 border border-red-800' : 'bg-green-100 text-green-800 border border-green-800'}`}>
                             {p.stock}
                           </span>
-                        </TableCell>
-                        <TableCell className="px-3 py-1.5 text-center font-bold text-blue-700 text-xs border-r border-black">
-                           {/* --- FIX: Display Calculated Units Sold --- */}
+                        </TableCell>}
+                        {visibleColumns.unitsSold && <TableCell className="px-3 py-1.5 text-center font-bold text-blue-700 text-xs border-r border-black">
                           {unitsSoldMap.get(p.id) || 0}
-                        </TableCell>
-                        <TableCell className="px-3 py-1.5 text-right font-bold text-slate-900 text-xs">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</TableCell>
+                        </TableCell>}
+                        {visibleColumns.lowStockThreshold && <TableCell className="px-3 py-1.5 text-center text-slate-700 text-xs border-r border-black">{p.lowStockThreshold || 5}</TableCell>}
+                        {visibleColumns.value && <TableCell className="px-3 py-1.5 text-right font-bold text-slate-900 text-xs">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</TableCell>}
                       </TableRow>
                     ))
                   )}

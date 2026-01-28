@@ -444,7 +444,7 @@ const Reports = () => {
       ) : (
         <>
           <div className="grid grid-cols-3 gap-2 lg:gap-6">
-            {/* Revenue, Profit, Sales cards */}
+            {/* Revenue, Profit, Sales cards */} 
             <div className="bg-white p-3 lg:p-6 rounded-xl border border-slate-200 shadow-sm">
               <h3 className="text-[10px] lg:text-sm font-medium text-slate-500 uppercase">Revenue</h3>
               <p className="text-lg lg:text-3xl font-bold text-slate-900 mt-1 lg:mt-2">{CURRENCY_FORMATTER.format(totalRevenue)}</p>

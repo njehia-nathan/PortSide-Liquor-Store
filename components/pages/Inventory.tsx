@@ -27,7 +27,18 @@ import {
   Filter,
   ChevronDown,
   ChevronUp,
+  Settings2,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import {
   Table,
@@ -72,15 +83,17 @@ const Inventory = () => {
     product: true,
     type: true,
     size: true,
-    brand: true,
-    sku: true,
+    brand: false,
+    sku: false,
     costPrice: true,
     sellingPrice: true,
-    supplier: true,
+    supplier: false,
     stock: true,
     unitsSold: true,
-    lowStockThreshold: true,
+    lowStockThreshold: false,
     value: true,
+    totalRevenue: true,
+    profit: true,
   });
 
   // --- CRITICAL FIX: Calculate Units Sold on the Fly ---
@@ -145,13 +158,13 @@ const Inventory = () => {
       p.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
       p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (p.barcode && p.barcode.includes(searchTerm));
-    
+
     if (!matchesSearch) return false;
-    
+
     if (dateFilter !== 'all') {
       const now = new Date();
       let startDate: Date | null = null;
-      
+
       switch (dateFilter) {
         case 'today':
           startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -169,26 +182,26 @@ const Inventory = () => {
           if (customStartDate) startDate = new Date(customStartDate);
           break;
       }
-      
+
       if (startDate) {
         const endDate = dateFilter === 'custom' && customEndDate ? new Date(customEndDate) : now;
         endDate.setHours(23, 59, 59, 999);
-        
+
         const hadActivity = sales.some(sale => {
           const saleDate = new Date(sale.timestamp);
-          return !sale.isVoided && 
-                 sale.items.some(item => item.productId === p.id) &&
-                 saleDate >= startDate! && saleDate <= endDate;
+          return !sale.isVoided &&
+            sale.items.some(item => item.productId === p.id) &&
+            saleDate >= startDate! && saleDate <= endDate;
         });
-        
+
         if (!hadActivity) return false;
       }
     }
-    
+
     return true;
   }).sort((a, b) => {
     let comparison = 0;
-    
+
     switch (sortField) {
       case 'name':
         comparison = a.name.localeCompare(b.name);
@@ -209,12 +222,12 @@ const Inventory = () => {
         comparison = ((Number(a.costPrice) || 0) * (Number(a.stock) || 0)) - ((Number(b.costPrice) || 0) * (Number(b.stock) || 0));
         break;
     }
-    
+
     return sortDirection === 'asc' ? comparison : -comparison;
   });
 
   const lowStockProducts = products.filter(p => p.stock <= (p.lowStockThreshold || 5));
-  
+
   const totalInventoryValue = products.reduce((sum, p) => {
     const cost = Number(p.costPrice) || 0;
     const stock = Number(p.stock) || 0;
@@ -222,8 +235,23 @@ const Inventory = () => {
     if (productValue > 1000000) return sum;
     return sum + productValue;
   }, 0);
-  
+
   const totalItems = products.reduce((sum, p) => sum + (Number(p.stock) || 0), 0);
+
+  // Calculate total revenue and profit for admin
+  const totalRevenue = useMemo(() => {
+    return products.reduce((sum, p) => {
+      const unitsSold = unitsSoldMap.get(p.id) || 0;
+      return sum + (unitsSold * p.sellingPrice);
+    }, 0);
+  }, [products, unitsSoldMap]);
+
+  const totalProfit = useMemo(() => {
+    return products.reduce((sum, p) => {
+      const unitsSold = unitsSoldMap.get(p.id) || 0;
+      return sum + (unitsSold * (p.sellingPrice - p.costPrice));
+    }, 0);
+  }, [products, unitsSoldMap]);
 
   const handleBarcodeScanned = (barcode: string) => {
     const product = products.find(p => p.barcode === barcode || p.sku === barcode);
@@ -307,6 +335,8 @@ const Inventory = () => {
     if (visibleColumns.unitsSold) headers.push('Units Sold');
     if (visibleColumns.lowStockThreshold) headers.push('Low Stock Alert');
     if (visibleColumns.value) headers.push('Value');
+    if (currentUser?.role === Role.ADMIN && visibleColumns.totalRevenue) headers.push('Total Revenue');
+    if (currentUser?.role === Role.ADMIN && visibleColumns.profit) headers.push('Profit');
 
     const rows = filteredProducts.map((p, index) => {
       const row = [];
@@ -324,6 +354,8 @@ const Inventory = () => {
       if (visibleColumns.unitsSold) row.push(unitsSoldMap.get(p.id) || 0);
       if (visibleColumns.lowStockThreshold) row.push(p.lowStockThreshold || 5);
       if (visibleColumns.value) row.push((p.costPrice * p.stock).toFixed(2));
+      if (currentUser?.role === Role.ADMIN && visibleColumns.totalRevenue) row.push(((unitsSoldMap.get(p.id) || 0) * p.sellingPrice).toFixed(2));
+      if (currentUser?.role === Role.ADMIN && visibleColumns.profit) row.push(((unitsSoldMap.get(p.id) || 0) * (p.sellingPrice - p.costPrice)).toFixed(2));
       return row.join(',');
     });
 
@@ -339,8 +371,11 @@ const Inventory = () => {
   };
 
   const toggleColumn = (column: keyof typeof visibleColumns) => {
+    if (currentUser?.role !== Role.ADMIN) return;
     setVisibleColumns(prev => ({ ...prev, [column]: !prev[column] }));
   };
+
+  const isAdmin = currentUser?.role === Role.ADMIN;
 
   return (
     <div className="p-3 lg:p-6 max-w-7xl mx-auto">
@@ -367,7 +402,7 @@ const Inventory = () => {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4 mb-6">
+        <div className={`grid grid-cols-2 ${isAdmin ? 'lg:grid-cols-6' : 'lg:grid-cols-4'} gap-3 lg:gap-4 mb-6`}>
           <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
@@ -412,6 +447,32 @@ const Inventory = () => {
               </div>
             </div>
           </div>
+          {isAdmin && (
+            <>
+              <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                    <TrendingUp size={20} className="text-purple-600" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500 font-medium">Total Revenue</p>
+                    <p className="text-lg font-bold text-slate-800">{CURRENCY_FORMATTER.format(totalRevenue)}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center">
+                    <DollarSign size={20} className="text-emerald-600" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500 font-medium">Total Profit</p>
+                    <p className="text-lg font-bold text-emerald-600">{CURRENCY_FORMATTER.format(totalProfit)}</p>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -427,11 +488,10 @@ const Inventory = () => {
             <button
               key={tab.id}
               onClick={() => { setActiveTab(tab.id as typeof activeTab); setSelectedProductId(''); }}
-              className={`flex items-center gap-2 px-4 lg:px-6 py-4 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
-                activeTab === tab.id
+              className={`flex items-center gap-2 px-4 lg:px-6 py-4 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${activeTab === tab.id
                   ? 'border-amber-500 text-amber-600 bg-amber-50/50'
                   : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
-              }`}
+                }`}
             >
               <tab.icon size={18} />
               <span className="hidden sm:inline">{tab.label}</span>
@@ -441,79 +501,74 @@ const Inventory = () => {
 
         {activeTab === 'VIEW' && (
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="p-3 lg:p-4 border-b border-slate-100 bg-slate-50 flex flex-col gap-3">
-              <div className="flex flex-col sm:flex-row gap-2 justify-between">
-                <input
-                  type="text"
-                  placeholder="Filter by name, SKU, or barcode..."
-                  className="w-full lg:max-w-md px-3 lg:px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
-                  value={searchTerm}
-                  onChange={e => setSearchTerm(e.target.value)}
-                />
+            <div className="p-4 lg:p-5 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-white">
+              <div className="flex flex-col lg:flex-row gap-3 lg:gap-4">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="text"
+                    placeholder="Filter by name, SKU, or barcode..."
+                    className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none shadow-sm"
+                    value={searchTerm}
+                    onChange={e => setSearchTerm(e.target.value)}
+                  />
+                </div>
                 <div className="flex gap-2">
-                  <div className="relative">
-                    <button
-                      onClick={() => setShowColumnFilter(!showColumnFilter)}
-                      className="flex items-center gap-2 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"
-                    >
-                      <Filter size={16} /> Columns {showColumnFilter ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                    </button>
-                    {showColumnFilter && (
-                      <div className="absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
-                        <div className="p-3 border-b border-slate-200 bg-slate-50">
-                          <h3 className="font-semibold text-sm text-slate-700">Toggle Columns</h3>
-                        </div>
-                        <div className="p-2">
-                          {[
-                            { key: 'number', label: '#' },
-                            { key: 'barcode', label: 'Barcode' },
-                            { key: 'product', label: 'Product' },
-                            { key: 'type', label: 'Type' },
-                            { key: 'size', label: 'Size' },
-                            { key: 'brand', label: 'Brand' },
-                            { key: 'sku', label: 'SKU' },
-                            { key: 'costPrice', label: 'Cost Price' },
-                            { key: 'sellingPrice', label: 'Selling Price' },
-                            { key: 'supplier', label: 'Supplier' },
-                            { key: 'stock', label: 'Stock' },
-                            { key: 'unitsSold', label: 'Units Sold' },
-                            { key: 'lowStockThreshold', label: 'Low Stock Alert' },
-                            { key: 'value', label: 'Value' },
-                          ].map(({ key, label }) => (
-                            <label
-                              key={key}
-                              className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded cursor-pointer"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={visibleColumns[key as keyof typeof visibleColumns]}
-                                onChange={() => toggleColumn(key as keyof typeof visibleColumns)}
-                                className="w-4 h-4 text-amber-500 border-slate-300 rounded focus:ring-amber-500"
-                              />
-                              <span className="text-sm text-slate-700">{label}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  {isAdmin && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button className="flex items-center gap-2 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 px-4 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap shadow-sm transition-all">
+                          <Settings2 size={16} /> Columns <ChevronDown size={14} />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-56">
+                        <DropdownMenuLabel className="text-xs font-semibold text-slate-500 uppercase">Toggle Columns</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        {[
+                          { key: 'number', label: '#' },
+                          { key: 'barcode', label: 'Barcode' },
+                          { key: 'product', label: 'Product' },
+                          { key: 'type', label: 'Type' },
+                          { key: 'size', label: 'Size' },
+                          { key: 'brand', label: 'Brand' },
+                          // { key: 'sku', label: 'SKU' },
+                          { key: 'costPrice', label: 'Cost Price' },
+                          { key: 'sellingPrice', label: 'Selling Price' },
+                          { key: 'supplier', label: 'Supplier' },
+                          { key: 'stock', label: 'Stock' },
+                          { key: 'unitsSold', label: 'Units Sold' },
+                          { key: 'lowStockThreshold', label: 'Low Stock Alert' },
+                          { key: 'value', label: 'Value' },
+                          { key: 'totalRevenue', label: 'Total Revenue' },
+                          { key: 'profit', label: 'Profit' },
+                        ].map(({ key, label }) => (
+                          <DropdownMenuCheckboxItem
+                            key={key}
+                            checked={visibleColumns[key as keyof typeof visibleColumns]}
+                            onCheckedChange={() => toggleColumn(key as keyof typeof visibleColumns)}
+                          >
+                            {label}
+                          </DropdownMenuCheckboxItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                   <button
                     onClick={exportToCSV}
-                    className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"
+                    className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap shadow-sm transition-all"
                   >
                     <Download size={16} /> Export CSV
                   </button>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 bg-white px-3 py-2 rounded-lg border border-slate-200">
                   <Calendar size={14} className="text-slate-500" />
-                  <span className="text-xs font-medium text-slate-600">Period:</span>
+                  <span className="text-xs font-semibold text-slate-600">Period:</span>
                   {(['all', 'today', 'week', 'month', 'year', 'custom'] as const).map(range => (
                     <button
                       key={range}
                       onClick={() => setDateFilter(range)}
-                      className={`px-2.5 py-1 rounded text-xs font-medium transition ${
-                        dateFilter === range ? 'bg-blue-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${dateFilter === range ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
                     >
                       {range === 'all' ? 'All Time' : range === 'today' ? 'Today' : range === 'week' ? '7 Days' : range === 'month' ? '30 Days' : range === 'year' ? 'Year' : 'Custom'}
                     </button>
@@ -524,21 +579,21 @@ const Inventory = () => {
                         type="date"
                         value={customStartDate}
                         onChange={(e) => setCustomStartDate(e.target.value)}
-                        className="px-2 py-1 text-xs border border-slate-200 rounded"
+                        className="px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none"
                       />
-                      <span className="text-slate-400">to</span>
+                      <span className="text-slate-400 text-xs">to</span>
                       <input
                         type="date"
                         value={customEndDate}
                         onChange={(e) => setCustomEndDate(e.target.value)}
-                        className="px-2 py-1 text-xs border border-slate-200 rounded"
+                        className="px-2 py-1.5 text-xs border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none"
                       />
                     </div>
                   )}
                 </div>
                 <button
                   onClick={() => setShowAddProductModal(true)}
-                  className="flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-lg font-medium text-sm whitespace-nowrap"
+                  className="flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap shadow-sm transition-all"
                 >
                   <PlusCircle size={16} /> Add Product
                 </button>
@@ -548,8 +603,8 @@ const Inventory = () => {
             {/* Mobile Card View */}
             <div className="lg:hidden divide-y divide-slate-100">
               {filteredProducts.map(p => (
-                <div 
-                  key={p.id} 
+                <div
+                  key={p.id}
                   className="p-3 hover:bg-slate-50 cursor-pointer active:bg-slate-100"
                   onClick={() => handleProductClick(p)}
                 >
@@ -599,6 +654,8 @@ const Inventory = () => {
                     {visibleColumns.value && <TableHead className="px-3 py-2 text-right text-[10px] font-bold text-white uppercase cursor-pointer hover:bg-blue-700" onClick={() => handleSort('value')}>
                       <div className="flex items-center justify-end gap-1">Value {sortField === 'value' ? (sortDirection === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : <ChevronDown size={12} className="opacity-30" />}</div>
                     </TableHead>}
+                    {isAdmin && visibleColumns.totalRevenue && <TableHead className="px-3 py-2 text-right text-[10px] font-bold text-white uppercase border-r border-black">Total Revenue</TableHead>}
+                    {isAdmin && visibleColumns.profit && <TableHead className="px-3 py-2 text-right text-[10px] font-bold text-white uppercase">Profit</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -610,8 +667,8 @@ const Inventory = () => {
                     </TableRow>
                   ) : (
                     filteredProducts.map((p, index) => (
-                      <TableRow 
-                        key={p.id} 
+                      <TableRow
+                        key={p.id}
                         className="hover:bg-blue-50 cursor-pointer border-b border-black"
                         onClick={() => handleProductClick(p)}
                       >
@@ -634,7 +691,9 @@ const Inventory = () => {
                           {unitsSoldMap.get(p.id) || 0}
                         </TableCell>}
                         {visibleColumns.lowStockThreshold && <TableCell className="px-3 py-1.5 text-center text-slate-700 text-xs border-r border-black">{p.lowStockThreshold || 5}</TableCell>}
-                        {visibleColumns.value && <TableCell className="px-3 py-1.5 text-right font-bold text-slate-900 text-xs">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</TableCell>}
+                        {visibleColumns.value && <TableCell className="px-3 py-1.5 text-right font-bold text-slate-900 text-xs border-r border-black">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</TableCell>}
+                        {isAdmin && visibleColumns.totalRevenue && <TableCell className="px-3 py-1.5 text-right font-bold text-purple-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format((unitsSoldMap.get(p.id) || 0) * p.sellingPrice)}</TableCell>}
+                        {isAdmin && visibleColumns.profit && <TableCell className="px-3 py-1.5 text-right font-bold text-emerald-700 text-xs">{CURRENCY_FORMATTER.format((unitsSoldMap.get(p.id) || 0) * (p.sellingPrice - p.costPrice))}</TableCell>}
                       </TableRow>
                     ))
                   )}

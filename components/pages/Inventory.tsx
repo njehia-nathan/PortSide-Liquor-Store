@@ -84,7 +84,7 @@ const Inventory = () => {
     type: true,
     size: true,
     brand: false,
-    sku: false,
+    // sku: false,
     costPrice: true,
     sellingPrice: true,
     supplier: false,

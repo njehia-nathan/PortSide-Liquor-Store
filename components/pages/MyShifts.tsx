@@ -512,7 +512,7 @@ const MyShifts = () => {
             <div className="flex-1 overflow-auto p-4">
               <h3 className="font-bold text-blue-900 mb-3 flex items-center gap-2">
                 Sales ({selectedShiftSales.length})
-                <Info size={14} className="text-blue-400" title="Hover over items to see details" />
+                <Info size={14} className="text-blue-400" />
               </h3>
               {selectedShiftSales.length === 0 ? (
                 <p className="text-sm text-blue-500 text-center py-8">No sales during this shift</p>

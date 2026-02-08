@@ -153,90 +153,92 @@ const Inventory = () => {
     }
   };
 
-  const filteredProducts = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (p.barcode && p.barcode.includes(searchTerm));
+  const filteredProducts = useMemo(() => {
+    return products.filter(p => {
+      const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        p.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (p.barcode && p.barcode.includes(searchTerm));
 
-    if (!matchesSearch) return false;
+      if (!matchesSearch) return false;
 
-    if (dateFilter !== 'all') {
-      const now = new Date();
-      let startDate: Date | null = null;
+      if (dateFilter !== 'all') {
+        const now = new Date();
+        let startDate: Date | null = null;
 
-      switch (dateFilter) {
-        case 'today':
-          startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        switch (dateFilter) {
+          case 'today':
+            startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            break;
+          case 'week':
+            startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            break;
+          case 'month':
+            startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+            break;
+          case 'year':
+            startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+            break;
+          case 'custom':
+            if (customStartDate) startDate = new Date(customStartDate);
+            break;
+        }
+
+        if (startDate) {
+          const endDate = dateFilter === 'custom' && customEndDate ? new Date(customEndDate) : now;
+          endDate.setHours(23, 59, 59, 999);
+
+          const hadActivity = sales.some(sale => {
+            const saleDate = new Date(sale.timestamp);
+            return !sale.isVoided &&
+              sale.items.some(item => item.productId === p.id) &&
+              saleDate >= startDate! && saleDate <= endDate;
+          });
+
+          if (!hadActivity) return false;
+        }
+      }
+
+      return true;
+    }).sort((a, b) => {
+      let comparison = 0;
+
+      switch (sortField) {
+        case 'name':
+          comparison = a.name.localeCompare(b.name);
           break;
-        case 'week':
-          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        case 'type':
+          comparison = a.type.localeCompare(b.type);
           break;
-        case 'month':
-          startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        case 'stock':
+          comparison = a.stock - b.stock;
           break;
-        case 'year':
-          startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+        case 'unitsSold':
+          // --- FIX: Use calculated map instead of static property ---
+          const unitsA = unitsSoldMap.get(a.id) || 0;
+          const unitsB = unitsSoldMap.get(b.id) || 0;
+          comparison = unitsA - unitsB;
           break;
-        case 'custom':
-          if (customStartDate) startDate = new Date(customStartDate);
+        case 'value':
+          comparison = ((Number(a.costPrice) || 0) * (Number(a.stock) || 0)) - ((Number(b.costPrice) || 0) * (Number(b.stock) || 0));
           break;
       }
 
-      if (startDate) {
-        const endDate = dateFilter === 'custom' && customEndDate ? new Date(customEndDate) : now;
-        endDate.setHours(23, 59, 59, 999);
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+  }, [products, searchTerm, dateFilter, customStartDate, customEndDate, sales, sortField, sortDirection, unitsSoldMap]);
 
-        const hadActivity = sales.some(sale => {
-          const saleDate = new Date(sale.timestamp);
-          return !sale.isVoided &&
-            sale.items.some(item => item.productId === p.id) &&
-            saleDate >= startDate! && saleDate <= endDate;
-        });
+  const lowStockProducts = useMemo(() => products.filter(p => p.stock <= (p.lowStockThreshold || 5)), [products]);
 
-        if (!hadActivity) return false;
-      }
-    }
-
-    return true;
-  }).sort((a, b) => {
-    let comparison = 0;
-
-    switch (sortField) {
-      case 'name':
-        comparison = a.name.localeCompare(b.name);
-        break;
-      case 'type':
-        comparison = a.type.localeCompare(b.type);
-        break;
-      case 'stock':
-        comparison = a.stock - b.stock;
-        break;
-      case 'unitsSold':
-        // --- FIX: Use calculated map instead of static property ---
-        const unitsA = unitsSoldMap.get(a.id) || 0;
-        const unitsB = unitsSoldMap.get(b.id) || 0;
-        comparison = unitsA - unitsB;
-        break;
-      case 'value':
-        comparison = ((Number(a.costPrice) || 0) * (Number(a.stock) || 0)) - ((Number(b.costPrice) || 0) * (Number(b.stock) || 0));
-        break;
-    }
-
-    return sortDirection === 'asc' ? comparison : -comparison;
-  });
-
-  const lowStockProducts = products.filter(p => p.stock <= (p.lowStockThreshold || 5));
-
-  const totalInventoryValue = products.reduce((sum, p) => {
+  const totalInventoryValue = useMemo(() => products.reduce((sum, p) => {
     const cost = Number(p.costPrice) || 0;
     const stock = Number(p.stock) || 0;
     const productValue = cost * stock;
     if (productValue > 1000000) return sum;
     return sum + productValue;
-  }, 0);
+  }, 0), [products]);
 
-  const totalItems = products.reduce((sum, p) => sum + (Number(p.stock) || 0), 0);
+  const totalItems = useMemo(() => products.reduce((sum, p) => sum + (Number(p.stock) || 0), 0), [products]);
 
   // Calculate total revenue and profit for admin
   const totalRevenue = useMemo(() => {
@@ -489,8 +491,8 @@ const Inventory = () => {
               key={tab.id}
               onClick={() => { setActiveTab(tab.id as typeof activeTab); setSelectedProductId(''); }}
               className={`flex items-center gap-2 px-4 lg:px-6 py-4 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${activeTab === tab.id
-                  ? 'border-amber-500 text-amber-600 bg-amber-50/50'
-                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+                ? 'border-amber-500 text-amber-600 bg-amber-50/50'
+                : 'border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
                 }`}
             >
               <tab.icon size={18} />

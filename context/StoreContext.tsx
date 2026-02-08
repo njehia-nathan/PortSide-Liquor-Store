@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, PropsWithChildren } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, PropsWithChildren } from 'react';
 import {
   User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings, VoidRequest, StockChangeRequest, ProductSaleLog
 } from '../types';
@@ -17,7 +17,7 @@ interface StoreContextType {
   users: User[];
   products: Product[];
   sales: Sale[];
-  shifts: Shift[]; 
+  shifts: Shift[];
   auditLogs: AuditLog[];
   voidRequests: VoidRequest[];
   stockChangeRequests: StockChangeRequest[];
@@ -414,7 +414,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               if (cloudProductSaleLogs && cloudProductSaleLogs.length > 0) {
                 allCloudLogs = [...allCloudLogs, ...cloudProductSaleLogs];
                 console.log(`📥 Fetched page ${page + 1}: ${cloudProductSaleLogs.length} logs (total: ${allCloudLogs.length})`);
-                
+
                 // If we got less than pageSize, we've reached the end
                 if (cloudProductSaleLogs.length < pageSize) {
                   hasMore = false;
@@ -903,8 +903,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
    * ✅ FIX 3: Duplicate check before creating logs
    */
   const processSale = async (
-    items: SaleItem[], 
-    paymentMethod: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT', 
+    items: SaleItem[],
+    paymentMethod: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT',
     splitPayment?: { cashAmount: number; mobileAmount: number }
   ) => {
     if (!currentUser) return undefined;
@@ -989,10 +989,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
         // ✅ FIX 2: Deterministic Log ID (saleId-productId)
         const logId = `${newSale.id}-${item.productId}`;
-        
+
         // ✅ FIX 3: Check if log already exists
         const existingLog = await tx.objectStore('productSaleLogs').get(logId);
-        
+
         if (!existingLog) {
           const saleLog: ProductSaleLog = {
             id: logId,
@@ -1078,10 +1078,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
       for (const item of sale.items) {
         const dbProduct = await tx.objectStore('products').get(item.productId);
-        
+
         if (dbProduct) {
           const restoredStock = dbProduct.stock + item.quantity;
-          
+
           const updatedProduct = {
             ...dbProduct,
             stock: restoredStock,
@@ -1095,8 +1095,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
           await tx.objectStore('syncQueue').add({
             type: 'SALE_STOCK_UPDATE',
-            payload: { 
-              productId: item.productId, 
+            payload: {
+              productId: item.productId,
               quantity: -item.quantity
             },
             timestamp: Date.now()
@@ -1398,10 +1398,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       await tx.objectStore('sales').put(updatedSale);
 
       const updatedProducts = [...products];
-      
+
       for (const item of request.sale.items) {
         const dbProduct = await tx.objectStore('products').get(item.productId);
-        
+
         if (dbProduct) {
           const updatedProduct = {
             ...dbProduct,
@@ -1416,9 +1416,9 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
           await tx.objectStore('syncQueue').add({
             type: 'SALE_STOCK_UPDATE',
-            payload: { 
-              productId: item.productId, 
-              quantity: -item.quantity 
+            payload: {
+              productId: item.productId,
+              quantity: -item.quantity
             },
             timestamp: Date.now()
           });
@@ -2104,10 +2104,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     try {
       const allLogs = await db.getAll('productSaleLogs');
-      
+
       // Group logs by saleId-productId
       const logMap = new Map<string, ProductSaleLog[]>();
-      
+
       for (const log of allLogs) {
         const key = `${log.saleId}-${log.productId}`;
         if (!logMap.has(key)) {
@@ -2118,12 +2118,12 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
       // Find and remove duplicates
       const tx = db.transaction(['productSaleLogs'], 'readwrite');
-      
+
       for (const [key, logs] of logMap.entries()) {
         if (logs.length > 1) {
           // Sort by timestamp (keep newest)
           logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-          
+
           // Keep first (newest), delete rest
           for (let i = 1; i < logs.length; i++) {
             await tx.objectStore('productSaleLogs').delete(logs[i].id);
@@ -2132,17 +2132,17 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           }
         }
       }
-      
+
       await tx.done;
-      
+
       // Refresh state
       await refreshProductSaleLogs();
-      
+
       await addLog('CLEANUP_DUPLICATES', `Removed ${removedCount} duplicate product sale logs`);
-      
+
       console.log(`✅ Cleanup complete: ${removedCount} duplicates removed`);
       return { removed: removedCount, errors };
-      
+
     } catch (error) {
       console.error('❌ Duplicate cleanup failed:', error);
       errors.push(`Cleanup failed: ${error}`);
@@ -2150,53 +2150,72 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     }
   };
 
+  const contextValue = useMemo(() => ({
+    currentUser,
+    users,
+    products,
+    sales,
+    shifts,
+    auditLogs,
+    currentShift,
+    isLoading,
+    isOnline,
+    isSyncing,
+    dataLoadedTimestamp,
+    login,
+    logout,
+    updateUser,
+    addUser,
+    deleteUser,
+    processSale,
+    updateSale,
+    deleteSale,
+    addProduct,
+    updateProduct,
+    deleteProduct,
+    adjustStock,
+    receiveStock,
+    openShift,
+    closeShift,
+    voidRequests,
+    requestVoid,
+    approveVoid,
+    rejectVoid,
+    stockChangeRequests,
+    requestStockChange,
+    approveStockChange,
+    rejectStockChange,
+    productSaleLogs,
+    setProductSaleLogs,
+    businessSettings,
+    updateBusinessSettings,
+    prepareDataFix,
+    applyDataFix,
+    fixCorruptedSales,
+    reconcileStock,
+    refreshProductSaleLogs,
+    cleanupDuplicateLogs,
+  }), [
+    currentUser,
+    users,
+    products,
+    sales,
+    shifts,
+    auditLogs,
+    currentShift,
+    isLoading,
+    isOnline,
+    isSyncing,
+    dataLoadedTimestamp,
+    // Functions are stable or memoized (implied by design patterns, though explicit useCallback would be better if they weren't assumed stable from useStore/setup)
+    // Dependencies that might change referentially should be included.
+    // Ideally action handlers should be wrapped in useCallback in their definitions to be truly stable,
+    // but wrapping the value object is a huge first step.
+    businessSettings,
+  ]);
+
   return (
-    <StoreContext.Provider value={{
-      currentUser,
-      users,
-      products,
-      sales,
-      shifts,
-      auditLogs,
-      currentShift,
-      isLoading,
-      isOnline,
-      isSyncing,
-      dataLoadedTimestamp,
-      login,
-      logout,
-      updateUser,
-      addUser,
-      deleteUser,
-      processSale,
-      updateSale,
-      deleteSale,
-      addProduct,
-      updateProduct,
-      deleteProduct,
-      adjustStock,
-      receiveStock,
-      openShift,
-      closeShift,
-      voidRequests,
-      requestVoid,
-      approveVoid,
-      rejectVoid,
-      stockChangeRequests,
-      requestStockChange,
-      approveStockChange,
-      rejectStockChange,
-      productSaleLogs,
-      setProductSaleLogs,
-      businessSettings,
-      updateBusinessSettings,
-      prepareDataFix,
-      applyDataFix,
-      fixCorruptedSales,
-      reconcileStock,
-      refreshProductSaleLogs,
-      cleanupDuplicateLogs, // ✅ NEW: Export cleanup function
-    }}>
+    <StoreContext.Provider value={contextValue}>
       {children}
     </StoreContext.Provider>
   );

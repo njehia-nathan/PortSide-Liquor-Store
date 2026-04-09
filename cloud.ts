@@ -63,13 +63,13 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
     // Map internal action types to Supabase Database Tables
     switch (type) {
       // --- CRITICAL FIX: DELTA STOCK SYNC ---
-      case 'SALE_STOCK_UPDATE':
+      case 'SALE_STOCK_DELTA':
         try {
           // We call the Postgres function 'decrement_stock' to avoid overwriting other devices
           // payload is { productId: string, quantity: number }
           const { error: stockError } = await supabase.rpc('decrement_stock', {
-            product_id: payload.productId,
-            quantity_to_subtract: payload.quantity
+            p_id: payload.productId,     // Matches the SQL parameter
+            delta_qty: payload.quantity  // Matches the SQL parameter
           });
           
           if (stockError) throw stockError;
@@ -86,6 +86,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
         
       case 'ADD_PRODUCT':
       case 'UPDATE_PRODUCT':
+      case 'UPDATE_PRODUCTS': // Alias to fix stuck queue items caused by a typo
       case 'ADJUST_STOCK':
       case 'RECEIVE_STOCK':
         // All these result in changes to the 'products' table
@@ -204,8 +205,8 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
 
   } catch (error) {
     console.error(`[Cloud Error] Failed to sync ${type}:`, error);
-    // Don't log payload for SALE_STOCK_UPDATE as it might clutter logs, but valid for others
-    if (type !== 'SALE_STOCK_UPDATE') {
+    // Don't log payload for SALE_STOCK_DELTA as it might clutter logs, but valid for others
+    if (type !== 'SALE_STOCK_DELTA') {
       console.error(`[Cloud Error] Payload that failed:`, JSON.stringify(payload, null, 2));
     }
     return false; // Failed, keep in queue

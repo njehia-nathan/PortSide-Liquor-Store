@@ -1,16 +1,19 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { CURRENCY_FORMATTER } from '../../constants';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { Banknote, CreditCard, Smartphone, Download, Calendar, FilterX, X, Edit2, Save, AlertCircle, CheckCircle, XCircle, Trash2, Ban } from 'lucide-react';
 import { Sale, SaleItem } from '../../types';
+import { supabase } from '../../cloud';
 
 const COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6'];
 
 const Reports = () => {
   const { sales, products, updateSale, deleteSale, currentUser, requestVoid, voidRequests, users } = useStore();
+  const [externalSales, setExternalSales] = useState<Sale[]>([]);
+  const [isFetchingExternal, setIsFetchingExternal] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
@@ -43,8 +46,50 @@ const Reports = () => {
     setShowConfirmDialog(true);
   };
 
+  useEffect(() => {
+    const fetchHistoricalSales = async () => {
+      // Only fetch if a custom start date is provided and it's older than 3 days
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+
+        if (start < threeDaysAgo) {
+          setIsFetchingExternal(true);
+          try {
+            let query = supabase.from('sales').select('*').gte('timestamp', start.toISOString());
+            
+            if (endDate) {
+              const end = new Date(endDate);
+              end.setHours(23, 59, 59, 999);
+              query = query.lte('timestamp', end.toISOString());
+            }
+
+            // In extreme high volume (e.g., >1000 records daily for a month), 
+            // pagination would be required. Keeping it to a simple limit for now.
+            const { data, error } = await query.order('timestamp', { ascending: false }).limit(5000);
+
+            if (error) throw error;
+            if (data) setExternalSales(data);
+          } catch (err) {
+            console.error('Error fetching historical sales from Supabase:', err);
+            showToast('Failed to load historical data', 'error');
+          } finally {
+            setIsFetchingExternal(false);
+          }
+          return;
+        }
+      }
+      // Reset if not meeting conditions
+      setExternalSales([]);
+    };
+
+    fetchHistoricalSales();
+  }, [startDate, endDate]);
+
   const filteredSales = useMemo(() => {
-    return sales.filter(sale => {
+    const sourceSales = externalSales.length > 0 ? externalSales : sales;
+    return sourceSales.filter(sale => {
       // Date range filter
       const saleDate = new Date(sale.timestamp);
       let startCondition = true;
@@ -83,7 +128,7 @@ const Reports = () => {
 
       return startCondition && endCondition;
     }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [sales, startDate, endDate, searchQuery, filterUser, filterPayment, filterStatus]);
+  }, [sales, externalSales, startDate, endDate, searchQuery, filterUser, filterPayment, filterStatus]);
 
   const totalRevenue = filteredSales.filter(s => !s.isVoided).reduce((acc, sale) => acc + sale.totalAmount, 0);
   const totalCost = filteredSales.filter(s => !s.isVoided).reduce((acc, sale) => acc + sale.totalCost, 0);
@@ -437,7 +482,12 @@ const Reports = () => {
         </div>
       </div>
 
-      {filteredSales.length === 0 ? (
+      {isFetchingExternal ? (
+        <div className="flex flex-col items-center justify-center py-12 bg-white rounded-xl border border-slate-200 shadow-sm mb-6">
+          <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
+          <p className="mt-4 text-slate-600 font-medium">Fetching historical data from cloud...</p>
+        </div>
+      ) : filteredSales.length === 0 ? (
         <div className="text-center py-12 text-slate-500">
           <p>No sales data available for the selected date range.</p>
         </div>

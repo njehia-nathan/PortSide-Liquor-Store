@@ -107,6 +107,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   // ------------------------------------------------------------------
   // 1. INITIALIZATION
   // ------------------------------------------------------------------
+  const isPhone = typeof window !== 'undefined' && window.innerWidth < 768;
+
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -146,6 +148,29 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         if (navigator.onLine) {
           try {
             console.log('🌐 Loading data from Supabase...');
+            const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+
+            // --- LOCAL PRUNING ---
+            if (!isPhone) {
+              const syncCount = await db.count('syncQueue');
+              const failedCount = await db.count('failedSyncQueue');
+              if (syncCount === 0 && failedCount === 0) {
+                const pruneStores = ['sales', 'auditLogs', 'productSaleLogs'] as const;
+                for (const storeName of pruneStores) {
+                  const tx = db.transaction(storeName, 'readwrite');
+                  const index = tx.store.index('timestamp');
+                  let cursor = await index.openCursor(IDBKeyRange.upperBound(threeDaysAgo));
+                  while (cursor) {
+                    await cursor.delete();
+                    cursor = await cursor.continue();
+                  }
+                  await tx.done;
+                }
+                console.log('🧹 Local Data Pruning Complete: Cleaned records older than 3 days.');
+              } else {
+                console.log(`⚠️ Pruning skipped: ${syncCount} pending syncs, ${failedCount} failed syncs.`);
+              }
+            }
 
             const smartMerge = async <T extends { id: string; updatedAt?: string; version?: number }>(
               storeName: string,
@@ -224,6 +249,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               const { data: cloudSales, error } = await supabase
                 .from('sales')
                 .select('*')
+                .gte('timestamp', threeDaysAgo)
                 .range(salesPage * salesPageSize, (salesPage + 1) * salesPageSize - 1)
                 .order('timestamp', { ascending: false });
 
@@ -242,7 +268,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               }
             }
 
-            if (allCloudSales.length > 0) {
+            if (isPhone && allCloudSales.length > 0) {
+              loadedSales = allCloudSales;
+              console.log('✅ Supervision Mode: Loaded', loadedSales.length, 'sales');
+            } else if (allCloudSales.length > 0) {
               const localSales = await db.getAll('sales');
               const cloudSaleIds = new Set(allCloudSales.map(s => s.id));
               const localOnlySales = localSales.filter(s => !cloudSaleIds.has(s.id));
@@ -301,6 +330,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               const { data: cloudLogs, error } = await supabase
                 .from('audit_logs')
                 .select('*')
+                .gte('timestamp', threeDaysAgo)
                 .range(auditPage * auditPageSize, (auditPage + 1) * auditPageSize - 1)
                 .order('timestamp', { ascending: false });
 
@@ -319,7 +349,9 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               }
             }
 
-            if (allCloudAuditLogs.length > 0) {
+            if (isPhone && allCloudAuditLogs.length > 0) {
+              loadedLogs = allCloudAuditLogs;
+            } else if (allCloudAuditLogs.length > 0) {
               loadedLogs = allCloudAuditLogs;
               for (const l of allCloudAuditLogs) await db.put('auditLogs', l);
               console.log('✅ Loaded', allCloudAuditLogs.length, 'audit logs (all pages)');
@@ -403,6 +435,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               const { data: cloudProductSaleLogs, error } = await supabase
                 .from('product_sale_logs')
                 .select('*')
+                .gte('timestamp', threeDaysAgo)
                 .range(page * pageSize, (page + 1) * pageSize - 1)
                 .order('timestamp', { ascending: false });
 
@@ -425,7 +458,9 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               }
             }
 
-            if (allCloudLogs.length > 0) {
+            if (isPhone && allCloudLogs.length > 0) {
+              loadedProductSaleLogs = allCloudLogs;
+            } else if (allCloudLogs.length > 0) {
               loadedProductSaleLogs = allCloudLogs;
               for (const l of allCloudLogs) await db.put('productSaleLogs', l);
               console.log('✅ Loaded', allCloudLogs.length, 'product sale logs from cloud (all pages)');
@@ -925,11 +960,11 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           throw new Error(`Product not found: ${item.productName}`);
         }
 
-        if (!item.costAtSale || item.costAtSale <= 0) {
+        // 🚨 NEW VALIDATION: HARD STOP FOR ZERO COST
+        if (!dbProduct.costPrice || dbProduct.costPrice <= 0) {
           throw new Error(
-            `CRITICAL ERROR: ${item.productName} has no Cost Price. ` +
-            `Processing this would corrupt your profit reports. ` +
-            `Please go to Inventory and update the cost price first.`
+            `❌ CANNOT SELL: '${dbProduct.name}' has no Buying Price (Cost) recorded. ` +
+            `Please ask a manager to update the Cost Price in Inventory before selling this item to prevent corrupted profit reports.`
           );
         }
 
@@ -977,12 +1012,12 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         updatedProducts.push(updatedProduct);
         await tx.objectStore('products').put(updatedProduct);
 
-        // Queue stock update for cloud
+        // Only send the exact subtraction to the cloud to prevent overwriting
         await tx.objectStore('syncQueue').add({
-          type: 'SALE_STOCK_UPDATE',
-          payload: {
-            productId: item.productId,
-            quantity: item.quantity
+          type: 'SALE_STOCK_DELTA',
+          payload: { 
+            productId: item.productId, 
+            quantity: item.quantity 
           },
           timestamp: Date.now()
         });
@@ -1094,7 +1129,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           await tx.objectStore('products').put(updatedProduct);
 
           await tx.objectStore('syncQueue').add({
-            type: 'SALE_STOCK_UPDATE',
+            type: 'SALE_STOCK_DELTA',
             payload: {
               productId: item.productId,
               quantity: -item.quantity
@@ -1415,7 +1450,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           await tx.objectStore('products').put(updatedProduct);
 
           await tx.objectStore('syncQueue').add({
-            type: 'SALE_STOCK_UPDATE',
+            type: 'SALE_STOCK_DELTA',
             payload: {
               productId: item.productId,
               quantity: -item.quantity

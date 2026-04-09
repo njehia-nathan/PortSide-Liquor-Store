@@ -15,13 +15,13 @@ export interface POSDB extends DBSchema {
   products: { key: string; value: Product };
 
   // Store for Completed Sales transactions
-  sales: { key: string; value: Sale };
+  sales: { key: string; value: Sale; indexes: { 'timestamp': string } };
 
   // Store for Shift Sessions (Cash drawer tracking)
   shifts: { key: string; value: Shift };
 
   // Store for Audit Logs (Security trail)
-  auditLogs: { key: string; value: AuditLog };
+  auditLogs: { key: string; value: AuditLog; indexes: { 'timestamp': string } };
 
   // Store for Business Settings (single row)
   businessSettings: { key: string; value: BusinessSettings };
@@ -33,7 +33,7 @@ export interface POSDB extends DBSchema {
   stockChangeRequests: { key: string; value: StockChangeRequest };
 
   // Store for Product Sale Logs (individual product sales tracking)
-  productSaleLogs: { key: string; value: ProductSaleLog };
+  productSaleLogs: { key: string; value: ProductSaleLog; indexes: { 'timestamp': string } };
 
   // SYNC QUEUE
   // This is the most important part for "Offline-First".
@@ -72,7 +72,7 @@ export interface FailedSyncQueueItem extends SyncQueueItem {
 
 // Name of the database in the browser's developer tools
 const DB_NAME = 'GrabBottlePOS_DB';
-const DB_VERSION = 7; // Bumped for failedSyncQueue store and retry tracking
+const DB_VERSION = 8; // Bumped to add timestamp indexes for data pruning
 
 /**
  * INITIALIZE DATABASE
@@ -82,7 +82,7 @@ const DB_VERSION = 7; // Bumped for failedSyncQueue store and retry tracking
  */
 export const initDB = async (): Promise<IDBPDatabase<POSDB>> => {
   return openDB<POSDB>(DB_NAME, DB_VERSION, {
-    upgrade(db) {
+    upgrade(db, oldVersion, newVersion, transaction) {
       // Create 'users' table if missing, using 'id' as the primary key
       if (!db.objectStoreNames.contains('users')) db.createObjectStore('users', { keyPath: 'id' });
 
@@ -115,6 +115,28 @@ export const initDB = async (): Promise<IDBPDatabase<POSDB>> => {
 
       // Create 'failedSyncQueue' table for items that failed to sync
       if (!db.objectStoreNames.contains('failedSyncQueue')) db.createObjectStore('failedSyncQueue', { keyPath: 'key', autoIncrement: true });
+
+      // Add timestamp indexes for pruning logic
+      if (transaction && db.objectStoreNames.contains('sales')) {
+        const store = transaction.objectStore('sales');
+        if (!store.indexNames.contains('timestamp')) {
+          store.createIndex('timestamp', 'timestamp');
+        }
+      }
+
+      if (transaction && db.objectStoreNames.contains('auditLogs')) {
+        const store = transaction.objectStore('auditLogs');
+        if (!store.indexNames.contains('timestamp')) {
+          store.createIndex('timestamp', 'timestamp');
+        }
+      }
+
+      if (transaction && db.objectStoreNames.contains('productSaleLogs')) {
+        const store = transaction.objectStore('productSaleLogs');
+        if (!store.indexNames.contains('timestamp')) {
+          store.createIndex('timestamp', 'timestamp');
+        }
+      }
     },
   });
 };

@@ -279,9 +279,28 @@ const Inventory = () => {
     const qty = parseInt(quantity);
     if (isNaN(qty) || qty === 0) return;
 
+    if (qty > 10000) {
+      alert('Error: Quantity cannot exceed 10,000 units. Did you scan a barcode into the quantity field by mistake?');
+      return;
+    }
+
     const product = products.find(p => p.id === selectedProductId);
+    if (!product) return;
+
     if (activeTab === 'RECEIVE') {
       const cost = newCost ? parseFloat(newCost) : undefined;
+      const finalCost = cost !== undefined ? cost : product.costPrice;
+      
+      if (!finalCost || finalCost <= 0) {
+        alert('Error: A valid Cost Price (greater than 0) is strictly required for this product before receiving stock.');
+        return;
+      }
+
+      if (product.sellingPrice && product.sellingPrice <= finalCost) {
+        alert('Error: Selling Price must be strictly greater than Cost Price to avoid selling at a loss. Please update the pricing in Inventory first.');
+        return;
+      }
+
       requestStockChange(selectedProductId, 'RECEIVE', qty, 'Stock receipt', cost);
       showSuccess(`✓ Stock change request submitted for ${product?.name} - Awaiting approval`);
     } else if (activeTab === 'ADJUST') {

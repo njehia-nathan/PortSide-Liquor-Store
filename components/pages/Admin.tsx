@@ -93,18 +93,22 @@ const Admin = () => {
     }
 
     const costValidation = validatePrice(productFormData.costPrice || 0, 'Cost price');
-    if (!costValidation.isValid) {
-      errors.costPrice = costValidation.error!;
+    if (!costValidation.isValid || (productFormData.costPrice || 0) <= 0) {
+      errors.costPrice = costValidation.error || 'Cost Price must be greater than 0';
     }
 
     const sellingValidation = validatePrice(productFormData.sellingPrice || 0, 'Selling price');
     if (!sellingValidation.isValid) {
       errors.sellingPrice = sellingValidation.error!;
+    } else if ((productFormData.sellingPrice || 0) <= (productFormData.costPrice || 0)) {
+      errors.sellingPrice = 'Selling Price must be greater than Cost Price';
     }
 
     const stockValidation = validateStock(productFormData.stock || 0);
     if (!stockValidation.isValid) {
       errors.stock = stockValidation.error!;
+    } else if ((productFormData.stock || 0) > 10000) {
+      errors.stock = 'Stock cannot exceed 10,000 units. Did you scan a barcode here by mistake?';
     }
 
     setValidationErrors(errors);

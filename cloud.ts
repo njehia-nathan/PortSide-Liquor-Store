@@ -95,6 +95,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
         
       case 'ADD_USER':
       case 'UPDATE_USER':
+      case 'UPDATE_USERS':
         table = 'users';
         break;
         

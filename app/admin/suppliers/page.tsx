@@ -1,0 +1,24 @@
+'use client';
+
+import { useStore } from '../../../context/StoreContext';
+import Login from '../../../components/Login';
+import AppLayout from '../../../components/AppLayout';
+import AdminSuppliers from '../../../components/pages/AdminSuppliers';
+
+export default function SuppliersPage() {
+  const { currentUser } = useStore();
+
+  if (!currentUser) {
+    return <Login />;
+  }
+
+  if (!currentUser.permissions?.includes('ADMIN')) {
+    return <Login />;
+  }
+
+  return (
+    <AppLayout>
+      <AdminSuppliers />
+    </AppLayout>
+  );
+}

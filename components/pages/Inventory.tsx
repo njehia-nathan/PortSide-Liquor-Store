@@ -50,7 +50,7 @@ import {
 } from '@/components/ui/table';
 
 const Inventory = () => {
-  const { products, updateProduct, addProduct, requestStockChange, auditLogs, sales, currentUser } = useStore();
+  const { products, updateProduct, addProduct, requestStockChange, stockChangeRequests, auditLogs, sales, currentUser } = useStore();
 
   const [activeTab, setActiveTab] = useState<'VIEW' | 'RECEIVE' | 'ADJUST' | 'ALERTS'>('VIEW');
   const [searchTerm, setSearchTerm] = useState('');
@@ -58,7 +58,18 @@ const Inventory = () => {
   const [quantity, setQuantity] = useState('');
   const [reason, setReason] = useState('');
   const [newCost, setNewCost] = useState('');
+  const [newSupplier, setNewSupplier] = useState('');
   const [editingAlertId, setEditingAlertId] = useState<string | null>(null);
+
+  // Derive unique supplier names from products and past receipts
+  const uniqueSuppliers = useMemo(() => {
+    const suppliers = new Set<string>();
+    products.forEach(p => { if (p.supplier) suppliers.add(p.supplier); });
+    if (stockChangeRequests) {
+      stockChangeRequests.forEach(r => { if (r.supplierName) suppliers.add(r.supplierName); });
+    }
+    return Array.from(suppliers).sort();
+  }, [products, stockChangeRequests]);
   const [editAlertValue, setEditAlertValue] = useState('');
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [barcodeInput, setBarcodeInput] = useState('');
@@ -301,7 +312,7 @@ const Inventory = () => {
         return;
       }
 
-      requestStockChange(selectedProductId, 'RECEIVE', qty, 'Stock receipt', cost);
+      requestStockChange(selectedProductId, 'RECEIVE', qty, 'Stock receipt', cost, newSupplier || undefined);
       showSuccess(`✓ Stock change request submitted for ${product?.name} - Awaiting approval`);
     } else if (activeTab === 'ADJUST') {
       if (!reason) return;
@@ -312,6 +323,7 @@ const Inventory = () => {
     setQuantity('');
     setReason('');
     setNewCost('');
+    setNewSupplier('');
     setSelectedProductId('');
   };
 
@@ -854,6 +866,22 @@ const Inventory = () => {
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">New Cost</label>
                     <input type="number" step="0.01" className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none" placeholder="Optional" value={newCost} onChange={e => setNewCost(e.target.value)} />
+                  </div>
+
+                  {/* Supplier Input */}
+                  <div className="col-span-2 lg:col-span-4">
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Supplier (Optional)</label>
+                    <input 
+                      type="text" 
+                      list="supplierOptions" 
+                      className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none" 
+                      placeholder="Type or select a supplier..." 
+                      value={newSupplier} 
+                      onChange={e => setNewSupplier(e.target.value)} 
+                    />
+                    <datalist id="supplierOptions">
+                      {uniqueSuppliers.map(s => <option key={s} value={s} />)}
+                    </datalist>
                   </div>
 
                   {/* Barcode - Scan to find OR assign */}

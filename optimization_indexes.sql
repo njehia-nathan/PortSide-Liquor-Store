@@ -10,3 +10,4 @@ CREATE INDEX IF NOT EXISTS idx_product_sale_logs_timestamp ON product_sale_logs(
 -- (Using double quotes because Supabase column headers are camelCase)
 CREATE INDEX IF NOT EXISTS idx_shifts_start ON shifts("startTime");
 CREATE INDEX IF NOT EXISTS idx_void_requests_created ON void_requests("requestedAt");
+CREATE INDEX IF NOT EXISTS idx_stock_requests_created ON stock_change_requests("requestedAt");

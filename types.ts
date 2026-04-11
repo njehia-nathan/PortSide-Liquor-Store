@@ -152,6 +152,7 @@ export interface StockChangeRequest {
   quantityChange: number;
   reason?: string;
   newCost?: number;
+  supplierName?: string;
   requestedBy: string;
   requestedByName: string;
   requestedAt: string;

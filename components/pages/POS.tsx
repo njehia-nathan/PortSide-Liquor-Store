@@ -38,6 +38,7 @@ const POS = () => {
   const [closedShiftData, setClosedShiftData] = useState<{ shift: Shift; salesCount: number; revenue: number; cashSales: number; expectedCash: number; closingCash: number } | null>(null);
   const [globalBarcodeBuffer, setGlobalBarcodeBuffer] = useState('');
   const lastKeyTime = useRef<number>(0);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // Sales Dashboard Filters
   const [filterUser, setFilterUser] = useState<string>('current');
@@ -159,6 +160,8 @@ const POS = () => {
   const cartTotal = cart.reduce((sum, item) => sum + (item.sellingPrice * item.quantity), 0);
 
   const handlePayment = async (method: 'CASH' | 'CARD' | 'MOBILE' | 'SPLIT', cashAmount?: number, splitPayment?: { cashAmount: number; mobileAmount: number }) => {
+    if (isProcessing) return;
+    setIsProcessing(true);
     try {
       const saleItems: SaleItem[] = cart.map(c => ({
         productId: c.id,
@@ -196,6 +199,8 @@ const POS = () => {
       // Error already shown via alert in processSale
       console.error('Payment failed:', error);
       // Keep modals open so user can fix the issue
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -550,10 +555,10 @@ const POS = () => {
 
           <button
             onClick={() => setPaymentModalOpen(true)}
-            disabled={cart.length === 0}
+            disabled={cart.length === 0 || isProcessing}
             className="w-full bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white py-4 rounded-xl font-bold text-lg transition-colors"
           >
-            Checkout
+            {isProcessing ? 'Processing...' : 'Checkout'}
           </button>
 
           <button
@@ -657,10 +662,10 @@ const POS = () => {
               </div>
               <button
                 onClick={() => setPaymentModalOpen(true)}
-                disabled={cart.length === 0}
+                disabled={cart.length === 0 || isProcessing}
                 className="w-full bg-green-600 disabled:bg-slate-300 text-white py-3 rounded-xl font-bold text-lg"
               >
-                Checkout
+                {isProcessing ? 'Processing...' : 'Checkout'}
               </button>
             </div>
           </div>
@@ -685,19 +690,19 @@ const POS = () => {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <button onClick={handleCashPayment} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-green-50 rounded-xl hover:bg-green-100 border-2 border-green-200">
+                <button onClick={handleCashPayment} disabled={isProcessing} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-green-50 rounded-xl hover:bg-green-100 border-2 border-green-200 disabled:opacity-50">
                   <Banknote size={28} className="text-green-600" />
                   <span className="font-bold text-green-800 text-sm lg:text-base">Cash</span>
                 </button>
-                <button onClick={() => handlePayment('CARD')} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-blue-50 rounded-xl hover:bg-blue-100 border-2 border-blue-200">
+                <button onClick={() => handlePayment('CARD')} disabled={isProcessing} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-blue-50 rounded-xl hover:bg-blue-100 border-2 border-blue-200 disabled:opacity-50">
                   <CreditCard size={28} className="text-blue-600" />
                   <span className="font-bold text-blue-800 text-sm lg:text-base">Card</span>
                 </button>
-                <button onClick={() => handlePayment('MOBILE')} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-purple-50 rounded-xl hover:bg-purple-100 border-2 border-purple-200">
+                <button onClick={() => handlePayment('MOBILE')} disabled={isProcessing} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-purple-50 rounded-xl hover:bg-purple-100 border-2 border-purple-200 disabled:opacity-50">
                   <Smartphone size={28} className="text-purple-600" />
                   <span className="font-bold text-purple-800 text-sm lg:text-base">M-Pesa</span>
                 </button>
-                <button onClick={handleSplitPayment} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-orange-50 rounded-xl hover:bg-orange-100 border-2 border-orange-200">
+                <button onClick={handleSplitPayment} disabled={isProcessing} className="flex flex-col items-center gap-2 p-4 lg:p-6 bg-orange-50 rounded-xl hover:bg-orange-100 border-2 border-orange-200 disabled:opacity-50">
                   <DollarSign size={28} className="text-orange-600" />
                   <span className="font-bold text-orange-800 text-sm lg:text-base">Split Pay</span>
                 </button>
@@ -770,16 +775,17 @@ const POS = () => {
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => { setShowCashModal(false); setCashTendered(''); }}
-                  className="py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600"
+                  disabled={isProcessing}
+                  className="py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600 disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={confirmCashPayment}
-                  disabled={!cashTendered || parseFloat(cashTendered) < cartTotal}
+                  disabled={!cashTendered || parseFloat(cashTendered) < cartTotal || isProcessing}
                   className="py-3 bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center justify-center gap-2"
                 >
-                  <Banknote size={18} /> Complete Sale
+                  <Banknote size={18} /> {isProcessing ? 'Processing...' : 'Complete Sale'}
                 </button>
               </div>
             </div>
@@ -868,16 +874,17 @@ const POS = () => {
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => { setShowSplitModal(false); setSplitCashAmount(''); setSplitMobileAmount(''); }}
-                  className="py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600"
+                  disabled={isProcessing}
+                  className="py-3 border-2 border-slate-300 rounded-xl font-bold text-slate-600 disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={confirmSplitPayment}
-                  disabled={!splitCashAmount || !splitMobileAmount || Math.abs((parseFloat(splitCashAmount) + parseFloat(splitMobileAmount)) - cartTotal) > 0.01}
+                  disabled={!splitCashAmount || !splitMobileAmount || Math.abs((parseFloat(splitCashAmount) + parseFloat(splitMobileAmount)) - cartTotal) > 0.01 || isProcessing}
                   className="py-3 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white rounded-xl font-bold flex items-center justify-center gap-2"
                 >
-                  <DollarSign size={18} /> Complete Sale
+                  <DollarSign size={18} /> {isProcessing ? 'Processing...' : 'Complete Sale'}
                 </button>
               </div>
             </div>

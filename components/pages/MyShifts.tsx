@@ -72,17 +72,44 @@ const ItemTooltip = ({ item, sale }: { item: any; sale: Sale }) => {
 };
 
 const MyShifts = () => {
-  const { currentUser, shifts, sales, businessSettings } = useStore();
+  const { currentUser, shifts, sales, businessSettings, fetchHistory, isSyncing } = useStore();
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null);
   const [showZReport, setShowZReport] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<{ saleId: string; itemIndex: number } | null>(null);
 
+  // Date range state
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7); // Default to past 7 days
+    return d.toISOString().split('T')[0];
+  });
+  const [endDate, setEndDate] = useState(() => {
+    return new Date().toISOString().split('T')[0];
+  });
+
+
   const myShifts = useMemo(() => {
     if (!currentUser) return [];
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+
     return shifts
-      .filter(s => s.cashierId === currentUser.id)
+      .filter(s => 
+        s.cashierId === currentUser.id &&
+        new Date(s.startTime) >= start &&
+        new Date(s.startTime) <= end
+      )
       .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
-  }, [shifts, currentUser]);
+  }, [shifts, currentUser, startDate, endDate]);
+
+  const handleFetchHistory = async () => {
+    // Determine if we need to fetch sales too
+    await fetchHistory('shifts', startDate, endDate);
+    await fetchHistory('sales', startDate, endDate);
+  };
+
 
   const getShiftSales = (shiftStart: string, shiftEnd?: string) => {
     return sales.filter(s => {
@@ -297,12 +324,37 @@ const MyShifts = () => {
 
   return (
     <div className="p-3 lg:p-6 max-w-5xl mx-auto space-y-4 lg:space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
         <div>
           <h1 className="text-xl lg:text-2xl font-bold text-slate-800">My Shift Reports</h1>
           <p className="text-sm text-slate-500">View your shift history and sales</p>
         </div>
-        <span className="text-xs lg:text-sm text-slate-500">{new Date().toLocaleDateString()}</span>
+        
+        <div className="flex flex-wrap items-center gap-3 bg-white p-2 rounded-xl border border-blue-200 shadow-sm w-full lg:w-auto">
+          <div className="flex items-center gap-2">
+            <Calendar size={16} className="text-blue-400" />
+            <input 
+              type="date" 
+              className="text-sm border-none outline-none bg-transparent"
+              value={startDate}
+              onChange={e => setStartDate(e.target.value)}
+            />
+            <span className="text-slate-400 text-sm">to</span>
+            <input 
+              type="date" 
+              className="text-sm border-none outline-none bg-transparent"
+              value={endDate}
+              onChange={e => setEndDate(e.target.value)}
+            />
+          </div>
+          <button
+            onClick={handleFetchHistory}
+            disabled={isSyncing}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-lg text-sm font-bold transition-colors flex items-center gap-2"
+          >
+            {isSyncing ? 'Loading...' : 'Search'}
+          </button>
+        </div>
       </div>
 
       {/* Summary Cards - Light Blue Theme */}

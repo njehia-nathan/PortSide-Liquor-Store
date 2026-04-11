@@ -28,7 +28,8 @@ import {
   DollarSign,
   Edit2,
   Check,
-  AlertCircle
+  AlertCircle,
+  Truck
 } from 'lucide-react';
 
 const AppLayout = ({ children }: PropsWithChildren) => {
@@ -1035,6 +1036,13 @@ const AppLayout = ({ children }: PropsWithChildren) => {
             <Link href="/admin/stock-approvals" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/admin/stock-approvals')}`}>
               <CheckSquare size={20} />
               <span className="font-medium">Stock Approvals</span>
+            </Link>
+          )}
+
+          {hasPerm('ADMIN') && (
+            <Link href="/admin/suppliers" onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive('/admin/suppliers')}`}>
+              <Truck size={20} />
+              <span className="font-medium">Suppliers</span>
             </Link>
           )}
 

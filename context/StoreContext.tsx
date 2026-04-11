@@ -49,8 +49,8 @@ interface StoreContextType {
   updateProduct: (product: Product) => Promise<void>;
   deleteProduct: (productId: string) => Promise<void>;
   adjustStock: (productId: string, change: number, reason: string) => Promise<void>;
-  receiveStock: (productId: string, quantity: number, newCost?: number) => Promise<void>;
-  requestStockChange: (productId: string, changeType: 'ADJUST' | 'RECEIVE', quantityChange: number, reason?: string, newCost?: number) => Promise<void>;
+  receiveStock: (productId: string, quantity: number, newCost?: number, supplierName?: string) => Promise<void>;
+  requestStockChange: (productId: string, changeType: 'ADJUST' | 'RECEIVE', quantityChange: number, reason?: string, newCost?: number, supplierName?: string) => Promise<void>;
   approveStockChange: (requestId: string, notes?: string) => Promise<void>;
   rejectStockChange: (requestId: string, notes?: string) => Promise<void>;
 
@@ -73,6 +73,7 @@ interface StoreContextType {
   reconcileStock: () => Promise<{ reconciled: number; errors: string[] }>;
   refreshProductSaleLogs: () => Promise<void>;
   cleanupDuplicateLogs: () => Promise<{ removed: number; errors: string[] }>;
+  fetchHistory: (table: 'sales' | 'shifts' | 'audit_logs' | 'product_sale_logs' | 'void_requests' | 'stock_change_requests', startDate: string, endDate: string) => Promise<void>;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
@@ -148,7 +149,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         if (navigator.onLine) {
           try {
             console.log('🌐 Loading data from Supabase...');
-            const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+            const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
             // --- LOCAL PRUNING ---
             if (!isPhone) {
@@ -159,14 +160,14 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
                 for (const storeName of pruneStores) {
                   const tx = db.transaction(storeName, 'readwrite');
                   const index = tx.store.index('timestamp');
-                  let cursor = await index.openCursor(IDBKeyRange.upperBound(threeDaysAgo));
+                  let cursor = await index.openCursor(IDBKeyRange.upperBound(sevenDaysAgo));
                   while (cursor) {
                     await cursor.delete();
                     cursor = await cursor.continue();
                   }
                   await tx.done;
                 }
-                console.log('🧹 Local Data Pruning Complete: Cleaned records older than 3 days.');
+                console.log('🧹 Local Data Pruning Complete: Cleaned records older than 7 days.');
               } else {
                 console.log(`⚠️ Pruning skipped: ${syncCount} pending syncs, ${failedCount} failed syncs.`);
               }
@@ -218,257 +219,177 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
             const localUsers = await db.getAll('users');
             const localProducts = await db.getAll('products');
+            const localSales = await db.getAll('sales');
+            const localShifts = await db.getAll('shifts');
+            const localAuditLogs = await db.getAll('auditLogs');
+            const localVoidRequests = await db.getAll('voidRequests');
+            const localStockRequests = await db.getAll('stockChangeRequests');
 
-            const { data: cloudUsers } = await supabase.from('users').select('*');
+            const fetchAllPaginated = async (table: string, timeColumn: string, timeLimit: string, orderBy: string) => {
+              let allData: any[] = [];
+              let page = 0;
+              const pageSize = 1000;
+              let hasMore = true;
+
+              while (hasMore) {
+                let query = supabase.from(table).select('*');
+                if (timeLimit) {
+                  // Ensure correct typing since Supabase has different column names
+                  query = query.gte(timeColumn, timeLimit);
+                }
+                const { data, error } = await query
+                  .range(page * pageSize, (page + 1) * pageSize - 1)
+                  .order(orderBy, { ascending: false });
+
+                if (error) {
+                  console.error(`❌ Error fetching ${table}:`, error);
+                  break;
+                }
+
+                if (data && data.length > 0) {
+                  allData = [...allData, ...data];
+                  if (data.length < pageSize) hasMore = false;
+                  page++;
+                } else {
+                  hasMore = false;
+                }
+              }
+              return allData;
+            };
+
+            const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+            console.log('⚡ Fetching all records from Supabase in parallel...');
+            const [
+              { data: cloudUsers },
+              { data: cloudProducts },
+              allCloudSales,
+              allCloudShifts,
+              allCloudAuditLogs,
+              allCloudVoidRequests,
+              allCloudStockRequests,
+              allCloudLogs,
+              { data: cloudSettings }
+            ] = await Promise.all([
+              supabase.from('users').select('*'),
+              supabase.from('products').select('*'),
+              fetchAllPaginated('sales', 'timestamp', sevenDaysAgo, 'timestamp'),
+              // Fetch shifts with a 30-day limit to prevent hard loading
+              fetchAllPaginated('shifts', 'startTime', thirtyDaysAgo, 'startTime'),
+              fetchAllPaginated('audit_logs', 'timestamp', sevenDaysAgo, 'timestamp'),
+              fetchAllPaginated('void_requests', 'requestedAt', thirtyDaysAgo, 'requestedAt'),
+              fetchAllPaginated('stock_change_requests', 'requestedAt', thirtyDaysAgo, 'requestedAt'),
+              fetchAllPaginated('product_sale_logs', 'timestamp', sevenDaysAgo, 'timestamp'),
+              supabase.from('business_settings').select('*').eq('id', 'default').single()
+            ]);
+
+            // 1. Users
             if (cloudUsers && cloudUsers.length > 0) {
               loadedUsers = await smartMerge('users', cloudUsers, localUsers);
               for (const u of loadedUsers) await db.put('users', u);
               console.log('✅ Merged', loadedUsers.length, 'users');
             } else if (localUsers.length > 0) {
               loadedUsers = localUsers;
-              console.log('✅ Using local users');
             }
 
-            const { data: cloudProducts } = await supabase.from('products').select('*');
+            // 2. Products
             if (cloudProducts && cloudProducts.length > 0) {
               loadedProducts = await smartMerge('products', cloudProducts, localProducts);
               for (const p of loadedProducts) await db.put('products', p);
               console.log('✅ Merged', loadedProducts.length, 'products');
             } else if (localProducts.length > 0) {
               loadedProducts = localProducts;
-              console.log('✅ Using local products');
             }
 
-            // Fetch ALL sales using pagination
-            let allCloudSales: any[] = [];
-            let salesPage = 0;
-            const salesPageSize = 1000000;
-            let salesHasMore = true;
-
-            while (salesHasMore) {
-              const { data: cloudSales, error } = await supabase
-                .from('sales')
-                .select('*')
-                .gte('timestamp', threeDaysAgo)
-                .range(salesPage * salesPageSize, (salesPage + 1) * salesPageSize - 1)
-                .order('timestamp', { ascending: false });
-
-              if (error) {
-                console.error('❌ Error fetching sales:', error);
-                break;
-              }
-
-              if (cloudSales && cloudSales.length > 0) {
-                allCloudSales = [...allCloudSales, ...cloudSales];
-                console.log(`📥 Fetched sales page ${salesPage + 1}: ${cloudSales.length} sales (total: ${allCloudSales.length})`);
-                if (cloudSales.length < salesPageSize) salesHasMore = false;
-                salesPage++;
-              } else {
-                salesHasMore = false;
-              }
-            }
-
+            // 3. Sales
             if (isPhone && allCloudSales.length > 0) {
               loadedSales = allCloudSales;
-              console.log('✅ Supervision Mode: Loaded', loadedSales.length, 'sales');
             } else if (allCloudSales.length > 0) {
-              const localSales = await db.getAll('sales');
-              const cloudSaleIds = new Set(allCloudSales.map(s => s.id));
+              const cloudSaleIds = new Set(allCloudSales.map((s: any) => s.id));
               const localOnlySales = localSales.filter(s => !cloudSaleIds.has(s.id));
               loadedSales = [...allCloudSales, ...localOnlySales];
               for (const s of loadedSales) await db.put('sales', s);
               if (localOnlySales.length > 0) {
-                console.log('📤 Found', localOnlySales.length, 'local-only sales');
-                for (const sale of localOnlySales) {
-                  await addToSyncQueue('SALE', sale);
+                for (const sale of localOnlySales) await addToSyncQueue('SALE', sale);
+              }
+            } else {
+              loadedSales = localSales;
+            }
+
+            // 4. Shifts (Fixing the local-only disappearing bug)
+            if (allCloudShifts.length > 0) {
+              const cloudShiftIds = new Set(allCloudShifts.map((s: any) => s.id));
+              const localOnlyShifts = localShifts.filter(s => !cloudShiftIds.has(s.id));
+              loadedShifts = [...allCloudShifts, ...localOnlyShifts];
+              for (const s of loadedShifts) await db.put('shifts', s);
+              if (localOnlyShifts.length > 0) {
+                console.log('📤 Found', localOnlyShifts.length, 'local-only shifts');
+                for (const shift of localOnlyShifts) {
+                  await addToSyncQueue(shift.status === 'OPEN' ? 'OPEN_SHIFT' : 'CLOSE_SHIFT', shift);
                 }
               }
-              console.log('✅ Loaded', loadedSales.length, 'sales (all pages)');
+            } else {
+              loadedShifts = localShifts;
             }
 
-            // Fetch ALL shifts using pagination
-            let allCloudShifts: any[] = [];
-            let shiftsPage = 0;
-            const shiftsPageSize = 1000000;
-            let shiftsHasMore = true;
-
-            while (shiftsHasMore) {
-              const { data: cloudShifts, error } = await supabase
-                .from('shifts')
-                .select('*')
-                .range(shiftsPage * shiftsPageSize, (shiftsPage + 1) * shiftsPageSize - 1)
-                .order('startTime', { ascending: false });
-
-              if (error) {
-                console.error('❌ Error fetching shifts:', error);
-                break;
-              }
-
-              if (cloudShifts && cloudShifts.length > 0) {
-                allCloudShifts = [...allCloudShifts, ...cloudShifts];
-                console.log(`📥 Fetched shifts page ${shiftsPage + 1}: ${cloudShifts.length} shifts (total: ${allCloudShifts.length})`);
-                if (cloudShifts.length < shiftsPageSize) shiftsHasMore = false;
-                shiftsPage++;
-              } else {
-                shiftsHasMore = false;
-              }
-            }
-
-            if (allCloudShifts.length > 0) {
-              loadedShifts = allCloudShifts;
-              for (const s of allCloudShifts) await db.put('shifts', s);
-              console.log('✅ Loaded', allCloudShifts.length, 'shifts (all pages)');
-            }
-
-            // Fetch ALL audit logs using pagination
-            let allCloudAuditLogs: any[] = [];
-            let auditPage = 0;
-            const auditPageSize = 1000000;
-            let auditHasMore = true;
-
-            while (auditHasMore) {
-              const { data: cloudLogs, error } = await supabase
-                .from('audit_logs')
-                .select('*')
-                .gte('timestamp', threeDaysAgo)
-                .range(auditPage * auditPageSize, (auditPage + 1) * auditPageSize - 1)
-                .order('timestamp', { ascending: false });
-
-              if (error) {
-                console.error('❌ Error fetching audit logs:', error);
-                break;
-              }
-
-              if (cloudLogs && cloudLogs.length > 0) {
-                allCloudAuditLogs = [...allCloudAuditLogs, ...cloudLogs];
-                console.log(`📥 Fetched audit logs page ${auditPage + 1}: ${cloudLogs.length} logs (total: ${allCloudAuditLogs.length})`);
-                if (cloudLogs.length < auditPageSize) auditHasMore = false;
-                auditPage++;
-              } else {
-                auditHasMore = false;
-              }
-            }
-
+            // 5. Audit Logs
             if (isPhone && allCloudAuditLogs.length > 0) {
               loadedLogs = allCloudAuditLogs;
             } else if (allCloudAuditLogs.length > 0) {
-              loadedLogs = allCloudAuditLogs;
-              for (const l of allCloudAuditLogs) await db.put('auditLogs', l);
-              console.log('✅ Loaded', allCloudAuditLogs.length, 'audit logs (all pages)');
+              const cloudLogIds = new Set(allCloudAuditLogs.map((l: any) => l.id));
+              const localOnlyAuditLogs = localAuditLogs.filter(l => !cloudLogIds.has(l.id));
+              loadedLogs = [...allCloudAuditLogs, ...localOnlyAuditLogs];
+              for (const l of loadedLogs) await db.put('auditLogs', l);
+              if (localOnlyAuditLogs.length > 0) {
+                for (const log of localOnlyAuditLogs) await addToSyncQueue('LOG', log);
+              }
+            } else {
+              loadedLogs = localAuditLogs;
             }
 
-            // Fetch ALL void requests using pagination
-            let allCloudVoidRequests: any[] = [];
-            let voidPage = 0;
-            const voidPageSize = 1000000;
-            let voidHasMore = true;
-
-            while (voidHasMore) {
-              const { data: cloudVoidRequests, error } = await supabase
-                .from('void_requests')
-                .select('*')
-                .range(voidPage * voidPageSize, (voidPage + 1) * voidPageSize - 1)
-                .order('requestedAt', { ascending: false });
-
-              if (error) {
-                console.error('❌ Error fetching void requests:', error);
-                break;
-              }
-
-              if (cloudVoidRequests && cloudVoidRequests.length > 0) {
-                allCloudVoidRequests = [...allCloudVoidRequests, ...cloudVoidRequests];
-                console.log(`📥 Fetched void requests page ${voidPage + 1}: ${cloudVoidRequests.length} requests (total: ${allCloudVoidRequests.length})`);
-                if (cloudVoidRequests.length < voidPageSize) voidHasMore = false;
-                voidPage++;
-              } else {
-                voidHasMore = false;
-              }
-            }
-
+            // 6. Void Requests
             if (allCloudVoidRequests.length > 0) {
-              loadedVoidRequests = allCloudVoidRequests;
-              for (const v of allCloudVoidRequests) await db.put('voidRequests', v);
-              console.log('✅ Loaded', allCloudVoidRequests.length, 'void requests (all pages)');
-            }
-
-            // Fetch ALL stock change requests using pagination
-            let allCloudStockRequests: any[] = [];
-            let stockPage = 0;
-            const stockPageSize = 1000000;
-            let stockHasMore = true;
-
-            while (stockHasMore) {
-              const { data: cloudStockRequests, error } = await supabase
-                .from('stock_change_requests')
-                .select('*')
-                .range(stockPage * stockPageSize, (stockPage + 1) * stockPageSize - 1)
-                .order('requestedAt', { ascending: false });
-
-              if (error) {
-                console.error('❌ Error fetching stock change requests:', error);
-                break;
-              }
-
-              if (cloudStockRequests && cloudStockRequests.length > 0) {
-                allCloudStockRequests = [...allCloudStockRequests, ...cloudStockRequests];
-                console.log(`📥 Fetched stock requests page ${stockPage + 1}: ${cloudStockRequests.length} requests (total: ${allCloudStockRequests.length})`);
-                if (cloudStockRequests.length < stockPageSize) stockHasMore = false;
-                stockPage++;
-              } else {
-                stockHasMore = false;
-              }
-            }
-
-            if (allCloudStockRequests.length > 0) {
-              loadedStockChangeRequests = allCloudStockRequests;
-              for (const s of allCloudStockRequests) await db.put('stockChangeRequests', s);
-              console.log('✅ Loaded', allCloudStockRequests.length, 'stock change requests (all pages)');
-            }
-
-            // Fetch ALL product sale logs using pagination
-            let allCloudLogs: any[] = [];
-            let page = 0;
-            const pageSize = 1000000;
-            let hasMore = true;
-
-            while (hasMore) {
-              const { data: cloudProductSaleLogs, error } = await supabase
-                .from('product_sale_logs')
-                .select('*')
-                .gte('timestamp', threeDaysAgo)
-                .range(page * pageSize, (page + 1) * pageSize - 1)
-                .order('timestamp', { ascending: false });
-
-              if (error) {
-                console.error('❌ Error fetching product sale logs:', error);
-                break;
-              }
-
-              if (cloudProductSaleLogs && cloudProductSaleLogs.length > 0) {
-                allCloudLogs = [...allCloudLogs, ...cloudProductSaleLogs];
-                console.log(`📥 Fetched page ${page + 1}: ${cloudProductSaleLogs.length} logs (total: ${allCloudLogs.length})`);
-
-                // If we got less than pageSize, we've reached the end
-                if (cloudProductSaleLogs.length < pageSize) {
-                  hasMore = false;
+              const cloudVoidIds = new Set(allCloudVoidRequests.map((v: any) => v.id));
+              const localOnlyVoidRequests = localVoidRequests.filter(v => !cloudVoidIds.has(v.id));
+              loadedVoidRequests = [...allCloudVoidRequests, ...localOnlyVoidRequests];
+              for (const v of loadedVoidRequests) await db.put('voidRequests', v);
+              if (localOnlyVoidRequests.length > 0) {
+                for (const vr of localOnlyVoidRequests) {
+                   await addToSyncQueue(
+                      vr.status === 'PENDING' ? 'VOID_REQUEST' : (vr.status === 'APPROVED' ? 'VOID_APPROVED' : 'VOID_REJECTED'),
+                      (vr.status === 'APPROVED') ? { request: vr, sale: vr.sale } : vr
+                   );
                 }
-                page++;
-              } else {
-                hasMore = false;
               }
+            } else {
+              loadedVoidRequests = localVoidRequests;
             }
 
+            // 7. Stock Change Requests
+            if (allCloudStockRequests.length > 0) {
+              const cloudStockIds = new Set(allCloudStockRequests.map((s: any) => s.id));
+              const localOnlyStockRequests = localStockRequests.filter(s => !cloudStockIds.has(s.id));
+              loadedStockChangeRequests = [...allCloudStockRequests, ...localOnlyStockRequests];
+              for (const s of loadedStockChangeRequests) await db.put('stockChangeRequests', s);
+              if (localOnlyStockRequests.length > 0) {
+                 for (const sr of localOnlyStockRequests) {
+                    await addToSyncQueue('STOCK_CHANGE_REQUEST', sr);
+                 }
+              }
+            } else {
+              loadedStockChangeRequests = localStockRequests;
+            }
+
+            // 8. Product Sale Logs
             if (isPhone && allCloudLogs.length > 0) {
               loadedProductSaleLogs = allCloudLogs;
             } else if (allCloudLogs.length > 0) {
               loadedProductSaleLogs = allCloudLogs;
               for (const l of allCloudLogs) await db.put('productSaleLogs', l);
-              console.log('✅ Loaded', allCloudLogs.length, 'product sale logs from cloud (all pages)');
             }
 
-            const { data: cloudSettings } = await supabase.from('business_settings').select('*').eq('id', 'default').single();
+            // 9. Business Settings
             const localSettings = await db.get('businessSettings', 'default');
-
             if (cloudSettings && localSettings) {
               const cloudTime = cloudSettings.updatedAt ? new Date(cloudSettings.updatedAt).getTime() : 0;
               const localTime = localSettings.updatedAt ? new Date(localSettings.updatedAt).getTime() : 0;
@@ -486,11 +407,9 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             } else if (cloudSettings) {
               await db.put('businessSettings', cloudSettings);
               setBusinessSettings(cloudSettings);
-              console.log('✅ Business settings loaded from cloud');
             } else if (localSettings) {
               setBusinessSettings(localSettings);
               await addToSyncQueue('UPDATE_SETTINGS', localSettings);
-              console.log('✅ Using local business settings');
             }
 
             cloudLoadSuccess = true;
@@ -1317,7 +1236,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     }
   };
 
-  const receiveStock = async (productId: string, quantity: number, newCost?: number) => {
+  const receiveStock = async (productId: string, quantity: number, newCost?: number, supplierName?: string) => {
     if (!currentUser) throw new Error('No user logged in');
 
     const product = products.find(p => p.id === productId);
@@ -1357,22 +1276,48 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     };
 
     const db = await dbPromise();
-    const tx = db.transaction(['products', 'syncQueue'], 'readwrite');
+    const tx = db.transaction(['products', 'syncQueue', 'stockChangeRequests'], 'readwrite');
 
     try {
+      const stockRequest: StockChangeRequest = {
+        id: Date.now().toString(),
+        productId,
+        productName: product.name,
+        changeType: 'RECEIVE',
+        quantityChange: quantity,
+        newCost,
+        supplierName,
+        requestedBy: currentUser.id,
+        requestedByName: currentUser.name,
+        requestedAt: new Date().toISOString(),
+        status: 'APPROVED',
+        currentStock: product.stock,
+        reviewedBy: currentUser.id,
+        reviewedByName: currentUser.name,
+        reviewedAt: new Date().toISOString(),
+        reviewNotes: 'Auto-approved receiver stock input',
+      };
+
       await tx.objectStore('products').put(updatedProduct);
+      await tx.objectStore('stockChangeRequests').put(stockRequest);
       await tx.objectStore('syncQueue').add({
         type: 'RECEIVE_STOCK',
         payload: updatedProduct,
         timestamp: Date.now()
       });
+      await tx.objectStore('syncQueue').add({
+        type: 'STOCK_CHANGE_APPROVED',
+        payload: { request: stockRequest, product: updatedProduct },
+        timestamp: Date.now()
+      });
       await tx.done;
 
       setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
+      setStockChangeRequests(prev => [stockRequest, ...prev]);
 
       const logMessage = priceChanged
-        ? `Received ${quantity} of ${product.name} (${product.size}). Cost price updated to ${newCost}.`
-        : `Received ${quantity} of ${product.name} (${product.size}).`;
+        ? `Received ${quantity} of ${product.name} (${product.size}) from ${supplierName || 'Unknown'}. Cost price updated to ${newCost}.`
+        : `Received ${quantity} of ${product.name} (${product.size}) from ${supplierName || 'Unknown'}.`;
       await addLog('STOCK_RECEIVE', logMessage);
     } catch (error) {
       console.error('Failed to receive stock:', error);
@@ -1505,7 +1450,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     changeType: 'ADJUST' | 'RECEIVE',
     quantityChange: number,
     reason?: string,
-    newCost?: number
+    newCost?: number,
+    supplierName?: string
   ) => {
     if (!currentUser) return;
     const product = products.find(p => p.id === productId);
@@ -1519,6 +1465,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       quantityChange,
       reason,
       newCost,
+      supplierName,
       requestedBy: currentUser.id,
       requestedByName: currentUser.name,
       requestedAt: new Date().toISOString(),
@@ -2185,6 +2132,92 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     }
   };
 
+  /**
+   * FETCH HISTORY
+   * Manually pulls older data from Supabase for a specific date range.
+   * Useful for auditing older records not kept in local sync (standard 7 days).
+   */
+  const fetchHistory = async (
+    table: 'sales' | 'shifts' | 'audit_logs' | 'product_sale_logs' | 'void_requests' | 'stock_change_requests',
+    startDate: string,
+    endDate: string
+  ) => {
+    try {
+      setIsSyncing(true);
+      const db = await dbPromise();
+      
+      // Map local table names to Supabase table names if different
+      const tableMap: Record<string, string> = {
+        'audit_logs': 'audit_logs', // Ensure match with fetching logic
+        'stock_change_requests': 'stock_change_requests',
+        'void_requests': 'void_requests',
+        'product_sale_logs': 'product_sale_logs'
+      };
+      
+      const sbTable = tableMap[table] || table;
+      
+      // Determine time column name
+      let timeCol = 'timestamp';
+      if (['shifts'].includes(table)) timeCol = 'startTime';
+      if (['void_requests', 'stock_change_requests'].includes(table)) timeCol = 'requestedAt';
+
+      console.log(`🔍 Fetching history for ${table} from ${startDate} to ${endDate}...`);
+      
+      const { data, error } = await supabase
+        .from(sbTable)
+        .select('*')
+        .gte(timeCol, startDate)
+        .lte(timeCol, endDate + 'T23:59:59.999Z');
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        // Map data back to state
+        if (table === 'sales') {
+          const cloudIds = new Set(data.map(s => s.id));
+          const merged = [...data, ...sales.filter(s => !cloudIds.has(s.id))];
+          setSales(merged);
+          for (const s of data) await db.put('sales', s);
+        } else if (table === 'shifts') {
+          const cloudIds = new Set(data.map(s => s.id));
+          const merged = [...data, ...shifts.filter(s => !cloudIds.has(s.id))];
+          setShifts(merged);
+          for (const s of data) await db.put('shifts', s);
+        } else if (table === 'audit_logs') {
+          const cloudIds = new Set(data.map(l => l.id));
+          const merged = [...data, ...auditLogs.filter(l => !cloudIds.has(l.id))];
+          setAuditLogs(merged);
+          for (const l of data) await db.put('auditLogs', l);
+        } else if (table === 'void_requests') {
+           const cloudIds = new Set(data.map(v => v.id));
+           const merged = [...data, ...voidRequests.filter(v => !cloudIds.has(v.id))];
+           setVoidRequests(merged);
+           for (const v of data) await db.put('voidRequests', v);
+        } else if (table === 'stock_change_requests') {
+           const cloudIds = new Set(data.map(s => s.id));
+           const merged = [...data, ...stockChangeRequests.filter(s => !cloudIds.has(s.id))];
+           setStockChangeRequests(merged);
+           for (const s of data) await db.put('stockChangeRequests', s);
+        } else if (table === 'product_sale_logs') {
+           const cloudIds = new Set(data.map(l => l.id));
+           const merged = [...data, ...productSaleLogs.filter(l => !cloudIds.has(l.id))];
+           setProductSaleLogs(merged);
+           for (const l of data) await db.put('productSaleLogs', l);
+        }
+        
+        console.log(`✅ Fetched and merged ${data.length} records.`);
+      } else {
+        console.log('ℹ️ No records found for this range.');
+      }
+    } catch (error) {
+      console.error('❌ History fetch failed:', error);
+      alert('Failed to fetch historical data. Please check your connection.');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+
   const contextValue = useMemo(() => ({
     currentUser,
     users,
@@ -2230,6 +2263,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     reconcileStock,
     refreshProductSaleLogs,
     cleanupDuplicateLogs,
+    fetchHistory,
   }), [
     currentUser,
     users,

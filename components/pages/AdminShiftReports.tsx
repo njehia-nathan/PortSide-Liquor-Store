@@ -72,19 +72,46 @@ const ItemTooltip = ({ item, sale }: { item: any; sale: Sale }) => {
 };
 
 const AdminShiftReports = () => {
-  const { shifts, sales, users, businessSettings } = useStore();
+  const { shifts, sales, users, businessSettings, fetchHistory, isSyncing } = useStore();
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null);
   const [filterUser, setFilterUser] = useState<string>('all');
   const [showZReport, setShowZReport] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<{ saleId: string; itemIndex: number } | null>(null);
 
+  // Date range state
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7); // Default to past 7 days
+    return d.toISOString().split('T')[0];
+  });
+  const [endDate, setEndDate] = useState(() => {
+    return new Date().toISOString().split('T')[0];
+  });
+
+
   const allShifts = useMemo(() => {
-    let filtered = [...shifts].sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+
+    let filtered = [...shifts]
+      .filter(s => 
+        new Date(s.startTime) >= start &&
+        new Date(s.startTime) <= end
+      )
+      .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+      
     if (filterUser !== 'all') {
       filtered = filtered.filter(s => s.cashierId === filterUser);
     }
     return filtered;
-  }, [shifts, filterUser]);
+  }, [shifts, filterUser, startDate, endDate]);
+
+  const handleFetchHistory = async () => {
+    await fetchHistory('shifts', startDate, endDate);
+    await fetchHistory('sales', startDate, endDate);
+  };
 
   const getShiftSales = (cashierId: string, shiftStart: string, shiftEnd?: string) => {
     return sales.filter(s => {
@@ -311,18 +338,46 @@ const AdminShiftReports = () => {
           </h1>
           <p className="text-sm text-slate-500">View shift history for all users</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Filter size={16} className="text-blue-400" />
-          <select
-            value={filterUser}
-            onChange={(e) => setFilterUser(e.target.value)}
-            className="px-3 py-2 border border-blue-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+        
+        <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+          <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-blue-200 shadow-sm grow lg:grow-0">
+            <Calendar size={16} className="text-blue-400" />
+            <input 
+              type="date" 
+              className="text-sm border-none outline-none bg-transparent"
+              value={startDate}
+              onChange={e => setStartDate(e.target.value)}
+            />
+            <span className="text-slate-400 text-sm">to</span>
+            <input 
+              type="date" 
+              className="text-sm border-none outline-none bg-transparent"
+              value={endDate}
+              onChange={e => setEndDate(e.target.value)}
+            />
+          </div>
+          
+          <button
+            onClick={handleFetchHistory}
+            disabled={isSyncing}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-xl text-sm font-bold transition-colors flex items-center gap-2 shadow-sm"
           >
-            <option value="all">All Users</option>
-            {users.map(user => (
-              <option key={user.id} value={user.id}>{user.name}</option>
-            ))}
-          </select>
+            {isSyncing ? 'Loading...' : 'Search'}
+          </button>
+
+          <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-blue-200 shadow-sm grow lg:grow-0">
+            <Filter size={16} className="text-blue-400" />
+            <select
+              value={filterUser}
+              onChange={(e) => setFilterUser(e.target.value)}
+              className="text-sm border-none outline-none bg-transparent"
+            >
+              <option value="all">All Users</option>
+              {users.map(user => (
+                <option key={user.id} value={user.id}>{user.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 

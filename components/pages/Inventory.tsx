@@ -59,6 +59,7 @@ const Inventory = () => {
   const [reason, setReason] = useState('');
   const [newCost, setNewCost] = useState('');
   const [newSupplier, setNewSupplier] = useState('');
+  const [isNewSupplier, setIsNewSupplier] = useState(false);  // toggle: pick existing vs type new
   const [editingAlertId, setEditingAlertId] = useState<string | null>(null);
 
   // Derive unique supplier names from products and past receipts
@@ -324,6 +325,7 @@ const Inventory = () => {
     setReason('');
     setNewCost('');
     setNewSupplier('');
+    setIsNewSupplier(false);
     setSelectedProductId('');
   };
 
@@ -871,17 +873,45 @@ const Inventory = () => {
                   {/* Supplier Input */}
                   <div className="col-span-2 lg:col-span-4">
                     <label className="block text-xs font-medium text-slate-600 mb-1">Supplier (Optional)</label>
-                    <input 
-                      type="text" 
-                      list="supplierOptions" 
-                      className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none" 
-                      placeholder="Type or select a supplier..." 
-                      value={newSupplier} 
-                      onChange={e => setNewSupplier(e.target.value)} 
-                    />
-                    <datalist id="supplierOptions">
-                      {uniqueSuppliers.map(s => <option key={s} value={s} />)}
-                    </datalist>
+                    {!isNewSupplier ? (
+                      <div className="flex gap-2">
+                        <select
+                          className="flex-1 p-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none bg-white"
+                          value={newSupplier}
+                          onChange={e => setNewSupplier(e.target.value)}
+                        >
+                          <option value="">— Select a supplier —</option>
+                          {uniqueSuppliers.map(s => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => { setIsNewSupplier(true); setNewSupplier(''); }}
+                          className="px-3 py-2 text-xs bg-green-100 text-green-700 border border-green-300 rounded-lg hover:bg-green-200 whitespace-nowrap font-medium"
+                        >
+                          + New
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          className="flex-1 p-2 border border-green-400 rounded-lg text-sm focus:ring-2 focus:ring-green-500 outline-none"
+                          placeholder="Type new supplier name..."
+                          value={newSupplier}
+                          onChange={e => setNewSupplier(e.target.value)}
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={() => { setIsNewSupplier(false); setNewSupplier(''); }}
+                          className="px-3 py-2 text-xs bg-slate-100 text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-200 whitespace-nowrap"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Barcode - Scan to find OR assign */}

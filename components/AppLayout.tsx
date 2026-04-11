@@ -1744,11 +1744,11 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           </div>
         )}
 
-        {/* Syncing Banner */}
+        {/* Syncing Toast — only shown briefly after user-triggered actions */}
         {isOnline && isSyncing && (
-          <div className="sticky top-0 z-30 bg-blue-500 text-white px-4 py-2 flex items-center gap-3 shadow-lg print:hidden">
-            <RefreshCw size={18} className="animate-spin flex-shrink-0" />
-            <p className="text-sm font-medium">Syncing data to cloud...</p>
+          <div className="fixed bottom-20 right-4 z-50 bg-slate-800 text-white px-4 py-2.5 rounded-xl shadow-xl flex items-center gap-2.5 text-sm font-medium print:hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <RefreshCw size={15} className="animate-spin flex-shrink-0 text-blue-400" />
+            <span>Syncing to cloud...</span>
           </div>
         )}
 

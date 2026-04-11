@@ -93,6 +93,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   // useRef locks are synchronous — immune to React's async state batching
   const isSyncLockedRef = useRef(false);   // Prevents duplicate sales on rapid clicks
   const isSyncRunningRef = useRef(false);  // Prevents concurrent sync queue processing
+  const lastUserActionRef = useRef<number>(0); // Timestamp of last user-triggered action (sale, stock, etc.)
   const [dataLoadedTimestamp, setDataLoadedTimestamp] = useState(0);
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -546,7 +547,10 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         const queueItems = await db.getAll('syncQueue');
         if (queueItems.length === 0) return;
 
-        setIsSyncing(true);
+        // Only show the syncing indicator if triggered within 30s of a user action
+        const USER_ACTION_WINDOW_MS = 30000;
+        const isUserTriggered = Date.now() - lastUserActionRef.current < USER_ACTION_WINDOW_MS;
+        if (isUserTriggered) setIsSyncing(true);
         const batch = queueItems.slice(0, BATCH_SIZE);
         console.log(`🔄 Processing ${batch.length}/${queueItems.length} items in sync queue...`);
 
@@ -744,6 +748,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       throw new Error('Another sale is being processed. Please wait.');
     }
     isSyncLockedRef.current = true;
+    lastUserActionRef.current = Date.now(); // Stamp user action so sync toast shows
 
     try {
       const db = await dbPromise();
@@ -979,6 +984,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     const db = await dbPromise();
     await db.put('products', newProduct);
+    lastUserActionRef.current = Date.now();
     await addLog('PRODUCT_ADD', `Added product: ${newProduct.name} (${newProduct.size})`);
     await addToSyncQueue('ADD_PRODUCT', newProduct);
   };
@@ -1189,6 +1195,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       });
       await tx.done;
 
+      lastUserActionRef.current = Date.now(); // Stamp so sync toast shows after stock receipt
       setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
       setStockChangeRequests(prev => [stockRequest, ...prev]);
 

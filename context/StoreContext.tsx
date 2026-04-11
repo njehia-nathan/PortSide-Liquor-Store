@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo, PropsWithChildren } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useRef, useCallback, PropsWithChildren } from 'react';
 import {
   User, Product, Sale, Shift, AuditLog, Role, SaleItem, BusinessSettings, VoidRequest, StockChangeRequest, ProductSaleLog
 } from '../types';
@@ -90,7 +90,9 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isSyncLocked, setIsSyncLocked] = useState(false);
+  // useRef locks are synchronous — immune to React's async state batching
+  const isSyncLockedRef = useRef(false);   // Prevents duplicate sales on rapid clicks
+  const isSyncRunningRef = useRef(false);  // Prevents concurrent sync queue processing
   const [dataLoadedTimestamp, setDataLoadedTimestamp] = useState(0);
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -112,47 +114,41 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
   useEffect(() => {
     const loadData = async () => {
-      try {
-        const db = await dbPromise();
+      const db = await dbPromise();
 
-        // Restore user session
-        const savedSession = localStorage.getItem('pos_session');
-        if (savedSession) {
-          try {
-            const { userId, lastActivity: savedLastActivity } = JSON.parse(savedSession);
-            const timeSinceActivity = Date.now() - savedLastActivity;
-            const FIVE_MINUTES = 5 * 60 * 1000;
-
-            if (timeSinceActivity < FIVE_MINUTES) {
-              console.log('Restoring session for user:', userId);
-            } else {
-              console.log('Session expired (inactive for', Math.round(timeSinceActivity / 60000), 'minutes)');
-              localStorage.removeItem('pos_session');
-            }
-          } catch (e) {
-            console.error('Failed to parse session:', e);
+      // ─── SESSION RESTORE ─────────────────────────────────────────────
+      const savedSession = localStorage.getItem('pos_session');
+      if (savedSession) {
+        try {
+          const { userId, lastActivity: savedLastActivity } = JSON.parse(savedSession);
+          const timeSinceActivity = Date.now() - savedLastActivity;
+          const FIVE_MINUTES = 5 * 60 * 1000;
+          if (timeSinceActivity < FIVE_MINUTES) {
+            console.log('Restoring session for user:', userId);
+          } else {
+            console.log('Session expired (inactive for', Math.round(timeSinceActivity / 60000), 'minutes)');
             localStorage.removeItem('pos_session');
           }
+        } catch (e) {
+          console.error('Failed to parse session:', e);
+          localStorage.removeItem('pos_session');
         }
+      }
 
-        let loadedUsers: User[] = [];
-        let loadedProducts: Product[] = [];
-        let loadedSales: Sale[] = [];
-        let loadedShifts: Shift[] = [];
-        let loadedLogs: AuditLog[] = [];
-        let loadedVoidRequests: VoidRequest[] = [];
-        let loadedStockChangeRequests: StockChangeRequest[] = [];
-        let loadedProductSaleLogs: ProductSaleLog[] = [];
-        let cloudLoadSuccess = false;
+      // ─── PHASE 1: CRITICAL DATA (blocks UI) ──────────────────────────
+      // Only loads what's needed to show the POS screen instantly:
+      // users, products, business settings, + last 48h of sales.
+      try {
+        console.log('⚡ Phase 1: Loading critical data...');
 
-        // STEP 1: Try to load from Supabase
-        if (navigator.onLine) {
-          try {
-            console.log('🌐 Loading data from Supabase...');
-            const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const isPhone = typeof window !== 'undefined' && window.innerWidth < 768;
+        const fortyEightHoursAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-            // --- LOCAL PRUNING ---
-            if (!isPhone) {
+        // Run pruning in background — don't wait for it
+        if (!isPhone) {
+          (async () => {
+            try {
               const syncCount = await db.count('syncQueue');
               const failedCount = await db.count('failedSyncQueue');
               if (syncCount === 0 && failedCount === 0) {
@@ -161,357 +157,117 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
                   const tx = db.transaction(storeName, 'readwrite');
                   const index = tx.store.index('timestamp');
                   let cursor = await index.openCursor(IDBKeyRange.upperBound(sevenDaysAgo));
-                  while (cursor) {
-                    await cursor.delete();
-                    cursor = await cursor.continue();
-                  }
+                  while (cursor) { await cursor.delete(); cursor = await cursor.continue(); }
                   await tx.done;
                 }
-                console.log('🧹 Local Data Pruning Complete: Cleaned records older than 7 days.');
+                console.log('🧹 Background pruning complete.');
               } else {
                 console.log(`⚠️ Pruning skipped: ${syncCount} pending syncs, ${failedCount} failed syncs.`);
               }
+            } catch (pruneErr) {
+              console.warn('Pruning error (non-fatal):', pruneErr);
             }
+          })();
+        }
 
-            const smartMerge = async <T extends { id: string; updatedAt?: string; version?: number }>(
-              storeName: string,
-              cloudData: T[],
-              localData: T[]
-            ): Promise<T[]> => {
-              const merged = new Map<string, T>();
+        let loadedUsers: User[] = [];
+        let loadedProducts: Product[] = [];
+        let loadedSales: Sale[] = [];
 
-              cloudData.forEach(item => merged.set(item.id, item));
+        if (navigator.onLine) {
+          const [
+            { data: cloudUsers },
+            { data: cloudProducts },
+            { data: recentSales },
+            { data: cloudSettings }
+          ] = await Promise.all([
+            supabase.from('users').select('*'),
+            supabase.from('products').select('*'),
+            supabase.from('sales').select('*').gte('timestamp', fortyEightHoursAgo).order('timestamp', { ascending: false }),
+            supabase.from('business_settings').select('*').eq('id', 'default').single()
+          ]);
 
-              for (const localItem of localData) {
-                const cloudItem = merged.get(localItem.id);
+          // Merge users
+          const localUsers = await db.getAll('users');
+          if (cloudUsers && cloudUsers.length > 0) {
+            const cloudIds = new Set(cloudUsers.map((u: any) => u.id));
+            const localOnly = localUsers.filter(u => !cloudIds.has(u.id));
+            loadedUsers = [...cloudUsers, ...localOnly];
+            for (const u of loadedUsers) await db.put('users', u);
+            console.log('✅ Merged', loadedUsers.length, 'users');
+          } else {
+            loadedUsers = localUsers;
+          }
 
-                if (!cloudItem) {
-                  merged.set(localItem.id, localItem);
-                  await addToSyncQueue(`UPDATE_${storeName.toUpperCase()}`, localItem);
-                  console.log(`📤 Local-only ${storeName}:`, localItem.id);
-                } else {
-                  const localVersion = localItem.version ?? 0;
-                  const cloudVersion = cloudItem.version ?? 0;
+          // Merge products
+          const localProducts = await db.getAll('products');
+          if (cloudProducts && cloudProducts.length > 0) {
+            const cloudIds = new Set(cloudProducts.map((p: any) => p.id));
+            const localOnly = localProducts.filter(p => !cloudIds.has(p.id));
+            loadedProducts = [...cloudProducts, ...localOnly];
+            for (const p of loadedProducts) await db.put('products', p);
+            console.log('✅ Merged', loadedProducts.length, 'products');
+          } else {
+            loadedProducts = localProducts;
+          }
 
-                  if (localVersion > cloudVersion) {
-                    merged.set(localItem.id, localItem);
-                    await addToSyncQueue(`UPDATE_${storeName.toUpperCase()}`, localItem);
-                    console.log(`🔄 Local ${storeName} is newer (v${localVersion} > v${cloudVersion}):`, localItem.id);
-                  } else if (localVersion === cloudVersion && localItem.updatedAt && cloudItem.updatedAt) {
-                    try {
-                      const localTime = new Date(localItem.updatedAt).getTime();
-                      const cloudTime = new Date(cloudItem.updatedAt).getTime();
-
-                      if (!isNaN(localTime) && !isNaN(cloudTime) && localTime > cloudTime) {
-                        merged.set(localItem.id, localItem);
-                        await addToSyncQueue(`UPDATE_${storeName.toUpperCase()}`, localItem);
-                        console.log(`🔄 Local ${storeName} is newer by timestamp:`, localItem.id);
-                      }
-                    } catch (error) {
-                      console.warn(`⚠️ Invalid timestamp for ${storeName}:`, localItem.id);
-                    }
-                  }
-                }
-              }
-
-              return Array.from(merged.values());
-            };
-
-            const localUsers = await db.getAll('users');
-            const localProducts = await db.getAll('products');
+          // Sales: cloud recent + any local-only
+          if (recentSales && recentSales.length > 0) {
             const localSales = await db.getAll('sales');
-            const localShifts = await db.getAll('shifts');
-            const localAuditLogs = await db.getAll('auditLogs');
-            const localVoidRequests = await db.getAll('voidRequests');
-            const localStockRequests = await db.getAll('stockChangeRequests');
-
-            const fetchAllPaginated = async (table: string, timeColumn: string, timeLimit: string, orderBy: string) => {
-              let allData: any[] = [];
-              let page = 0;
-              const pageSize = 1000;
-              let hasMore = true;
-
-              while (hasMore) {
-                let query = supabase.from(table).select('*');
-                if (timeLimit) {
-                  // Ensure correct typing since Supabase has different column names
-                  query = query.gte(timeColumn, timeLimit);
-                }
-                const { data, error } = await query
-                  .range(page * pageSize, (page + 1) * pageSize - 1)
-                  .order(orderBy, { ascending: false });
-
-                if (error) {
-                  console.error(`❌ Error fetching ${table}:`, error);
-                  break;
-                }
-
-                if (data && data.length > 0) {
-                  allData = [...allData, ...data];
-                  if (data.length < pageSize) hasMore = false;
-                  page++;
-                } else {
-                  hasMore = false;
-                }
-              }
-              return allData;
-            };
-
-            const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-
-            console.log('⚡ Fetching all records from Supabase in parallel...');
-            const [
-              { data: cloudUsers },
-              { data: cloudProducts },
-              allCloudSales,
-              allCloudShifts,
-              allCloudAuditLogs,
-              allCloudVoidRequests,
-              allCloudStockRequests,
-              allCloudLogs,
-              { data: cloudSettings }
-            ] = await Promise.all([
-              supabase.from('users').select('*'),
-              supabase.from('products').select('*'),
-              fetchAllPaginated('sales', 'timestamp', sevenDaysAgo, 'timestamp'),
-              // Fetch shifts with a 30-day limit to prevent hard loading
-              fetchAllPaginated('shifts', 'startTime', thirtyDaysAgo, 'startTime'),
-              fetchAllPaginated('audit_logs', 'timestamp', sevenDaysAgo, 'timestamp'),
-              fetchAllPaginated('void_requests', 'requestedAt', thirtyDaysAgo, 'requestedAt'),
-              fetchAllPaginated('stock_change_requests', 'requestedAt', thirtyDaysAgo, 'requestedAt'),
-              fetchAllPaginated('product_sale_logs', 'timestamp', sevenDaysAgo, 'timestamp'),
-              supabase.from('business_settings').select('*').eq('id', 'default').single()
-            ]);
-
-            // 1. Users
-            if (cloudUsers && cloudUsers.length > 0) {
-              loadedUsers = await smartMerge('users', cloudUsers, localUsers);
-              for (const u of loadedUsers) await db.put('users', u);
-              console.log('✅ Merged', loadedUsers.length, 'users');
-            } else if (localUsers.length > 0) {
-              loadedUsers = localUsers;
+            const cloudIds = new Set(recentSales.map((s: any) => s.id));
+            const localOnly = localSales.filter(s => !cloudIds.has(s.id));
+            loadedSales = [...recentSales, ...localOnly];
+            for (const s of recentSales) await db.put('sales', s);
+            if (localOnly.length > 0) {
+              for (const sale of localOnly) await addToSyncQueue('SALE', sale);
             }
+          } else {
+            loadedSales = await db.getAll('sales');
+          }
 
-            // 2. Products
-            if (cloudProducts && cloudProducts.length > 0) {
-              loadedProducts = await smartMerge('products', cloudProducts, localProducts);
-              for (const p of loadedProducts) await db.put('products', p);
-              console.log('✅ Merged', loadedProducts.length, 'products');
-            } else if (localProducts.length > 0) {
-              loadedProducts = localProducts;
-            }
-
-            // 3. Sales
-            if (isPhone && allCloudSales.length > 0) {
-              loadedSales = allCloudSales;
-            } else if (allCloudSales.length > 0) {
-              const cloudSaleIds = new Set(allCloudSales.map((s: any) => s.id));
-              const localOnlySales = localSales.filter(s => !cloudSaleIds.has(s.id));
-              loadedSales = [...allCloudSales, ...localOnlySales];
-              for (const s of loadedSales) await db.put('sales', s);
-              if (localOnlySales.length > 0) {
-                for (const sale of localOnlySales) await addToSyncQueue('SALE', sale);
-              }
-            } else {
-              loadedSales = localSales;
-            }
-
-            // 4. Shifts (Fixing the local-only disappearing bug)
-            if (allCloudShifts.length > 0) {
-              const cloudShiftIds = new Set(allCloudShifts.map((s: any) => s.id));
-              const localOnlyShifts = localShifts.filter(s => !cloudShiftIds.has(s.id));
-              loadedShifts = [...allCloudShifts, ...localOnlyShifts];
-              for (const s of loadedShifts) await db.put('shifts', s);
-              if (localOnlyShifts.length > 0) {
-                console.log('📤 Found', localOnlyShifts.length, 'local-only shifts');
-                for (const shift of localOnlyShifts) {
-                  await addToSyncQueue(shift.status === 'OPEN' ? 'OPEN_SHIFT' : 'CLOSE_SHIFT', shift);
-                }
-              }
-            } else {
-              loadedShifts = localShifts;
-            }
-
-            // 5. Audit Logs
-            if (isPhone && allCloudAuditLogs.length > 0) {
-              loadedLogs = allCloudAuditLogs;
-            } else if (allCloudAuditLogs.length > 0) {
-              const cloudLogIds = new Set(allCloudAuditLogs.map((l: any) => l.id));
-              const localOnlyAuditLogs = localAuditLogs.filter(l => !cloudLogIds.has(l.id));
-              loadedLogs = [...allCloudAuditLogs, ...localOnlyAuditLogs];
-              for (const l of loadedLogs) await db.put('auditLogs', l);
-              if (localOnlyAuditLogs.length > 0) {
-                for (const log of localOnlyAuditLogs) await addToSyncQueue('LOG', log);
-              }
-            } else {
-              loadedLogs = localAuditLogs;
-            }
-
-            // 6. Void Requests
-            if (allCloudVoidRequests.length > 0) {
-              const cloudVoidIds = new Set(allCloudVoidRequests.map((v: any) => v.id));
-              const localOnlyVoidRequests = localVoidRequests.filter(v => !cloudVoidIds.has(v.id));
-              loadedVoidRequests = [...allCloudVoidRequests, ...localOnlyVoidRequests];
-              for (const v of loadedVoidRequests) await db.put('voidRequests', v);
-              if (localOnlyVoidRequests.length > 0) {
-                for (const vr of localOnlyVoidRequests) {
-                   await addToSyncQueue(
-                      vr.status === 'PENDING' ? 'VOID_REQUEST' : (vr.status === 'APPROVED' ? 'VOID_APPROVED' : 'VOID_REJECTED'),
-                      (vr.status === 'APPROVED') ? { request: vr, sale: vr.sale } : vr
-                   );
-                }
-              }
-            } else {
-              loadedVoidRequests = localVoidRequests;
-            }
-
-            // 7. Stock Change Requests
-            if (allCloudStockRequests.length > 0) {
-              const cloudStockIds = new Set(allCloudStockRequests.map((s: any) => s.id));
-              const localOnlyStockRequests = localStockRequests.filter(s => !cloudStockIds.has(s.id));
-              loadedStockChangeRequests = [...allCloudStockRequests, ...localOnlyStockRequests];
-              for (const s of loadedStockChangeRequests) await db.put('stockChangeRequests', s);
-              if (localOnlyStockRequests.length > 0) {
-                 for (const sr of localOnlyStockRequests) {
-                    await addToSyncQueue('STOCK_CHANGE_REQUEST', sr);
-                 }
-              }
-            } else {
-              loadedStockChangeRequests = localStockRequests;
-            }
-
-            // 8. Product Sale Logs
-            if (isPhone && allCloudLogs.length > 0) {
-              loadedProductSaleLogs = allCloudLogs;
-            } else if (allCloudLogs.length > 0) {
-              loadedProductSaleLogs = allCloudLogs;
-              for (const l of allCloudLogs) await db.put('productSaleLogs', l);
-            }
-
-            // 9. Business Settings
-            const localSettings = await db.get('businessSettings', 'default');
-            if (cloudSettings && localSettings) {
-              const cloudTime = cloudSettings.updatedAt ? new Date(cloudSettings.updatedAt).getTime() : 0;
-              const localTime = localSettings.updatedAt ? new Date(localSettings.updatedAt).getTime() : 0;
-
-              if (localTime > cloudTime) {
-                await db.put('businessSettings', localSettings);
-                setBusinessSettings(localSettings);
-                await addToSyncQueue('UPDATE_SETTINGS', localSettings);
-                console.log('✅ Using local business settings');
-              } else {
-                await db.put('businessSettings', cloudSettings);
-                setBusinessSettings(cloudSettings);
-                console.log('✅ Using cloud business settings');
-              }
-            } else if (cloudSettings) {
-              await db.put('businessSettings', cloudSettings);
-              setBusinessSettings(cloudSettings);
-            } else if (localSettings) {
+          // Business settings
+          const localSettings = await db.get('businessSettings', 'default');
+          if (cloudSettings && localSettings) {
+            const cloudTime = cloudSettings.updatedAt ? new Date(cloudSettings.updatedAt).getTime() : 0;
+            const localTime = localSettings.updatedAt ? new Date(localSettings.updatedAt).getTime() : 0;
+            if (localTime > cloudTime) {
               setBusinessSettings(localSettings);
               await addToSyncQueue('UPDATE_SETTINGS', localSettings);
+            } else {
+              await db.put('businessSettings', cloudSettings);
+              setBusinessSettings(cloudSettings);
             }
-
-            cloudLoadSuccess = true;
-            console.log('✅ All data loaded from Supabase');
-          } catch (cloudErr) {
-            console.warn("⚠️ Could not fetch from Supabase, falling back to local storage.", cloudErr);
-            cloudLoadSuccess = false;
+          } else if (cloudSettings) {
+            await db.put('businessSettings', cloudSettings);
+            setBusinessSettings(cloudSettings);
+          } else if (localSettings) {
+            setBusinessSettings(localSettings);
+            await addToSyncQueue('UPDATE_SETTINGS', localSettings);
+          } else {
+            const defaultSettings: BusinessSettings = {
+              id: 'default', businessName: 'Grab Bottle', phone: '+254 700 000000',
+              email: '', location: 'Nairobi, Kenya', logoUrl: '',
+              receiptFooter: 'Thank you for your business!',
+              evolutionApiUrl: '', evolutionApiKey: '', evolutionInstance: ''
+            };
+            await db.put('businessSettings', defaultSettings);
+            setBusinessSettings(defaultSettings);
           }
+        } else {
+          // Offline: load everything from IndexedDB
+          console.log('💾 Offline: Loading critical data from IndexedDB...');
+          loadedUsers = await db.getAll('users');
+          loadedProducts = await db.getAll('products');
+          loadedSales = await db.getAll('sales');
+          const localSettings = await db.get('businessSettings', 'default');
+          if (localSettings) setBusinessSettings(localSettings);
         }
 
-        // STEP 2: Load from local if cloud failed
-        if (!cloudLoadSuccess || !navigator.onLine) {
-          console.log('💾 Loading data from local IndexedDB...');
-          if (loadedUsers.length === 0) loadedUsers = await db.getAll('users');
-          if (loadedProducts.length === 0) loadedProducts = await db.getAll('products');
-          if (loadedSales.length === 0) loadedSales = await db.getAll('sales');
-          if (loadedShifts.length === 0) loadedShifts = await db.getAll('shifts');
-          if (loadedLogs.length === 0) loadedLogs = await db.getAll('auditLogs');
-          if (loadedVoidRequests.length === 0) loadedVoidRequests = await db.getAll('voidRequests');
-          if (loadedStockChangeRequests.length === 0) loadedStockChangeRequests = await db.getAll('stockChangeRequests');
-          if (loadedProductSaleLogs.length === 0) loadedProductSaleLogs = await db.getAll('productSaleLogs');
-          console.log('✅ Loaded data from local storage');
-        }
-
-        // STEP 3: Merge local-only data
-        if (cloudLoadSuccess && navigator.onLine) {
-          try {
-            const localSales = await db.getAll('sales');
-            const cloudSaleIds = new Set(loadedSales.map(s => s.id));
-            const localOnlySales = localSales.filter(s => !cloudSaleIds.has(s.id));
-            if (localOnlySales.length > 0) {
-              loadedSales = [...loadedSales, ...localOnlySales];
-              console.log('📤 Found', localOnlySales.length, 'local-only sales to sync');
-            }
-
-            const localProducts = await db.getAll('products');
-            const cloudProductIds = new Set(loadedProducts.map(p => p.id));
-            const localOnlyProducts = localProducts.filter(p => !cloudProductIds.has(p.id));
-            if (localOnlyProducts.length > 0) {
-              loadedProducts = [...loadedProducts, ...localOnlyProducts];
-              console.log('📤 Found', localOnlyProducts.length, 'local-only products to sync');
-            }
-
-            const localLogs = await db.getAll('productSaleLogs');
-            const cloudLogIds = new Set(loadedProductSaleLogs.map(l => l.id));
-
-            const logKeyMap = new Map<string, typeof loadedProductSaleLogs[0]>();
-            for (const log of loadedProductSaleLogs) {
-              const key = `${log.saleId}-${log.productId}`;
-              const existing = logKeyMap.get(key);
-              if (!existing || new Date(log.timestamp).getTime() > new Date(existing.timestamp).getTime()) {
-                logKeyMap.set(key, log);
-              }
-            }
-
-            let localOnlyLogsCount = 0;
-            let duplicatesSkipped = 0;
-            for (const localLog of localLogs) {
-              if (cloudLogIds.has(localLog.id)) {
-                continue;
-              }
-
-              const key = `${localLog.saleId}-${localLog.productId}`;
-              const existingLog = logKeyMap.get(key);
-
-              if (existingLog) {
-                const localTime = new Date(localLog.timestamp).getTime();
-                const existingTime = new Date(existingLog.timestamp).getTime();
-
-                if (localTime > existingTime) {
-                  logKeyMap.set(key, localLog);
-                  await db.delete('productSaleLogs', existingLog.id);
-                  localOnlyLogsCount++;
-                } else {
-                  await db.delete('productSaleLogs', localLog.id);
-                  duplicatesSkipped++;
-                }
-              } else {
-                logKeyMap.set(key, localLog);
-                localOnlyLogsCount++;
-              }
-            }
-
-            loadedProductSaleLogs = Array.from(logKeyMap.values());
-
-            if (localOnlyLogsCount > 0) {
-              console.log('📤 Found', localOnlyLogsCount, 'local-only product sale logs to sync');
-            }
-            if (duplicatesSkipped > 0) {
-              console.log('🗑️ Cleaned up', duplicatesSkipped, 'duplicate product sale logs');
-            }
-          } catch (mergeErr) {
-            console.warn('⚠️ Error merging local-only data:', mergeErr);
-          }
-        }
-
-        // SEEDING
+        // Seed if first run
         if (loadedUsers.length === 0) {
-          const legacyUsers = localStorage.getItem('bk_users');
-          const seedUsers = legacyUsers ? JSON.parse(legacyUsers) : INITIAL_USERS;
-
-          const finalSeedUsers = seedUsers.map((u: any) => {
+          const legacy = localStorage.getItem('bk_users');
+          const seed = legacy ? JSON.parse(legacy) : INITIAL_USERS;
+          const final = seed.map((u: any) => {
             if (!u.permissions) {
               if (u.role === Role.ADMIN) return { ...u, permissions: ['POS', 'INVENTORY', 'REPORTS', 'ADMIN'] };
               if (u.role === Role.MANAGER) return { ...u, permissions: ['POS', 'INVENTORY', 'REPORTS'] };
@@ -519,61 +275,22 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             }
             return u;
           });
-
-          for (const u of finalSeedUsers) await db.put('users', u);
-          loadedUsers = finalSeedUsers;
-          console.log('✅ Seeded users to IndexedDB:', loadedUsers.length);
-        } else {
-          console.log('✅ Loaded users from IndexedDB:', loadedUsers.length);
+          for (const u of final) await db.put('users', u);
+          loadedUsers = final;
         }
-
         if (loadedProducts.length === 0) {
-          const legacyProducts = localStorage.getItem('bk_products');
-          const seedProducts = legacyProducts ? JSON.parse(legacyProducts) : INITIAL_PRODUCTS;
-          for (const p of seedProducts) await db.put('products', p);
-          loadedProducts = seedProducts;
+          const legacy = localStorage.getItem('bk_products');
+          const seed = legacy ? JSON.parse(legacy) : INITIAL_PRODUCTS;
+          for (const p of seed) await db.put('products', p);
+          loadedProducts = seed;
         }
 
-        // Sort Data
         loadedSales.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        loadedVoidRequests.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
-        loadedStockChangeRequests.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
-        loadedProductSaleLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-        // Load Business Settings
-        const loadedSettings = await db.get('businessSettings', 'default');
-        if (loadedSettings) {
-          setBusinessSettings(loadedSettings);
-        } else {
-          const defaultSettings: BusinessSettings = {
-            id: 'default',
-            businessName: 'Grab Bottle',
-            phone: '+254 700 000000',
-            email: '',
-            location: 'Nairobi, Kenya',
-            logoUrl: '',
-            receiptFooter: 'Thank you for your business!',
-            evolutionApiUrl: '',
-            evolutionApiKey: '',
-            evolutionInstance: ''
-          };
-          await db.put('businessSettings', defaultSettings);
-          setBusinessSettings(defaultSettings);
-        }
-
-        // Update React State
+        // Update critical React state — UI unlocks after this
         setUsers(loadedUsers);
         setProducts(loadedProducts);
         setSales(loadedSales);
-        setShifts(loadedShifts);
-        setAuditLogs(loadedLogs);
-        setVoidRequests(loadedVoidRequests);
-        setStockChangeRequests(loadedStockChangeRequests);
-        setProductSaleLogs(loadedProductSaleLogs);
-
-        setDataLoadedTimestamp(Date.now());
-        console.log(`✅ Data fully loaded: ${loadedProductSaleLogs.length} product sale logs ready`);
 
         // Restore user session
         if (savedSession) {
@@ -581,7 +298,6 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             const { userId, lastActivity: savedLastActivity } = JSON.parse(savedSession);
             const timeSinceActivity = Date.now() - savedLastActivity;
             const FIVE_MINUTES = 5 * 60 * 1000;
-
             if (timeSinceActivity < FIVE_MINUTES) {
               const user = loadedUsers.find(u => u.id === userId);
               if (user) {
@@ -590,15 +306,170 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
                 console.log('✅ Session restored for:', user.name);
               }
             }
-          } catch (e) {
-            // Already handled
-          }
+          } catch (e) { /* already handled */ }
         }
+
+        console.log('✅ Phase 1 complete — UI is ready.');
       } catch (err) {
-        console.error("Failed to load database:", err);
+        console.error('Critical data load failed:', err);
       } finally {
+        // Always unlock the UI after critical phase, even if something failed
         setIsLoading(false);
       }
+
+      // ─── PHASE 2: BACKGROUND DATA (after first paint) ─────────────────
+      // Loads historical records (shifts, logs, requests) without blocking UI.
+      setTimeout(async () => {
+        if (!navigator.onLine) return;
+        try {
+          console.log('🔄 Phase 2: Loading background history...');
+          const db2 = await dbPromise();
+          const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+          const fetchPaginated = async (table: string, timeCol: string, timeLimit: string, orderBy: string) => {
+            let all: any[] = []; let page = 0; const pageSize = 1000; let hasMore = true;
+            while (hasMore) {
+              const { data, error } = await supabase.from(table).select('*')
+                .gte(timeCol, timeLimit)
+                .range(page * pageSize, (page + 1) * pageSize - 1)
+                .order(orderBy, { ascending: false });
+              if (error || !data || data.length === 0) { hasMore = false; break; }
+              all = [...all, ...data];
+              if (data.length < pageSize) hasMore = false;
+              page++;
+            }
+            return all;
+          };
+
+          const [
+            allCloudSales,
+            allCloudShifts,
+            allCloudAuditLogs,
+            allCloudVoidRequests,
+            allCloudStockRequests,
+            allCloudProductSaleLogs
+          ] = await Promise.all([
+            fetchPaginated('sales', 'timestamp', sevenDaysAgo, 'timestamp'),
+            fetchPaginated('shifts', 'startTime', thirtyDaysAgo, 'startTime'),
+            fetchPaginated('audit_logs', 'timestamp', sevenDaysAgo, 'timestamp'),
+            fetchPaginated('void_requests', 'requestedAt', thirtyDaysAgo, 'requestedAt'),
+            fetchPaginated('stock_change_requests', 'requestedAt', thirtyDaysAgo, 'requestedAt'),
+            fetchPaginated('product_sale_logs', 'timestamp', sevenDaysAgo, 'timestamp')
+          ]);
+
+          // Sales full merge (7 days)
+          if (allCloudSales.length > 0) {
+            const localSales = await db2.getAll('sales');
+            const cloudIds = new Set(allCloudSales.map((s: any) => s.id));
+            // Only queue truly new local-only sales (not just outside the 48h window from phase 1)
+            // A "truly new" sale has a timestamp WITHIN the 7-day window but wasn't in Supabase
+            const localOnly = localSales.filter(s => !cloudIds.has(s.id) && new Date(s.timestamp) >= new Date(sevenDaysAgo));
+            const merged = [...allCloudSales, ...localSales.filter(s => !cloudIds.has(s.id))];
+            merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            for (const s of allCloudSales) await db2.put('sales', s);
+            if (localOnly.length > 0) for (const s of localOnly) await addToSyncQueue('SALE', s);
+            setSales(merged);
+          }
+
+          // Shifts — display merge only (no re-queuing: items outside 30-day window were already synced)
+          if (allCloudShifts.length > 0) {
+            const localShifts = await db2.getAll('shifts');
+            const cloudIds = new Set(allCloudShifts.map((s: any) => s.id));
+            const localOnly = localShifts.filter(s => !cloudIds.has(s.id));
+            const merged = [...allCloudShifts, ...localOnly];
+            for (const s of allCloudShifts) await db2.put('shifts', s);
+            // Only queue shifts within the 30-day window that aren't in cloud (truly unsynced)
+            const thirtyDaysAgoDate = new Date(thirtyDaysAgo);
+            const trulyUnsynced = localOnly.filter(s => new Date(s.startTime) >= thirtyDaysAgoDate);
+            if (trulyUnsynced.length > 0) {
+              console.log('📤 Found', trulyUnsynced.length, 'truly unsynced shifts to queue');
+              for (const shift of trulyUnsynced) await addToSyncQueue(shift.status === 'OPEN' ? 'OPEN_SHIFT' : 'CLOSE_SHIFT', shift);
+            }
+            setShifts(merged);
+          } else {
+            const local = await db2.getAll('shifts');
+            setShifts(local);
+          }
+
+          // Audit logs — display merge only (no re-queuing for items outside 7-day window)
+          if (allCloudAuditLogs.length > 0) {
+            const localLogs = await db2.getAll('auditLogs');
+            const cloudIds = new Set(allCloudAuditLogs.map((l: any) => l.id));
+            const localOnly = localLogs.filter(l => !cloudIds.has(l.id));
+            const merged = [...allCloudAuditLogs, ...localOnly];
+            merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            for (const l of allCloudAuditLogs) await db2.put('auditLogs', l);
+            // Only queue logs within the 7-day window (older ones were already synced)
+            const sevenDaysAgoDate = new Date(sevenDaysAgo);
+            const trulyUnsynced = localOnly.filter(l => new Date(l.timestamp) >= sevenDaysAgoDate);
+            if (trulyUnsynced.length > 0) for (const log of trulyUnsynced) await addToSyncQueue('LOG', log);
+            setAuditLogs(merged);
+          } else {
+            const local = await db2.getAll('auditLogs');
+            setAuditLogs(local);
+          }
+
+          // Void requests
+          if (allCloudVoidRequests.length > 0) {
+            const localVR = await db2.getAll('voidRequests');
+            const cloudIds = new Set(allCloudVoidRequests.map((v: any) => v.id));
+            const localOnly = localVR.filter(v => !cloudIds.has(v.id));
+            const merged = [...allCloudVoidRequests, ...localOnly];
+            merged.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
+            for (const v of allCloudVoidRequests) await db2.put('voidRequests', v);
+            setVoidRequests(merged);
+          } else {
+            const local = await db2.getAll('voidRequests');
+            setVoidRequests(local);
+          }
+
+          // Stock change requests
+          if (allCloudStockRequests.length > 0) {
+            const localSCR = await db2.getAll('stockChangeRequests');
+            const cloudIds = new Set(allCloudStockRequests.map((s: any) => s.id));
+            const localOnly = localSCR.filter(s => !cloudIds.has(s.id));
+            const merged = [...allCloudStockRequests, ...localOnly];
+            merged.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
+            for (const s of allCloudStockRequests) await db2.put('stockChangeRequests', s);
+            setStockChangeRequests(merged);
+          } else {
+            const local = await db2.getAll('stockChangeRequests');
+            setStockChangeRequests(local);
+          }
+
+          // Product sale logs — display merge only (no re-queuing for items outside 7-day window)
+          if (allCloudProductSaleLogs.length > 0) {
+            for (const l of allCloudProductSaleLogs) await db2.put('productSaleLogs', l);
+            const allLocal = await db2.getAll('productSaleLogs');
+            const cloudIds = new Set(allCloudProductSaleLogs.map((l: any) => l.id));
+            const localOnly = allLocal.filter(l => !cloudIds.has(l.id));
+            const merged = [...allCloudProductSaleLogs, ...localOnly];
+            merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            // Only queue logs within the 7-day window (older ones were already synced)
+            const sevenDaysAgoDate = new Date(sevenDaysAgo);
+            const trulyUnsynced = localOnly.filter(l => new Date(l.timestamp) >= sevenDaysAgoDate);
+            if (trulyUnsynced.length > 0) console.log('📤 Found', trulyUnsynced.length, 'truly unsynced product sale logs');
+            setProductSaleLogs(merged);
+            console.log(`✅ Phase 2 complete: ${merged.length} product sale logs ready`);
+          } else {
+            const local = await db2.getAll('productSaleLogs');
+            setProductSaleLogs(local);
+          }
+
+          setDataLoadedTimestamp(Date.now());
+        } catch (bgErr) {
+          console.warn('Background data load error (non-fatal):', bgErr);
+          // Still mark data as loaded even if background fetch failed
+          const db2 = await dbPromise();
+          setShifts(await db2.getAll('shifts'));
+          setAuditLogs(await db2.getAll('auditLogs'));
+          setVoidRequests(await db2.getAll('voidRequests'));
+          setStockChangeRequests(await db2.getAll('stockChangeRequests'));
+          setProductSaleLogs(await db2.getAll('productSaleLogs'));
+          setDataLoadedTimestamp(Date.now());
+        }
+      }, 200); // 200ms gives React time to paint the loading screen before heavy fetch
     };
 
     loadData();
@@ -613,6 +484,9 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+
+
 
   // ------------------------------------------------------------------
   // Session Management
@@ -655,60 +529,62 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   }, [currentUser, lastActivity]);
 
   // ------------------------------------------------------------------
-  // BACKGROUND SYNC PROCESSOR
+  // BACKGROUND SYNC PROCESSOR — Serial Batched (10 items/tick)
   // ------------------------------------------------------------------
   useEffect(() => {
     if (!isOnline) return;
 
+    const BATCH_SIZE = 10;
+
     const processSyncQueue = async () => {
-      if (isSyncing) return;
+      // useRef guard is instantaneous — no async state lag
+      if (isSyncRunningRef.current) return;
+      isSyncRunningRef.current = true;
 
       try {
         const db = await dbPromise();
         const queueItems = await db.getAll('syncQueue');
-
         if (queueItems.length === 0) return;
 
         setIsSyncing(true);
-        console.log(`🔄 Processing ${queueItems.length} items in sync queue...`);
+        const batch = queueItems.slice(0, BATCH_SIZE);
+        console.log(`🔄 Processing ${batch.length}/${queueItems.length} items in sync queue...`);
 
-        const results = await Promise.all(
-          queueItems.map(async (item) => {
-            try {
-              const success = await pushToCloud(item.type, item.payload);
-              if (success) {
+        let successCount = 0;
+        // Serial execution — one request at a time, no network flooding
+        for (const item of batch) {
+          // Yield to main thread if a sale is being processed
+          if (isSyncLockedRef.current) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+          try {
+            const success = await pushToCloud(item.type, item.payload);
+            if (success) {
+              await db.delete('syncQueue', item.key!);
+              successCount++;
+            } else {
+              const retryCount = (item.retryCount || 0) + 1;
+              if (retryCount >= 5) {
+                await db.add('failedSyncQueue', { ...item, failedAt: Date.now(), totalRetries: retryCount, canRetry: true });
                 await db.delete('syncQueue', item.key!);
-                return { success: true, key: item.key };
+                console.error(`❌ Item ${item.key} moved to failed queue after ${retryCount} retries`);
               } else {
-                const retryCount = (item.retryCount || 0) + 1;
-                if (retryCount >= 5) {
-                  await db.add('failedSyncQueue', {
-                    ...item,
-                    failedAt: Date.now(),
-                    totalRetries: retryCount,
-                    canRetry: true
-                  });
-                  await db.delete('syncQueue', item.key!);
-                  console.error(`❌ Item ${item.key} moved to failed queue after ${retryCount} retries`);
-                } else {
-                  await db.put('syncQueue', { ...item, retryCount });
-                }
-                return { success: false, key: item.key };
+                await db.put('syncQueue', { ...item, retryCount });
               }
-            } catch (error) {
-              console.error(`Error syncing item ${item.key}:`, error);
-              return { success: false, key: item.key };
             }
-          })
-        );
+          } catch (error) {
+            console.error(`Error syncing item ${item.key}:`, error);
+          }
+        }
 
-        const successCount = results.filter(r => r.success).length;
+        const remaining = queueItems.length - successCount;
         if (successCount > 0) {
-          console.log(`✅ Successfully synced ${successCount}/${queueItems.length} items to cloud`);
+          console.log(`✅ Synced ${successCount}/${batch.length}. ${remaining > 0 ? `${remaining} remaining.` : 'Queue empty!'}`);
         }
       } catch (error) {
         console.error('Sync queue processing error:', error);
       } finally {
+        isSyncRunningRef.current = false;
         setIsSyncing(false);
       }
     };
@@ -719,7 +595,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     return () => {
       clearInterval(syncInterval);
     };
-  }, [isOnline, isSyncing]);
+  }, [isOnline]);
 
   const currentShift = shifts.find(s => s.status === 'OPEN' && s.cashierId === currentUser?.id) || null;
 
@@ -863,10 +739,11 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   ) => {
     if (!currentUser) return undefined;
 
-    if (isSyncLocked) {
+    // Synchronous ref check prevents race condition from rapid double-clicks
+    if (isSyncLockedRef.current) {
       throw new Error('Another sale is being processed. Please wait.');
     }
-    setIsSyncLocked(true);
+    isSyncLockedRef.current = true;
 
     try {
       const db = await dbPromise();
@@ -998,7 +875,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       console.error('Sale processing failed:', error);
       throw error;
     } finally {
-      setIsSyncLocked(false);
+      isSyncLockedRef.current = false;
     }
   };
 

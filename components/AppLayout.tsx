@@ -254,7 +254,8 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         console.error('❌ Detection failed:', error);
       });
     }
-  }, [currentUser, sales, productSaleLogs, dataLoadedTimestamp, isBulkOperationInProgress, isRefreshingLogs, businessSettings]);
+  }, [currentUser, dataLoadedTimestamp, isBulkOperationInProgress, isRefreshingLogs, businessSettings]);
+
 
   if (!currentUser) {
     return <>{children}</>;

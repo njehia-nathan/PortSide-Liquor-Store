@@ -57,6 +57,23 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const [fixedSaleItemIds, setFixedSaleItemIds] = useState<Set<string>>(new Set());
   const [isBulkOperationInProgress, setIsBulkOperationInProgress] = useState(false);
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
+  const [failedSyncCount, setFailedSyncCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const db = await dbPromise();
+        const count = await db.count('failedSyncQueue');
+        if (!cancelled) setFailedSyncCount(count);
+      } catch {
+        /* IndexedDB not available on SSR or locked — ignore */
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   useEffect(() => {
     if (auditLogs.length > 0) {
@@ -1741,6 +1758,25 @@ const AppLayout = ({ children }: PropsWithChildren) => {
             >
               <X size={18} />
             </button>
+          </div>
+        )}
+
+        {/* Failed-sync banner — visible until the admin reviews the panel */}
+        {failedSyncCount > 0 && (
+          <div className="sticky top-0 z-30 bg-red-600 text-white px-4 py-3 flex items-center justify-between shadow-lg print:hidden">
+            <div className="flex items-center gap-3 flex-1">
+              <AlertCircle size={20} className="flex-shrink-0" />
+              <div className="flex-1">
+                <p className="font-semibold text-sm">{failedSyncCount} {failedSyncCount === 1 ? 'record' : 'records'} failed to sync</p>
+                <p className="text-xs opacity-90">Some data is only saved locally. Tap to review and retry.</p>
+              </div>
+            </div>
+            <Link
+              href="/admin/failed-sync"
+              className="ml-4 px-3 py-1.5 bg-white text-red-700 rounded-md text-xs font-semibold hover:bg-red-50"
+            >
+              Review
+            </Link>
           </div>
         )}
 

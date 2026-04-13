@@ -4,8 +4,8 @@ import {
 } from '../types';
 import { SaleReconciliation, ProductReconciliation } from '../components/ReconciliationDialog';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
-import { dbPromise, addToSyncQueue } from '../db';
-import { pushToCloud, supabase } from '../cloud';
+import { dbPromise, addToSyncQueue, SYNC_QUEUE_EVENT } from '../db';
+import { pushToCloud, supabase, fetchAll } from '../cloud';
 
 /**
  * STORE CONTEXT INTERFACE
@@ -57,6 +57,14 @@ interface StoreContextType {
   // --- SHIFT ACTIONS ---
   openShift: (openingCash?: number) => Promise<void>;
   closeShift: (closingCash: number, comments?: string) => Promise<void>;
+  createBackfillShift: (params: {
+    cashierId: string;
+    cashierName: string;
+    startTime: string;
+    endTime: string;
+    expectedCash: number;
+    comments?: string;
+  }) => Promise<Shift>;
 
   // --- VOID REQUEST ACTIONS ---
   requestVoid: (saleId: string, reason: string) => Promise<void>;
@@ -75,6 +83,51 @@ interface StoreContextType {
   cleanupDuplicateLogs: () => Promise<{ removed: number; errors: string[] }>;
   fetchHistory: (table: 'sales' | 'shifts' | 'audit_logs' | 'product_sale_logs' | 'void_requests' | 'stock_change_requests', startDate: string, endDate: string) => Promise<void>;
 }
+
+// ---------------- Helpers ----------------
+
+// Merge two collections keyed by `id`. When both sides have the same id, prefer
+// the row with the newer `updatedAt` (falls back to keeping the cloud copy if
+// neither has the field). Order: cloud rows first, then local-only.
+const mergeByIdNewerWins = <T extends { id: string; updatedAt?: string }>(
+  cloudRows: T[],
+  localRows: T[]
+): T[] => {
+  const byId = new Map<string, T>();
+  for (const c of cloudRows ?? []) byId.set(c.id, c);
+  for (const l of localRows ?? []) {
+    const existing = byId.get(l.id);
+    if (!existing) {
+      byId.set(l.id, l);
+      continue;
+    }
+    const a = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+    const b = l.updatedAt ? new Date(l.updatedAt).getTime() : 0;
+    if (b > a) byId.set(l.id, l);
+  }
+  return Array.from(byId.values());
+};
+
+// Crypto-strong unique id. Falls back gracefully if randomUUID is unavailable
+// (very old browsers) by combining timestamp + random.
+const newId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+};
+
+// Max `updatedAt` across a row set. Used as a watermark so we only fetch rows
+// from the cloud that are newer than what we already have locally.
+const maxUpdatedAt = <T extends { updatedAt?: string }>(rows: T[]): string | null => {
+  let max = 0;
+  for (const r of rows) {
+    if (!r.updatedAt) continue;
+    const t = new Date(r.updatedAt).getTime();
+    if (t > max) max = t;
+  }
+  return max > 0 ? new Date(max).toISOString() : null;
+};
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
 
@@ -137,96 +190,106 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       }
 
       // ─── PHASE 1: CRITICAL DATA (blocks UI) ──────────────────────────
-      // Only loads what's needed to show the POS screen instantly:
-      // users, products, business settings, + last 48h of sales.
+      // Loads everything reports/POS need to render correctly:
+      // ALL users, ALL products, business settings, last 7 days of sales,
+      // last 30 days of shifts + every OPEN shift regardless of age.
       try {
         console.log('⚡ Phase 1: Loading critical data...');
 
-        const isPhone = typeof window !== 'undefined' && window.innerWidth < 768;
-        const fortyEightHoursAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-        // Run pruning in background — don't wait for it
-        if (!isPhone) {
-          (async () => {
-            try {
-              const syncCount = await db.count('syncQueue');
-              const failedCount = await db.count('failedSyncQueue');
-              if (syncCount === 0 && failedCount === 0) {
-                const pruneStores = ['sales', 'auditLogs', 'productSaleLogs'] as const;
-                for (const storeName of pruneStores) {
-                  const tx = db.transaction(storeName, 'readwrite');
-                  const index = tx.store.index('timestamp');
-                  let cursor = await index.openCursor(IDBKeyRange.upperBound(sevenDaysAgo));
-                  while (cursor) { await cursor.delete(); cursor = await cursor.continue(); }
-                  await tx.done;
-                }
-                console.log('🧹 Background pruning complete.');
-              } else {
-                console.log(`⚠️ Pruning skipped: ${syncCount} pending syncs, ${failedCount} failed syncs.`);
-              }
-            } catch (pruneErr) {
-              console.warn('Pruning error (non-fatal):', pruneErr);
+        // Prune audit logs only — sales and product-sale-logs must be kept in
+        // IndexedDB in full because Inventory and Reports compute lifetime KPIs
+        // from them. Gated on an empty sync/failed queue so we never delete
+        // unsynced data.
+        (async () => {
+          try {
+            const syncCount = await db.count('syncQueue');
+            const failedCount = await db.count('failedSyncQueue');
+            if (syncCount === 0 && failedCount === 0) {
+              const thirtyDaysAgoForLogs = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+              const tx = db.transaction('auditLogs', 'readwrite');
+              const index = tx.store.index('timestamp');
+              let cursor = await index.openCursor(IDBKeyRange.upperBound(thirtyDaysAgoForLogs));
+              while (cursor) { await cursor.delete(); cursor = await cursor.continue(); }
+              await tx.done;
+              console.log('🧹 Background audit-log pruning complete.');
+            } else {
+              console.log(`⚠️ Pruning skipped: ${syncCount} pending syncs, ${failedCount} failed syncs.`);
             }
-          })();
-        }
+          } catch (pruneErr) {
+            console.warn('Pruning error (non-fatal):', pruneErr);
+          }
+        })();
 
         let loadedUsers: User[] = [];
         let loadedProducts: Product[] = [];
         let loadedSales: Sale[] = [];
+        let loadedShifts: Shift[] = [];
 
         if (navigator.onLine) {
+          // Watermarks: only fetch rows newer than what we already have locally.
+          // On first run (empty IDB) these are null → full fetch. On subsequent
+          // runs only the delta flows over the wire.
+          const [localUsersPre, localProductsPre, localSalesPre, localShiftsPre] = await Promise.all([
+            db.getAll('users') as Promise<User[]>,
+            db.getAll('products') as Promise<Product[]>,
+            db.getAll('sales') as Promise<Sale[]>,
+            db.getAll('shifts') as Promise<Shift[]>,
+          ]);
+          const usersWm = maxUpdatedAt(localUsersPre);
+          const productsWm = maxUpdatedAt(localProductsPre);
+          const salesWm = maxUpdatedAt(localSalesPre);
+          const shiftsWm = maxUpdatedAt(localShiftsPre);
+
           const [
-            { data: cloudUsers },
-            { data: cloudProducts },
-            { data: recentSales },
-            { data: cloudSettings }
+            cloudUsers,
+            cloudProducts,
+            recentSales,
+            recentShifts,
+            openShifts,
+            settingsResult
           ] = await Promise.all([
-            supabase.from('users').select('*'),
-            supabase.from('products').select('*'),
-            supabase.from('sales').select('*').gte('timestamp', fortyEightHoursAgo).order('timestamp', { ascending: false }),
+            fetchAll<User>('users', undefined, q => usersWm ? q.gt('updatedAt', usersWm) : q),
+            fetchAll<Product>('products', undefined, q => productsWm ? q.gt('updatedAt', productsWm) : q),
+            fetchAll<Sale>('sales', { column: 'timestamp', ascending: false }, q => {
+              let qq = q.gte('timestamp', sevenDaysAgo);
+              if (salesWm) qq = qq.gt('updatedAt', salesWm);
+              return qq;
+            }),
+            fetchAll<Shift>('shifts', { column: 'startTime', ascending: false }, q => {
+              let qq = q.gte('startTime', thirtyDaysAgo);
+              if (shiftsWm) qq = qq.gt('updatedAt', shiftsWm);
+              return qq;
+            }),
+            // Always re-check OPEN shifts (status changes shouldn't depend on watermark).
+            fetchAll<Shift>('shifts', { column: 'startTime', ascending: false }, q => q.eq('status', 'OPEN')),
             supabase.from('business_settings').select('*').eq('id', 'default').single()
           ]);
+          const cloudSettings = (settingsResult as any).data;
+          console.log(`⚡ Incremental fetch: users=${cloudUsers.length}, products=${cloudProducts.length}, sales=${recentSales.length}, shifts=${recentShifts.length + openShifts.length}`);
 
-          // Merge users
-          const localUsers = await db.getAll('users');
-          if (cloudUsers && cloudUsers.length > 0) {
-            const cloudIds = new Set(cloudUsers.map((u: any) => u.id));
-            const localOnly = localUsers.filter(u => !cloudIds.has(u.id));
-            loadedUsers = [...cloudUsers, ...localOnly];
-            for (const u of loadedUsers) await db.put('users', u);
-            console.log('✅ Merged', loadedUsers.length, 'users');
-          } else {
-            loadedUsers = localUsers;
-          }
+          // Merge users — delta from cloud wins on id collision by updatedAt.
+          loadedUsers = mergeByIdNewerWins(cloudUsers, localUsersPre);
+          for (const u of cloudUsers) await db.put('users', u);
 
-          // Merge products
-          const localProducts = await db.getAll('products');
-          if (cloudProducts && cloudProducts.length > 0) {
-            const cloudIds = new Set(cloudProducts.map((p: any) => p.id));
-            const localOnly = localProducts.filter(p => !cloudIds.has(p.id));
-            loadedProducts = [...cloudProducts, ...localOnly];
-            for (const p of loadedProducts) await db.put('products', p);
-            console.log('✅ Merged', loadedProducts.length, 'products');
-          } else {
-            loadedProducts = localProducts;
-          }
+          // Merge products.
+          loadedProducts = mergeByIdNewerWins(cloudProducts, localProductsPre);
+          for (const p of cloudProducts) await db.put('products', p);
 
-          // Sales: cloud recent + any local-only
-          if (recentSales && recentSales.length > 0) {
-            const localSales = await db.getAll('sales');
-            const cloudIds = new Set(recentSales.map((s: any) => s.id));
-            const localOnly = localSales.filter(s => !cloudIds.has(s.id));
-            loadedSales = [...recentSales, ...localOnly];
-            for (const s of recentSales) await db.put('sales', s);
-            if (localOnly.length > 0) {
-              for (const sale of localOnly) await addToSyncQueue('SALE', sale);
-            }
-          } else {
-            loadedSales = await db.getAll('sales');
-          }
+          // Sales — merge delta with local. Unsynced local rows sit in syncQueue
+          // and are pushed by the immediate-push + interval processors; no need
+          // to re-queue them here.
+          loadedSales = mergeByIdNewerWins(recentSales, localSalesPre);
+          for (const s of recentSales) await db.put('sales', s);
 
-          // Business settings
+          // Shifts — delta + every OPEN shift, then merge with local.
+          const allCloudShifts = mergeByIdNewerWins(recentShifts, openShifts);
+          loadedShifts = mergeByIdNewerWins(allCloudShifts, localShiftsPre);
+          for (const s of allCloudShifts) await db.put('shifts', s);
+
+          // Business settings — last-write-wins, push our default if neither side has one.
           const localSettings = await db.get('businessSettings', 'default');
           if (cloudSettings && localSettings) {
             const cloudTime = cloudSettings.updatedAt ? new Date(cloudSettings.updatedAt).getTime() : 0;
@@ -246,13 +309,16 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             await addToSyncQueue('UPDATE_SETTINGS', localSettings);
           } else {
             const defaultSettings: BusinessSettings = {
-              id: 'default', businessName: 'Grab Bottle', phone: '+254 700 000000',
+              id: 'default', businessName: 'Port Side', phone: '+254 700 000000',
               email: '', location: 'Nairobi, Kenya', logoUrl: '',
               receiptFooter: 'Thank you for your business!',
-              evolutionApiUrl: '', evolutionApiKey: '', evolutionInstance: ''
+              evolutionApiUrl: '', evolutionApiKey: '', evolutionInstance: '',
+              updatedAt: new Date().toISOString(),
             };
             await db.put('businessSettings', defaultSettings);
             setBusinessSettings(defaultSettings);
+            // First device online wins — push so every other device pulls these defaults.
+            await addToSyncQueue('UPDATE_SETTINGS', defaultSettings);
           }
         } else {
           // Offline: load everything from IndexedDB
@@ -260,12 +326,17 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           loadedUsers = await db.getAll('users');
           loadedProducts = await db.getAll('products');
           loadedSales = await db.getAll('sales');
+          loadedShifts = await db.getAll('shifts');
           const localSettings = await db.get('businessSettings', 'default');
           if (localSettings) setBusinessSettings(localSettings);
         }
 
-        // Seed if first run
-        if (loadedUsers.length === 0) {
+        // First-run seed — only when cloud query completed and returned zero rows
+        // AND IndexedDB is empty AND no pending writes are sitting in the queue.
+        // This stops a transient empty response from re-seeding and overwriting
+        // valid cloud data on later sync.
+        const syncCount = await db.count('syncQueue');
+        if (loadedUsers.length === 0 && navigator.onLine && syncCount === 0) {
           const legacy = localStorage.getItem('bk_users');
           const seed = legacy ? JSON.parse(legacy) : INITIAL_USERS;
           const final = seed.map((u: any) => {
@@ -276,22 +347,30 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
             }
             return u;
           });
-          for (const u of final) await db.put('users', u);
+          for (const u of final) {
+            await db.put('users', u);
+            await addToSyncQueue('ADD_USER', u);
+          }
           loadedUsers = final;
         }
-        if (loadedProducts.length === 0) {
+        if (loadedProducts.length === 0 && navigator.onLine && syncCount === 0) {
           const legacy = localStorage.getItem('bk_products');
           const seed = legacy ? JSON.parse(legacy) : INITIAL_PRODUCTS;
-          for (const p of seed) await db.put('products', p);
+          for (const p of seed) {
+            await db.put('products', p);
+            await addToSyncQueue('ADD_PRODUCT', p);
+          }
           loadedProducts = seed;
         }
 
         loadedSales.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        loadedShifts.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
         // Update critical React state — UI unlocks after this
         setUsers(loadedUsers);
         setProducts(loadedProducts);
         setSales(loadedSales);
+        setShifts(loadedShifts);
 
         // Restore user session
         if (savedSession) {
@@ -319,151 +398,140 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       }
 
       // ─── PHASE 2: BACKGROUND DATA (after first paint) ─────────────────
-      // Loads historical records (shifts, logs, requests) without blocking UI.
+      // Fetches everything Phase 1 didn't plus the FULL historical sales and
+      // product-sale-logs so Inventory/Reports KPIs reflect lifetime totals,
+      // not just the 7-day Phase-1 window.
+      //
+      // Strategy per table: two parallel queries that together cover every
+      // row not already local:
+      //   • "newer" — rows with updatedAt > our newest local row (catches
+      //     edits and new inserts we haven't seen yet)
+      //   • "older" — rows with the time-column < our oldest local row
+      //     (fetches deep history on first run; returns ~nothing on subsequent
+      //     runs once history is cached)
+      // This is why subsequent app opens transfer almost no data over the wire.
       setTimeout(async () => {
         if (!navigator.onLine) return;
         try {
-          console.log('🔄 Phase 2: Loading background history...');
+          console.log('🔄 Phase 2: Loading history (deltas only)...');
           const db2 = await dbPromise();
-          const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
           const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-          const fetchPaginated = async (table: string, timeCol: string, timeLimit: string, orderBy: string) => {
-            let all: any[] = []; let page = 0; const pageSize = 1000; let hasMore = true;
-            while (hasMore) {
-              const { data, error } = await supabase.from(table).select('*')
-                .gte(timeCol, timeLimit)
-                .range(page * pageSize, (page + 1) * pageSize - 1)
-                .order(orderBy, { ascending: false });
-              if (error || !data || data.length === 0) { hasMore = false; break; }
-              all = [...all, ...data];
-              if (data.length < pageSize) hasMore = false;
-              page++;
-            }
-            return all;
-          };
-
-          const [
-            allCloudSales,
-            allCloudShifts,
-            allCloudAuditLogs,
-            allCloudVoidRequests,
-            allCloudStockRequests,
-            allCloudProductSaleLogs
-          ] = await Promise.all([
-            fetchPaginated('sales', 'timestamp', sevenDaysAgo, 'timestamp'),
-            fetchPaginated('shifts', 'startTime', thirtyDaysAgo, 'startTime'),
-            fetchPaginated('audit_logs', 'timestamp', sevenDaysAgo, 'timestamp'),
-            fetchPaginated('void_requests', 'requestedAt', thirtyDaysAgo, 'requestedAt'),
-            fetchPaginated('stock_change_requests', 'requestedAt', thirtyDaysAgo, 'requestedAt'),
-            fetchPaginated('product_sale_logs', 'timestamp', sevenDaysAgo, 'timestamp')
+          const [localSales2, localAuditLogs, localVR, localSCR, localPSL] = await Promise.all([
+            db2.getAll('sales') as Promise<Sale[]>,
+            db2.getAll('auditLogs'),
+            db2.getAll('voidRequests'),
+            db2.getAll('stockChangeRequests'),
+            db2.getAll('productSaleLogs'),
           ]);
 
-          // Sales full merge (7 days)
-          if (allCloudSales.length > 0) {
-            const localSales = await db2.getAll('sales');
-            const cloudIds = new Set(allCloudSales.map((s: any) => s.id));
-            // Only queue truly new local-only sales (not just outside the 48h window from phase 1)
-            // A "truly new" sale has a timestamp WITHIN the 7-day window but wasn't in Supabase
-            const localOnly = localSales.filter(s => !cloudIds.has(s.id) && new Date(s.timestamp) >= new Date(sevenDaysAgo));
-            const merged = [...allCloudSales, ...localSales.filter(s => !cloudIds.has(s.id))];
-            merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            for (const s of allCloudSales) await db2.put('sales', s);
-            if (localOnly.length > 0) for (const s of localOnly) await addToSyncQueue('SALE', s);
-            setSales(merged);
-          }
-
-          // Shifts — display merge only (no re-queuing: items outside 30-day window were already synced)
-          if (allCloudShifts.length > 0) {
-            const localShifts = await db2.getAll('shifts');
-            const cloudIds = new Set(allCloudShifts.map((s: any) => s.id));
-            const localOnly = localShifts.filter(s => !cloudIds.has(s.id));
-            const merged = [...allCloudShifts, ...localOnly];
-            for (const s of allCloudShifts) await db2.put('shifts', s);
-            // Only queue shifts within the 30-day window that aren't in cloud (truly unsynced)
-            const thirtyDaysAgoDate = new Date(thirtyDaysAgo);
-            const trulyUnsynced = localOnly.filter(s => new Date(s.startTime) >= thirtyDaysAgoDate);
-            if (trulyUnsynced.length > 0) {
-              console.log('📤 Found', trulyUnsynced.length, 'truly unsynced shifts to queue');
-              for (const shift of trulyUnsynced) await addToSyncQueue(shift.status === 'OPEN' ? 'OPEN_SHIFT' : 'CLOSE_SHIFT', shift);
+          // Helpers for the older/newer split.
+          const oldestTimestamp = <T extends { [k: string]: any }>(rows: T[], col: string): string | null => {
+            if (!rows.length) return null;
+            let min = Infinity;
+            for (const r of rows) {
+              const v = r[col];
+              if (!v) continue;
+              const t = new Date(v).getTime();
+              if (t < min) min = t;
             }
-            setShifts(merged);
-          } else {
-            const local = await db2.getAll('shifts');
-            setShifts(local);
-          }
+            return min === Infinity ? null : new Date(min).toISOString();
+          };
 
-          // Audit logs — display merge only (no re-queuing for items outside 7-day window)
-          if (allCloudAuditLogs.length > 0) {
-            const localLogs = await db2.getAll('auditLogs');
-            const cloudIds = new Set(allCloudAuditLogs.map((l: any) => l.id));
-            const localOnly = localLogs.filter(l => !cloudIds.has(l.id));
-            const merged = [...allCloudAuditLogs, ...localOnly];
-            merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            for (const l of allCloudAuditLogs) await db2.put('auditLogs', l);
-            // Only queue logs within the 7-day window (older ones were already synced)
-            const sevenDaysAgoDate = new Date(sevenDaysAgo);
-            const trulyUnsynced = localOnly.filter(l => new Date(l.timestamp) >= sevenDaysAgoDate);
-            if (trulyUnsynced.length > 0) for (const log of trulyUnsynced) await addToSyncQueue('LOG', log);
-            setAuditLogs(merged);
-          } else {
-            const local = await db2.getAll('auditLogs');
-            setAuditLogs(local);
-          }
+          const salesWm = maxUpdatedAt(localSales2);
+          const salesOldest = oldestTimestamp(localSales2, 'timestamp');
+          const auditWm = maxUpdatedAt(localAuditLogs as any[]);
+          const vrWm = maxUpdatedAt(localVR as any[]);
+          const scrWm = maxUpdatedAt(localSCR as any[]);
+          const pslWm = maxUpdatedAt(localPSL as any[]);
+          const pslOldest = oldestTimestamp(localPSL as any[], 'timestamp');
 
-          // Void requests
-          if (allCloudVoidRequests.length > 0) {
-            const localVR = await db2.getAll('voidRequests');
-            const cloudIds = new Set(allCloudVoidRequests.map((v: any) => v.id));
-            const localOnly = localVR.filter(v => !cloudIds.has(v.id));
-            const merged = [...allCloudVoidRequests, ...localOnly];
-            merged.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
-            for (const v of allCloudVoidRequests) await db2.put('voidRequests', v);
-            setVoidRequests(merged);
-          } else {
-            const local = await db2.getAll('voidRequests');
-            setVoidRequests(local);
-          }
+          const [
+            newerSales,
+            olderSales,
+            deltaAuditLogs,
+            deltaVoidRequests,
+            deltaStockRequests,
+            newerPSL,
+            olderPSL,
+          ] = await Promise.all([
+            // Sales — delta (anything newer than we know locally)
+            fetchAll<Sale>('sales', { column: 'timestamp', ascending: false }, q =>
+              salesWm ? q.gt('updatedAt', salesWm) : q
+            ),
+            // Sales — deep history older than our earliest local row. On truly
+            // first run (no local rows) we fetch everything.
+            salesOldest
+              ? fetchAll<Sale>('sales', { column: 'timestamp', ascending: false }, q =>
+                  q.lt('timestamp', salesOldest)
+                )
+              : Promise.resolve([] as Sale[]),
+            fetchAll<AuditLog>('audit_logs', { column: 'timestamp', ascending: false }, q => {
+              let qq = q.gte('timestamp', thirtyDaysAgo);
+              if (auditWm) qq = qq.gt('updatedAt', auditWm);
+              return qq;
+            }),
+            fetchAll<VoidRequest>('void_requests', { column: 'requestedAt', ascending: false }, q => {
+              let qq = q.gte('requestedAt', thirtyDaysAgo);
+              if (vrWm) qq = qq.gt('updatedAt', vrWm);
+              return qq;
+            }),
+            fetchAll<StockChangeRequest>('stock_change_requests', { column: 'requestedAt', ascending: false }, q => {
+              let qq = q.gte('requestedAt', thirtyDaysAgo);
+              if (scrWm) qq = qq.gt('updatedAt', scrWm);
+              return qq;
+            }),
+            // Product sale logs — delta
+            fetchAll<ProductSaleLog>('product_sale_logs', { column: 'timestamp', ascending: false }, q =>
+              pslWm ? q.gt('updatedAt', pslWm) : q
+            ),
+            // Product sale logs — deep history
+            pslOldest
+              ? fetchAll<ProductSaleLog>('product_sale_logs', { column: 'timestamp', ascending: false }, q =>
+                  q.lt('timestamp', pslOldest)
+                )
+              : Promise.resolve([] as ProductSaleLog[]),
+          ]);
 
-          // Stock change requests
-          if (allCloudStockRequests.length > 0) {
-            const localSCR = await db2.getAll('stockChangeRequests');
-            const cloudIds = new Set(allCloudStockRequests.map((s: any) => s.id));
-            const localOnly = localSCR.filter(s => !cloudIds.has(s.id));
-            const merged = [...allCloudStockRequests, ...localOnly];
-            merged.sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
-            for (const s of allCloudStockRequests) await db2.put('stockChangeRequests', s);
-            setStockChangeRequests(merged);
-          } else {
-            const local = await db2.getAll('stockChangeRequests');
-            setStockChangeRequests(local);
-          }
+          console.log(`🔄 Phase 2: sales(+${newerSales.length} new, +${olderSales.length} history), auditLogs=${deltaAuditLogs.length}, voidRequests=${deltaVoidRequests.length}, stockRequests=${deltaStockRequests.length}, productSaleLogs(+${newerPSL.length}/+${olderPSL.length})`);
 
-          // Product sale logs — display merge only (no re-queuing for items outside 7-day window)
-          if (allCloudProductSaleLogs.length > 0) {
-            for (const l of allCloudProductSaleLogs) await db2.put('productSaleLogs', l);
-            const allLocal = await db2.getAll('productSaleLogs');
-            const cloudIds = new Set(allCloudProductSaleLogs.map((l: any) => l.id));
-            const localOnly = allLocal.filter(l => !cloudIds.has(l.id));
-            const merged = [...allCloudProductSaleLogs, ...localOnly];
-            merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            // Only queue logs within the 7-day window (older ones were already synced)
-            const sevenDaysAgoDate = new Date(sevenDaysAgo);
-            const trulyUnsynced = localOnly.filter(l => new Date(l.timestamp) >= sevenDaysAgoDate);
-            if (trulyUnsynced.length > 0) console.log('📤 Found', trulyUnsynced.length, 'truly unsynced product sale logs');
-            setProductSaleLogs(merged);
-            console.log(`✅ Phase 2 complete: ${merged.length} product sale logs ready`);
-          } else {
-            const local = await db2.getAll('productSaleLogs');
-            setProductSaleLogs(local);
-          }
+          // Sales — merge both directions with local.
+          const allSales = [...newerSales, ...olderSales];
+          const mergedSales = mergeByIdNewerWins(allSales, localSales2);
+          mergedSales.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          for (const s of allSales) await db2.put('sales', s);
+          setSales(mergedSales);
+
+          // Audit logs.
+          const mergedAuditLogs = mergeByIdNewerWins(deltaAuditLogs, localAuditLogs as any[]);
+          mergedAuditLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          for (const l of deltaAuditLogs) await db2.put('auditLogs', l);
+          setAuditLogs(mergedAuditLogs);
+
+          // Void requests.
+          const mergedVR = mergeByIdNewerWins(deltaVoidRequests, localVR as any[]);
+          mergedVR.sort((a, b) => new Date((b as any).requestedAt).getTime() - new Date((a as any).requestedAt).getTime());
+          for (const v of deltaVoidRequests) await db2.put('voidRequests', v);
+          setVoidRequests(mergedVR);
+
+          // Stock change requests.
+          const mergedSCR = mergeByIdNewerWins(deltaStockRequests, localSCR as any[]);
+          mergedSCR.sort((a, b) => new Date((b as any).requestedAt).getTime() - new Date((a as any).requestedAt).getTime());
+          for (const s of deltaStockRequests) await db2.put('stockChangeRequests', s);
+          setStockChangeRequests(mergedSCR);
+
+          // Product sale logs.
+          const allPSL = [...newerPSL, ...olderPSL];
+          const mergedPSL = mergeByIdNewerWins(allPSL, localPSL as any[]);
+          mergedPSL.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          for (const l of allPSL) await db2.put('productSaleLogs', l);
+          setProductSaleLogs(mergedPSL);
 
           setDataLoadedTimestamp(Date.now());
         } catch (bgErr) {
           console.warn('Background data load error (non-fatal):', bgErr);
-          // Still mark data as loaded even if background fetch failed
           const db2 = await dbPromise();
-          setShifts(await db2.getAll('shifts'));
+          setSales(await db2.getAll('sales'));
           setAuditLogs(await db2.getAll('auditLogs'));
           setVoidRequests(await db2.getAll('voidRequests'));
           setStockChangeRequests(await db2.getAll('stockChangeRequests'));
@@ -488,6 +556,107 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
 
 
+
+  // ------------------------------------------------------------------
+  // REALTIME — Supabase Postgres Changes broadcast every INSERT/UPDATE/DELETE
+  // to every open device. This is what keeps mobile and laptop in lockstep
+  // without waiting for the next pull cycle.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (!isOnline) return;
+
+    type Setter<T extends { id: string }> = React.Dispatch<React.SetStateAction<T[]>>;
+    type Store = 'users' | 'products' | 'sales' | 'shifts' | 'auditLogs'
+      | 'voidRequests' | 'stockChangeRequests' | 'productSaleLogs';
+
+    // Keep merge logic identical for inserts and updates: prefer newer updatedAt.
+    const upsertInState = <T extends { id: string; updatedAt?: string }>(
+      setState: Setter<T>,
+      row: T
+    ) => {
+      setState(prev => {
+        const idx = prev.findIndex(x => x.id === row.id);
+        if (idx === -1) return [row, ...prev];
+        const existing = prev[idx];
+        const a = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+        const b = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+        if (b < a) return prev; // local copy is newer (just-written by us)
+        const next = prev.slice();
+        next[idx] = row;
+        return next;
+      });
+    };
+
+    const removeFromState = <T extends { id: string }>(setState: Setter<T>, id: string) => {
+      setState(prev => prev.filter(x => x.id !== id));
+    };
+
+    const subscriptions: Array<{ table: string; store: Store; setState: any }> = [
+      { table: 'users', store: 'users', setState: setUsers },
+      { table: 'products', store: 'products', setState: setProducts },
+      { table: 'sales', store: 'sales', setState: setSales },
+      { table: 'shifts', store: 'shifts', setState: setShifts },
+      { table: 'audit_logs', store: 'auditLogs', setState: setAuditLogs },
+      { table: 'void_requests', store: 'voidRequests', setState: setVoidRequests },
+      { table: 'stock_change_requests', store: 'stockChangeRequests', setState: setStockChangeRequests },
+      { table: 'product_sale_logs', store: 'productSaleLogs', setState: setProductSaleLogs },
+    ];
+
+    const channel = supabase.channel('pos-db-changes');
+
+    for (const { table, store, setState } of subscriptions) {
+      channel.on(
+        'postgres_changes' as any,
+        { event: '*', schema: 'public', table },
+        async (payload: { eventType: 'INSERT' | 'UPDATE' | 'DELETE'; new: any; old: any }) => {
+          try {
+            const db = await dbPromise();
+            if (payload.eventType === 'DELETE') {
+              const id = (payload.old?.id ?? payload.new?.id) as string | undefined;
+              if (!id) return;
+              await db.delete(store as any, id);
+              removeFromState(setState, id);
+            } else {
+              const row = payload.new;
+              if (!row?.id) return;
+              await db.put(store as any, row);
+              upsertInState(setState, row);
+            }
+          } catch (err) {
+            console.warn(`Realtime ${table} handler error:`, err);
+          }
+        }
+      );
+    }
+
+    // Settings live in their own subscription because they're a single row.
+    channel.on(
+      'postgres_changes' as any,
+      { event: '*', schema: 'public', table: 'business_settings' },
+      async (payload: any) => {
+        try {
+          if (payload.eventType === 'DELETE') return;
+          const row = payload.new;
+          if (!row?.id) return;
+          const db = await dbPromise();
+          await db.put('businessSettings', row);
+          setBusinessSettings(prev => {
+            const a = prev?.updatedAt ? new Date(prev.updatedAt).getTime() : 0;
+            const b = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+            return b < a ? prev : row;
+          });
+        } catch (err) {
+          console.warn('Realtime business_settings handler error:', err);
+        }
+      }
+    );
+
+    channel.subscribe(status => {
+      if (status === 'SUBSCRIBED') console.log('🔌 Realtime channel subscribed');
+    });
+
+    return () => { supabase.removeChannel(channel); };
+  }, [isOnline]);
 
   // ------------------------------------------------------------------
   // Session Management
@@ -530,60 +699,62 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   }, [currentUser, lastActivity]);
 
   // ------------------------------------------------------------------
-  // BACKGROUND SYNC PROCESSOR — Serial Batched (10 items/tick)
+  // SYNC PROCESSOR — drains the entire local syncQueue in batches.
+  // Callable directly via triggerSync() after any mutation, plus a
+  // 2-second safety-net interval while online.
   // ------------------------------------------------------------------
-  useEffect(() => {
-    if (!isOnline) return;
+  const processSyncQueueRef = useRef<() => Promise<void>>(async () => {});
 
+  useEffect(() => {
     const BATCH_SIZE = 10;
 
     const processSyncQueue = async () => {
-      // useRef guard is instantaneous — no async state lag
       if (isSyncRunningRef.current) return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       isSyncRunningRef.current = true;
 
       try {
         const db = await dbPromise();
-        const queueItems = await db.getAll('syncQueue');
-        if (queueItems.length === 0) return;
+        // Drain in batches until empty or until a batch makes no progress.
+        while (true) {
+          const queueItems = await db.getAll('syncQueue');
+          if (queueItems.length === 0) break;
 
-        // Only show the syncing indicator if triggered within 30s of a user action
-        const USER_ACTION_WINDOW_MS = 30000;
-        const isUserTriggered = Date.now() - lastUserActionRef.current < USER_ACTION_WINDOW_MS;
-        if (isUserTriggered) setIsSyncing(true);
-        const batch = queueItems.slice(0, BATCH_SIZE);
-        console.log(`🔄 Processing ${batch.length}/${queueItems.length} items in sync queue...`);
+          const USER_ACTION_WINDOW_MS = 30000;
+          const isUserTriggered = Date.now() - lastUserActionRef.current < USER_ACTION_WINDOW_MS;
+          if (isUserTriggered) setIsSyncing(true);
 
-        let successCount = 0;
-        // Serial execution — one request at a time, no network flooding
-        for (const item of batch) {
-          // Yield to main thread if a sale is being processed
-          if (isSyncLockedRef.current) {
-            await new Promise(resolve => setTimeout(resolve, 300));
-          }
-          try {
-            const success = await pushToCloud(item.type, item.payload);
-            if (success) {
-              await db.delete('syncQueue', item.key!);
-              successCount++;
-            } else {
-              const retryCount = (item.retryCount || 0) + 1;
-              if (retryCount >= 5) {
-                await db.add('failedSyncQueue', { ...item, failedAt: Date.now(), totalRetries: retryCount, canRetry: true });
-                await db.delete('syncQueue', item.key!);
-                console.error(`❌ Item ${item.key} moved to failed queue after ${retryCount} retries`);
-              } else {
-                await db.put('syncQueue', { ...item, retryCount });
-              }
+          const batch = queueItems.slice(0, BATCH_SIZE);
+          let successCount = 0;
+
+          for (const item of batch) {
+            if (isSyncLockedRef.current) {
+              await new Promise(resolve => setTimeout(resolve, 300));
             }
-          } catch (error) {
-            console.error(`Error syncing item ${item.key}:`, error);
+            try {
+              const success = await pushToCloud(item.type, item.payload);
+              if (success) {
+                await db.delete('syncQueue', item.key!);
+                successCount++;
+              } else {
+                const retryCount = (item.retryCount || 0) + 1;
+                if (retryCount >= 5) {
+                  await db.add('failedSyncQueue', { ...item, failedAt: Date.now(), totalRetries: retryCount, canRetry: true });
+                  await db.delete('syncQueue', item.key!);
+                  console.error(`❌ Item ${item.key} moved to failed queue after ${retryCount} retries`);
+                } else {
+                  await db.put('syncQueue', { ...item, retryCount });
+                }
+              }
+            } catch (error) {
+              console.error(`Error syncing item ${item.key}:`, error);
+            }
           }
-        }
 
-        const remaining = queueItems.length - successCount;
-        if (successCount > 0) {
-          console.log(`✅ Synced ${successCount}/${batch.length}. ${remaining > 0 ? `${remaining} remaining.` : 'Queue empty!'}`);
+          // If nothing succeeded this round, stop — every item failed and is
+          // either being retried or moved to the failed queue. Leave the rest
+          // for the next interval tick.
+          if (successCount === 0) break;
         }
       } catch (error) {
         console.error('Sync queue processing error:', error);
@@ -593,13 +764,30 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       }
     };
 
-    processSyncQueue();
-    const syncInterval = setInterval(processSyncQueue, 5000);
+    processSyncQueueRef.current = processSyncQueue;
+    if (isOnline) {
+      processSyncQueue();
+    }
+    const syncInterval = setInterval(() => { if (isOnline) processSyncQueue(); }, 2000);
 
     return () => {
       clearInterval(syncInterval);
     };
   }, [isOnline]);
+
+  // Callable from any action handler — fires the processor without awaiting.
+  const triggerSync = useCallback(() => {
+    lastUserActionRef.current = Date.now();
+    processSyncQueueRef.current().catch(err => console.warn('triggerSync error:', err));
+  }, []);
+
+  // Any addToSyncQueue() call (or inline syncQueue add) dispatches this event;
+  // we listen here so the cloud push fires within milliseconds of the mutation.
+  useEffect(() => {
+    const onQueued = () => triggerSync();
+    window.addEventListener(SYNC_QUEUE_EVENT, onQueued);
+    return () => window.removeEventListener(SYNC_QUEUE_EVENT, onQueued);
+  }, [triggerSync]);
 
   const currentShift = shifts.find(s => s.status === 'OPEN' && s.cashierId === currentUser?.id) || null;
 
@@ -610,7 +798,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const addLog = async (action: string, details: string) => {
     if (!currentUser) return;
     const newLog: AuditLog = {
-      id: Date.now().toString(),
+      id: newId(),
       timestamp: new Date().toISOString(),
       userId: currentUser.id,
       userName: currentUser.name,
@@ -657,7 +845,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const addUser = async (userData: Omit<User, 'id'>) => {
     const newUser: User = {
       ...userData,
-      id: Date.now().toString(),
+      id: newId(),
       updatedAt: new Date().toISOString(),
     };
     setUsers(prev => [...prev, newUser]);
@@ -681,7 +869,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const openShift = async (openingCash: number = 0) => {
     if (!currentUser) return;
     const newShift: Shift = {
-      id: Date.now().toString(),
+      id: newId(),
       cashierId: currentUser.id,
       cashierName: currentUser.name,
       startTime: new Date().toISOString(),
@@ -699,6 +887,44 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     await addLog('SHIFT_OPEN', details);
     await addToSyncQueue('OPEN_SHIFT', newShift);
+  };
+
+  // Create a CLOSED shift after the fact to cover orphan sales (sales rung up
+  // when no shift was open). Time window tightens to 1 minute before the
+  // earliest orphan and 1 minute after the latest so it can't accidentally
+  // swallow sales from a neighbouring real shift. Closing cash = expected cash
+  // so reconciliation shows zero variance; admin can edit later.
+  const createBackfillShift = async (params: {
+    cashierId: string;
+    cashierName: string;
+    startTime: string;
+    endTime: string;
+    expectedCash: number;
+    comments?: string;
+  }): Promise<Shift> => {
+    const newShift: Shift = {
+      id: newId(),
+      cashierId: params.cashierId,
+      cashierName: params.cashierName,
+      startTime: params.startTime,
+      endTime: params.endTime,
+      openingCash: 0,
+      closingCash: params.expectedCash,
+      expectedCash: params.expectedCash,
+      status: 'CLOSED',
+      comments: params.comments || `Backfill shift created by ${currentUser?.name ?? 'admin'} to attribute orphan sales.`,
+      updatedAt: new Date().toISOString(),
+    };
+
+    setShifts(prev => [...prev, newShift]);
+    const db = await dbPromise();
+    await db.put('shifts', newShift);
+    await addToSyncQueue('CLOSE_SHIFT', newShift);
+    await addLog(
+      'SHIFT_BACKFILL',
+      `Backfill shift created for ${params.cashierName} covering ${new Date(params.startTime).toLocaleString()} → ${new Date(params.endTime).toLocaleString()}, revenue ${CURRENCY_FORMATTER.format(params.expectedCash)}`,
+    );
+    return newShift;
   };
 
   const closeShift = async (closingCash: number, comments?: string) => {
@@ -780,7 +1006,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       const totalCost = items.reduce((acc, item) => acc + (item.costAtSale * item.quantity), 0);
 
       // ✅ FIX 1: Unique Sale ID (timestamp + random suffix)
-      const saleId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const saleId = newId();
 
       const newSale: Sale = {
         id: saleId,
@@ -798,12 +1024,12 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       // 3. Update Products and Create Logs
       const updatedProducts: Product[] = [];
       const newProductSaleLogs: ProductSaleLog[] = [];
+      const stockDeltaItems: Array<{ productId: string; quantity: number }> = [];
 
       for (const item of items) {
         const dbProduct = await tx.objectStore('products').get(item.productId);
         if (!dbProduct) continue;
 
-        // Update product stock
         const updatedProduct = {
           ...dbProduct,
           stock: dbProduct.stock - item.quantity,
@@ -812,21 +1038,9 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
         updatedProducts.push(updatedProduct);
         await tx.objectStore('products').put(updatedProduct);
+        stockDeltaItems.push({ productId: item.productId, quantity: item.quantity });
 
-        // Only send the exact subtraction to the cloud to prevent overwriting
-        await tx.objectStore('syncQueue').add({
-          type: 'SALE_STOCK_DELTA',
-          payload: { 
-            productId: item.productId, 
-            quantity: item.quantity 
-          },
-          timestamp: Date.now()
-        });
-
-        // ✅ FIX 2: Deterministic Log ID (saleId-productId)
         const logId = `${newSale.id}-${item.productId}`;
-
-        // ✅ FIX 3: Check if log already exists
         const existingLog = await tx.objectStore('productSaleLogs').get(logId);
 
         if (!existingLog) {
@@ -855,15 +1069,17 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         }
       }
 
-      // 4. Save Sale
+      // 4. Save Sale and enqueue the atomic SALE_WITH_STOCK — stock is only
+      //    decremented in the cloud if the sale upsert succeeds.
       await tx.objectStore('sales').put(newSale);
       await tx.objectStore('syncQueue').add({
-        type: 'SALE',
-        payload: newSale,
+        type: 'SALE_WITH_STOCK',
+        payload: { sale: newSale, items: stockDeltaItems },
         timestamp: Date.now()
       });
 
       await tx.done;
+      triggerSync();
 
       // Update React State
       setProducts(prev => prev.map(p => {
@@ -960,6 +1176,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       });
 
       await tx.done;
+      triggerSync();
 
       setProducts(updatedProducts);
       setSales(prev => prev.filter(s => s.id !== saleId));
@@ -977,7 +1194,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   const addProduct = async (productData: Omit<Product, 'id'>) => {
     const newProduct: Product = {
       ...productData,
-      id: Date.now().toString(),
+      id: newId(),
       updatedAt: new Date().toISOString(),
     };
     setProducts(prev => [...prev, newProduct]);
@@ -1062,6 +1279,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         timestamp: Date.now()
       });
       await tx.done;
+      triggerSync();
 
       setProducts(prev => prev.map(p => p.id === product.id ? productWithMetadata : p));
 
@@ -1110,6 +1328,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         timestamp: Date.now()
       });
       await tx.done;
+      triggerSync();
 
       setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
       await addLog('INVENTORY_ADJ', `Adjusted ${product.name} by ${change}. Reason: ${reason}`);
@@ -1163,7 +1382,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     try {
       const stockRequest: StockChangeRequest = {
-        id: Date.now().toString(),
+        id: newId(),
         productId,
         productName: product.name,
         changeType: 'RECEIVE',
@@ -1194,6 +1413,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         timestamp: Date.now()
       });
       await tx.done;
+      triggerSync();
 
       lastUserActionRef.current = Date.now(); // Stamp so sync toast shows after stock receipt
       setProducts(prev => prev.map(p => p.id === productId ? updatedProduct : p));
@@ -1215,7 +1435,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     if (!sale) return;
 
     const newRequest: VoidRequest = {
-      id: Date.now().toString(),
+      id: newId(),
       saleId,
       sale,
       requestedBy: currentUser.id,
@@ -1296,6 +1516,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       });
 
       await tx.done;
+      triggerSync();
 
       setVoidRequests(prev => prev.map(r => r.id === requestId ? updatedRequest : r));
       setSales(prev => prev.map(s => s.id === request.saleId ? updatedSale : s));
@@ -1342,7 +1563,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     if (!product) return;
 
     const newRequest: StockChangeRequest = {
-      id: Date.now().toString(),
+      id: newId(),
       productId,
       productName: product.name,
       changeType,
@@ -2046,14 +2267,13 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       if (['void_requests', 'stock_change_requests'].includes(table)) timeCol = 'requestedAt';
 
       console.log(`🔍 Fetching history for ${table} from ${startDate} to ${endDate}...`);
-      
-      const { data, error } = await supabase
-        .from(sbTable)
-        .select('*')
-        .gte(timeCol, startDate)
-        .lte(timeCol, endDate + 'T23:59:59.999Z');
 
-      if (error) throw error;
+      // Paginate so we never silently truncate at the 1,000-row PostgREST cap.
+      const data = await fetchAll<any>(
+        sbTable,
+        { column: timeCol, ascending: false },
+        q => q.gte(timeCol, startDate).lte(timeCol, endDate + 'T23:59:59.999Z')
+      );
 
       if (data && data.length > 0) {
         // Map data back to state
@@ -2129,6 +2349,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     receiveStock,
     openShift,
     closeShift,
+    createBackfillShift,
     voidRequests,
     requestVoid,
     approveVoid,

@@ -5,11 +5,18 @@ import { useStore } from '../../context/StoreContext';
 import { Shift, Sale } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
 import { Clock, Calendar, DollarSign, ShoppingBag, X, Eye, FileText, Printer, Download, Info } from 'lucide-react';
+import { todayLocalISO, daysAgoLocalISO } from '../../utils/timezone';
+import { saleRevenue, attributeSalesToShifts } from '../../utils/aggregates';
 
-// Enhanced Tooltip component matching the screenshot style
+// Enhanced Tooltip component matching the screenshot style.
+// Uses historical priceAtSale/costAtSale from the sale line item — never the
+// current product price — so the number doesn't drift when admin edits prices.
 const ItemTooltip = ({ item, sale }: { item: any; sale: Sale }) => {
-  const profit = (item.sellingPrice - item.costPrice) * item.quantity;
-  const profitMargin = item.costPrice > 0 ? ((item.sellingPrice - item.costPrice) / item.costPrice * 100) : 0;
+  const priceAtSale = Number(item.priceAtSale) || 0;
+  const costAtSale = Number(item.costAtSale) || 0;
+  const qty = Number(item.quantity) || 0;
+  const profit = (priceAtSale - costAtSale) * qty;
+  const profitMargin = priceAtSale > 0 ? ((priceAtSale - costAtSale) / priceAtSale) * 100 : 0;
   
   return (
     <div className="absolute left-0 top-full mt-2 z-[100] bg-slate-800 text-white p-4 rounded-xl shadow-2xl min-w-[320px] text-sm border border-slate-700">
@@ -31,24 +38,24 @@ const ItemTooltip = ({ item, sale }: { item: any; sale: Sale }) => {
         
         <div className="flex justify-between items-center py-1.5">
           <span className="text-slate-300">Unit Price:</span>
-          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(item.sellingPrice)}</span>
+          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(priceAtSale)}</span>
         </div>
-        
+
         <div className="flex justify-between items-center py-1.5">
           <span className="text-slate-300">Cost Price:</span>
-          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(item.costPrice)}</span>
+          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(costAtSale)}</span>
         </div>
-        
+
         <div className="border-t border-slate-600 my-2"></div>
-        
+
         <div className="flex justify-between items-center py-1.5">
           <span className="text-slate-300">Subtotal:</span>
-          <span className="font-bold text-white">{CURRENCY_FORMATTER.format(item.sellingPrice * item.quantity)}</span>
+          <span className="font-bold text-white">{CURRENCY_FORMATTER.format(priceAtSale * qty)}</span>
         </div>
-        
+
         <div className="flex justify-between items-center py-1.5">
           <span className="text-slate-300">Total Cost:</span>
-          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(item.costPrice * item.quantity)}</span>
+          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(costAtSale * qty)}</span>
         </div>
         
         <div className="border-t border-slate-600 my-2"></div>
@@ -77,15 +84,10 @@ const MyShifts = () => {
   const [showZReport, setShowZReport] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<{ saleId: string; itemIndex: number } | null>(null);
 
-  // Date range state
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7); // Default to past 7 days
-    return d.toISOString().split('T')[0];
-  });
-  const [endDate, setEndDate] = useState(() => {
-    return new Date().toISOString().split('T')[0];
-  });
+  // Date range state — local-time defaults so devices in different timezones
+  // see the same default 7-day window.
+  const [startDate, setStartDate] = useState(() => daysAgoLocalISO(7));
+  const [endDate, setEndDate] = useState(() => todayLocalISO());
 
 
   const myShifts = useMemo(() => {
@@ -110,12 +112,23 @@ const MyShifts = () => {
     await fetchHistory('sales', startDate, endDate);
   };
 
+  // Canonical single-assignment attribution so the per-shift numbers we show
+  // add up to the cashier's range total exactly (declared before getShiftSales
+  // so the helper can reference it directly).
+  const myAttribution = useMemo(
+    () => attributeSalesToShifts(
+      sales.filter(s => s.cashierId === currentUser?.id),
+      shifts.filter(s => s.cashierId === currentUser?.id),
+    ),
+    [sales, shifts, currentUser?.id]
+  );
 
-  const getShiftSales = (shiftStart: string, shiftEnd?: string) => {
+  const getShiftSales = (_shiftStart: string, _shiftEnd?: string, shiftId?: string) => {
+    if (shiftId) return myAttribution.shiftSales.get(shiftId) ?? [];
     return sales.filter(s => {
       const saleTime = new Date(s.timestamp);
-      const startTime = new Date(shiftStart);
-      const endTime = shiftEnd ? new Date(shiftEnd) : new Date();
+      const startTime = new Date(_shiftStart);
+      const endTime = _shiftEnd ? new Date(_shiftEnd) : new Date();
       return s.cashierId === currentUser?.id && saleTime >= startTime && saleTime <= endTime;
     });
   };
@@ -138,14 +151,17 @@ const MyShifts = () => {
   };
 
   const totalMySales = sales.filter(s => s.cashierId === currentUser?.id && !s.isVoided).length;
-  const totalRevenue = sales.filter(s => s.cashierId === currentUser?.id && !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
+  const totalRevenue = sales
+    .filter(s => s.cashierId === currentUser?.id && !s.isVoided)
+    .reduce((acc, s) => acc + saleRevenue(s), 0);
 
-  const selectedShiftSales = selectedShift ? getShiftSales(selectedShift.startTime, selectedShift.endTime) : [];
-  const selectedShiftRevenue = selectedShiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
+  const selectedShiftSales = selectedShift ? (myAttribution.shiftSales.get(selectedShift.id) ?? []) : [];
+  const selectedShiftRevenue = selectedShiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + saleRevenue(s), 0);
   const selectedShiftVoidedSales = selectedShiftSales.filter(s => s.isVoided);
 
   const paymentBreakdown = selectedShiftSales.reduce((acc, s) => {
     if (s.isVoided) return acc;
+    const rev = saleRevenue(s);
 
     if (s.paymentMethod === 'SPLIT' && s.splitPayment) {
       acc.cash += s.splitPayment.cashAmount;
@@ -153,13 +169,13 @@ const MyShifts = () => {
       acc.cashCount++;
       acc.mobileCount++;
     } else if (s.paymentMethod === 'CASH') {
-      acc.cash += s.totalAmount;
+      acc.cash += rev;
       acc.cashCount++;
     } else if (s.paymentMethod === 'CARD') {
-      acc.card += s.totalAmount;
+      acc.card += rev;
       acc.cardCount++;
     } else if (s.paymentMethod === 'MOBILE') {
-      acc.mobile += s.totalAmount;
+      acc.mobile += rev;
       acc.mobileCount++;
     }
 
@@ -398,8 +414,8 @@ const MyShifts = () => {
             {/* Mobile View */}
             <div className="lg:hidden divide-y divide-blue-100">
               {myShifts.map((shift, index) => {
-                const shiftSales = getShiftSales(shift.startTime, shift.endTime);
-                const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
+                const shiftSales = getShiftSales(shift.startTime, shift.endTime, shift.id);
+                const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + saleRevenue(s), 0);
                 const startDT = formatDateTime(shift.startTime);
                 const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
 
@@ -442,8 +458,8 @@ const MyShifts = () => {
                 </thead>
                 <tbody className="divide-y divide-blue-100 text-sm">
                   {myShifts.map((shift, index) => {
-                    const shiftSales = getShiftSales(shift.startTime, shift.endTime);
-                    const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
+                    const shiftSales = getShiftSales(shift.startTime, shift.endTime, shift.id);
+                    const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + saleRevenue(s), 0);
                     const startDT = formatDateTime(shift.startTime);
                     const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
 

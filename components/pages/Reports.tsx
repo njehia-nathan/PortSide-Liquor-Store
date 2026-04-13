@@ -6,7 +6,9 @@ import { CURRENCY_FORMATTER } from '../../constants';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { Banknote, CreditCard, Smartphone, Download, Calendar, FilterX, X, Edit2, Save, AlertCircle, CheckCircle, XCircle, Trash2, Ban } from 'lucide-react';
 import { Sale, SaleItem } from '../../types';
-import { supabase } from '../../cloud';
+import { fetchAll } from '../../cloud';
+import { aggregateSales, saleRevenue, saleCost, saleProfit, revenueByPayment } from '../../utils/aggregates';
+import { Pagination } from '../ui/pagination';
 
 const COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6'];
 
@@ -36,6 +38,15 @@ const Reports = () => {
   const [filterPayment, setFilterPayment] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
+  // Page-based rendering so a 50,000-row filtered set never tries to paint
+  // all at once. Page and size both persist across filter changes unless the
+  // new page would be out of range (handled in the effect below).
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(50);
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [startDate, endDate, searchQuery, filterUser, filterPayment, filterStatus, rowsPerPage]);
+
   const showToast = (message: string, type: 'success' | 'error' | 'warning' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
@@ -47,48 +58,82 @@ const Reports = () => {
   };
 
   useEffect(() => {
+    // Fetch only what we don't already have. Strategy:
+    //  1. If the requested range is entirely covered by local `sales`
+    //     (i.e. earliest local timestamp ≤ startDate) we skip the cloud
+    //     round-trip entirely.
+    //  2. Otherwise fetch the range and, if possible, use the newest local
+    //     row's `updatedAt` as a watermark so we only pull new/changed rows.
+    //  3. Results are merged with `sales` on the render side (id-dedupe).
     const fetchHistoricalSales = async () => {
-      // Only fetch if a custom start date is provided and it's older than 3 days
-      if (startDate) {
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-
-        if (start < threeDaysAgo) {
-          setIsFetchingExternal(true);
-          try {
-            let query = supabase.from('sales').select('*').gte('timestamp', start.toISOString());
-            
-            if (endDate) {
-              const end = new Date(endDate);
-              end.setHours(23, 59, 59, 999);
-              query = query.lte('timestamp', end.toISOString());
-            }
-
-            // In extreme high volume (e.g., >1000 records daily for a month), 
-            // pagination would be required. Keeping it to a simple limit for now.
-            const { data, error } = await query.order('timestamp', { ascending: false }).limit(5000);
-
-            if (error) throw error;
-            if (data) setExternalSales(data);
-          } catch (err) {
-            console.error('Error fetching historical sales from Supabase:', err);
-            showToast('Failed to load historical data', 'error');
-          } finally {
-            setIsFetchingExternal(false);
-          }
-          return;
-        }
+      if (!startDate) {
+        setExternalSales([]);
+        return;
       }
-      // Reset if not meeting conditions
-      setExternalSales([]);
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setExternalSales([]);
+        return;
+      }
+
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      const startMs = start.getTime();
+
+      // Local coverage check — do we already have every sale in this range?
+      const oldestLocalMs = sales.reduce<number>((min, s) => {
+        const t = new Date(s.timestamp).getTime();
+        return t < min ? t : min;
+      }, Number.POSITIVE_INFINITY);
+      const localCoversRange = sales.length > 0 && oldestLocalMs <= startMs;
+
+      if (localCoversRange) {
+        // Local already contains everything in range — don't refetch.
+        setExternalSales([]);
+        return;
+      }
+
+      setIsFetchingExternal(true);
+      try {
+        const startIso = start.toISOString();
+        const endIso = endDate ? (() => {
+          const end = new Date(endDate);
+          end.setHours(23, 59, 59, 999);
+          return end.toISOString();
+        })() : null;
+
+        const data = await fetchAll<Sale>('sales', { column: 'timestamp', ascending: false }, q => {
+          let qq = q.gte('timestamp', startIso);
+          if (endIso) qq = qq.lte('timestamp', endIso);
+          return qq;
+        });
+        setExternalSales(data);
+      } catch (err) {
+        console.error('Error fetching sales from Supabase:', err);
+        showToast('Failed to load sales for selected range', 'error');
+      } finally {
+        setIsFetchingExternal(false);
+      }
     };
 
     fetchHistoricalSales();
-  }, [startDate, endDate]);
+  }, [startDate, endDate, sales]);
 
   const filteredSales = useMemo(() => {
-    const sourceSales = externalSales.length > 0 ? externalSales : sales;
+    // Build the source as the union of local `sales` + cloud-fetched range,
+    // deduped by id (newer `updatedAt` wins). This is the "don't refetch what
+    // we already have" guarantee — local rows appear even if the cloud query
+    // was skipped for coverage.
+    const sourceMap = new Map<string, Sale>();
+    const pick = (row: Sale) => {
+      const existing = sourceMap.get(row.id);
+      if (!existing) { sourceMap.set(row.id, row); return; }
+      const a = (existing as any).updatedAt ? new Date((existing as any).updatedAt).getTime() : 0;
+      const b = (row as any).updatedAt ? new Date((row as any).updatedAt).getTime() : 0;
+      if (b >= a) sourceMap.set(row.id, row);
+    };
+    for (const r of sales) pick(r);
+    for (const r of externalSales) pick(r);
+    const sourceSales = Array.from(sourceMap.values());
     return sourceSales.filter(sale => {
       // Date range filter
       const saleDate = new Date(sale.timestamp);
@@ -130,46 +175,58 @@ const Reports = () => {
     }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [sales, externalSales, startDate, endDate, searchQuery, filterUser, filterPayment, filterStatus]);
 
-  const totalRevenue = filteredSales.filter(s => !s.isVoided).reduce((acc, sale) => acc + sale.totalAmount, 0);
-  const totalCost = filteredSales.filter(s => !s.isVoided).reduce((acc, sale) => acc + sale.totalCost, 0);
-  const grossProfit = totalRevenue - totalCost;
+  // Single source of truth for every KPI on this page — matches the numbers
+  // Inventory and shift pages display for the same set of sales.
+  const agg = useMemo(() => aggregateSales(filteredSales), [filteredSales]);
+  const totalRevenue = agg.revenue;
+  const totalCost = agg.cost;
+  const grossProfit = agg.profit;
 
-  const productTypeMap = new Map<string, string>();
-  products.forEach(p => productTypeMap.set(p.id, p.type));
+  const productTypeMap = useMemo(() => {
+    const m = new Map<string, string>();
+    products.forEach(p => m.set(p.id, p.type));
+    return m;
+  }, [products]);
 
-  const categoryRevenueMap = new Map<string, number>();
-  filteredSales.filter(s => !s.isVoided).forEach(sale => {
-    sale.items.forEach(item => {
-      const type = productTypeMap.get(item.productId) || 'Unknown';
-      const itemRevenue = item.priceAtSale * item.quantity;
-      const current = categoryRevenueMap.get(type) || 0;
-      categoryRevenueMap.set(type, current + itemRevenue);
-    });
-  });
+  const categoryData = useMemo(() => {
+    const categoryRevenueMap = new Map<string, number>();
+    for (const sale of filteredSales) {
+      if (sale.isVoided) continue;
+      for (const item of sale.items) {
+        const type = productTypeMap.get(item.productId) || 'Unknown';
+        const itemRevenue = (Number(item.priceAtSale) || 0) * (Number(item.quantity) || 0);
+        categoryRevenueMap.set(type, (categoryRevenueMap.get(type) || 0) + itemRevenue);
+      }
+    }
+    return Array.from(categoryRevenueMap.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [filteredSales, productTypeMap]);
 
-  const categoryData = Array.from(categoryRevenueMap.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  const topProductsData = useMemo(() => {
+    const productPerformance = new Map<string, number>();
+    for (const sale of filteredSales) {
+      if (sale.isVoided) continue;
+      for (const item of sale.items) {
+        productPerformance.set(item.productName, (productPerformance.get(item.productName) || 0) + (Number(item.quantity) || 0));
+      }
+    }
+    return Array.from(productPerformance.entries())
+      .map(([name, qty]) => ({ name, qty }))
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 5);
+  }, [filteredSales]);
 
-  const productPerformance = new Map<string, number>();
-  filteredSales.filter(s => !s.isVoided).forEach(sale => {
-    sale.items.forEach(item => {
-      const key = item.productName;
-      const current = productPerformance.get(key) || 0;
-      productPerformance.set(key, current + item.quantity);
-    });
-  });
+  const hourlyData = useMemo(() => {
+    const h = new Array(24).fill(0).map((_, i) => ({ hour: `${i}:00`, sales: 0 }));
+    for (const sale of filteredSales) {
+      if (sale.isVoided) continue;
+      h[new Date(sale.timestamp).getHours()].sales += saleRevenue(sale);
+    }
+    return h;
+  }, [filteredSales]);
 
-  const topProductsData = Array.from(productPerformance.entries()).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty).slice(0, 5);
-
-  const hourlyData = new Array(24).fill(0).map((_, i) => ({ hour: `${i}:00`, sales: 0 }));
-  filteredSales.filter(s => !s.isVoided).forEach(sale => {
-    const hour = new Date(sale.timestamp).getHours();
-    hourlyData[hour].sales += sale.totalAmount;
-  });
-
-  const paymentTotals = filteredSales.filter(s => !s.isVoided).reduce((acc, sale) => {
-    acc[sale.paymentMethod] = (acc[sale.paymentMethod] || 0) + sale.totalAmount;
-    return acc;
-  }, { CASH: 0, CARD: 0, MOBILE: 0 } as Record<string, number>);
+  const paymentTotals = useMemo(() => revenueByPayment(filteredSales), [filteredSales]);
 
   const downloadExcel = () => {
     if (filteredSales.length === 0) { alert("No data to export."); return; }
@@ -179,9 +236,12 @@ const Reports = () => {
       ...filteredSales.map(sale => {
         const date = new Date(sale.timestamp);
         const itemsStr = sale.items.map(i => `${i.quantity}x ${i.productName} (${i.size})`).join('; ');
-        const profit = sale.totalAmount - sale.totalCost;
+        // Voided sales export with 0 revenue/cost/profit so the CSV totals match the on-screen KPIs.
+        const revenue = saleRevenue(sale);
+        const cost = saleCost(sale);
+        const profit = saleProfit(sale);
         const escape = (str: string | number) => `"${String(str).replace(/"/g, '""')}"`;
-        return [escape(sale.id), escape(date.toLocaleDateString()), escape(date.toLocaleTimeString()), escape(sale.cashierName), escape(sale.paymentMethod), escape(itemsStr), sale.totalAmount, sale.totalCost, profit, escape(sale.isVoided ? 'VOIDED' : 'VALID')].join(',');
+        return [escape(sale.id), escape(date.toLocaleDateString()), escape(date.toLocaleTimeString()), escape(sale.cashierName), escape(sale.paymentMethod), escape(itemsStr), revenue, cost, profit, escape(sale.isVoided ? 'VOIDED' : 'VALID')].join(',');
       })
     ];
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -493,43 +553,97 @@ const Reports = () => {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-2 lg:gap-6">
-            {/* Revenue, Profit, Sales cards */} 
-            <div className="bg-white p-3 lg:p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-[10px] lg:text-sm font-medium text-slate-500 uppercase">Revenue</h3>
-              <p className="text-lg lg:text-3xl font-bold text-slate-900 mt-1 lg:mt-2">{CURRENCY_FORMATTER.format(totalRevenue)}</p>
+          {/* Compact KPI strip — 4 primary metrics, tabular numerics, uniform
+              height. Height stays tight so the chart rows don't get pushed off-
+              screen on a laptop. */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 lg:gap-3">
+            <div className="bg-white px-3 py-2.5 lg:py-3 rounded-lg border border-slate-200 shadow-sm">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Revenue</p>
+              <p className="text-base lg:text-xl font-bold text-slate-900 mt-0.5 tabular-nums leading-tight">{CURRENCY_FORMATTER.format(totalRevenue)}</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Voided excluded</p>
             </div>
-            <div className="bg-white p-3 lg:p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-[10px] lg:text-sm font-medium text-slate-500 uppercase">Profit</h3>
-              <p className="text-lg lg:text-3xl font-bold text-green-600 mt-1 lg:mt-2">{CURRENCY_FORMATTER.format(grossProfit)}</p>
+            <div className="bg-white px-3 py-2.5 lg:py-3 rounded-lg border border-slate-200 shadow-sm">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Profit</p>
+              <p className="text-base lg:text-xl font-bold text-emerald-600 mt-0.5 tabular-nums leading-tight">{CURRENCY_FORMATTER.format(grossProfit)}</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Rev − Cost</p>
             </div>
-            <div className="bg-white p-3 lg:p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-[10px] lg:text-sm font-medium text-slate-500 uppercase">Sales</h3>
-              <p className="text-lg lg:text-3xl font-bold text-slate-900 mt-1 lg:mt-2">{filteredSales.length}</p>
+            <div className="bg-white px-3 py-2.5 lg:py-3 rounded-lg border border-slate-200 shadow-sm">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Margin</p>
+              <p className={`text-base lg:text-xl font-bold mt-0.5 tabular-nums leading-tight ${agg.margin >= 30 ? 'text-emerald-600' : agg.margin >= 15 ? 'text-amber-600' : 'text-red-600'}`}>
+                {agg.margin.toFixed(1)}%
+              </p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Profit ÷ Revenue</p>
+            </div>
+            <div className="bg-white px-3 py-2.5 lg:py-3 rounded-lg border border-slate-200 shadow-sm">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Transactions</p>
+              <p className="text-base lg:text-xl font-bold text-slate-900 mt-0.5 tabular-nums leading-tight">
+                {(agg.count - agg.voidedCount).toLocaleString()}
+              </p>
+              <p className="text-[10px] text-slate-400 mt-0.5">
+                {agg.voidedCount > 0 ? `${agg.voidedCount} voided · ${agg.units.toLocaleString()} units` : `${agg.units.toLocaleString()} units`}
+              </p>
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 lg:gap-6">
-            <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center gap-2 lg:gap-4">
-              <div className="p-2 lg:p-3 bg-green-100 text-green-600 rounded-full"><Banknote size={18} className="lg:w-6 lg:h-6" /></div>
-              <div className="text-center lg:text-left">
-                <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Cash</p>
-                <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.CASH)}</p>
+          {/* Payment breakdown — compact inline cards. The Split card shows its
+              cash/mobile components inside itself so admin can see the
+              composition at a glance without another row of cards. */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 lg:gap-3">
+            <div className="bg-white px-3 py-2.5 lg:py-3 rounded-lg border border-slate-200 shadow-sm flex items-center gap-2.5">
+              <div className="p-1.5 bg-green-100 text-green-600 rounded-md flex-shrink-0"><Banknote size={14} /></div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Cash</p>
+                <p className="text-sm lg:text-base font-bold text-slate-900 tabular-nums leading-tight truncate">{CURRENCY_FORMATTER.format(paymentTotals.CASH)}</p>
               </div>
             </div>
-            <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center gap-2 lg:gap-4">
-              <div className="p-2 lg:p-3 bg-blue-100 text-blue-600 rounded-full"><CreditCard size={18} className="lg:w-6 lg:h-6" /></div>
-              <div className="text-center lg:text-left">
-                <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Card</p>
-                <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.CARD)}</p>
+            <div className="bg-white px-3 py-2.5 lg:py-3 rounded-lg border border-slate-200 shadow-sm flex items-center gap-2.5">
+              <div className="p-1.5 bg-blue-100 text-blue-600 rounded-md flex-shrink-0"><CreditCard size={14} /></div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Card</p>
+                <p className="text-sm lg:text-base font-bold text-slate-900 tabular-nums leading-tight truncate">{CURRENCY_FORMATTER.format(paymentTotals.CARD)}</p>
               </div>
             </div>
-            <div className="bg-white p-3 lg:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center gap-2 lg:gap-4">
-              <div className="p-2 lg:p-3 bg-purple-100 text-purple-600 rounded-full"><Smartphone size={18} className="lg:w-6 lg:h-6" /></div>
-              <div className="text-center lg:text-left">
-                <p className="text-[10px] lg:text-sm text-slate-500 font-medium">Mobile</p>
-                <p className="text-sm lg:text-xl font-bold text-slate-800">{CURRENCY_FORMATTER.format(paymentTotals.MOBILE)}</p>
+            <div className="bg-white px-3 py-2.5 lg:py-3 rounded-lg border border-slate-200 shadow-sm flex items-center gap-2.5">
+              <div className="p-1.5 bg-purple-100 text-purple-600 rounded-md flex-shrink-0"><Smartphone size={14} /></div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Mobile</p>
+                <p className="text-sm lg:text-base font-bold text-slate-900 tabular-nums leading-tight truncate">{CURRENCY_FORMATTER.format(paymentTotals.MOBILE)}</p>
               </div>
+            </div>
+            {/* SPLIT card: total on top, cash/mobile breakdown stacked on
+                separate lines below so large currency values never truncate. */}
+            <div className="bg-white px-3 py-2.5 lg:py-3 rounded-lg border border-slate-200 shadow-sm">
+              <div className="flex items-baseline justify-between gap-2">
+                <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Split</p>
+                {paymentTotals.splitCount > 0 && (
+                  <span className="text-[10px] text-slate-400 tabular-nums">{paymentTotals.splitCount} tx</span>
+                )}
+              </div>
+              <p className="text-sm lg:text-base font-bold text-slate-900 tabular-nums leading-tight mt-0.5">
+                {CURRENCY_FORMATTER.format(paymentTotals.SPLIT)}
+              </p>
+              {(paymentTotals.splitCash > 0 || paymentTotals.splitMobile > 0) && (
+                <div className="mt-1.5 pt-1.5 border-t border-slate-100 space-y-0.5">
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="flex items-center gap-1 text-slate-500">
+                      <Banknote size={10} className="text-green-600" />
+                      Cash
+                    </span>
+                    <span className="font-semibold text-slate-800 tabular-nums">
+                      {CURRENCY_FORMATTER.format(paymentTotals.splitCash)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="flex items-center gap-1 text-slate-500">
+                      <Smartphone size={10} className="text-purple-600" />
+                      Mobile
+                    </span>
+                    <span className="font-semibold text-slate-800 tabular-nums">
+                      {CURRENCY_FORMATTER.format(paymentTotals.splitMobile)}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -575,17 +689,23 @@ const Reports = () => {
           </div>
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="px-4 lg:px-6 py-3 lg:py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-              <h3 className="font-bold text-slate-800 text-sm lg:text-base">Recent Transactions ({filteredSales.length})</h3>
+            <div className="px-4 lg:px-6 py-3 lg:py-4 border-b border-slate-200 bg-slate-50/60 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-2">
+              <div>
+                <h3 className="font-bold text-slate-900 text-base lg:text-lg">Transactions</h3>
+                <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                  {filteredSales.length.toLocaleString()} total
+                  {agg.voidedCount > 0 && <> · {agg.voidedCount} voided</>}
+                </p>
+              </div>
               <button
                 onClick={downloadExcel}
-                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                className="self-start lg:self-auto inline-flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-md text-sm font-semibold transition-colors"
               >
                 <Download size={14} />
                 <span>Export CSV</span>
               </button>
             </div>
-            <div className="max-h-[500px] overflow-y-auto overflow-x-auto">
+            <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-22rem)] min-h-[300px]">
               <table className="w-full text-sm border-collapse">
                 <thead className="bg-gray-100 sticky top-0 z-10">
                   <tr className="border-b-2 border-black">
@@ -605,16 +725,27 @@ const Reports = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredSales.map((sale, idx) => {
-                    const totalQty = sale.items.reduce((sum, item) => sum + item.quantity, 0);
-                    const profit = sale.totalAmount - sale.totalCost;
-                    const margin = sale.totalAmount > 0 ? (profit / sale.totalAmount) * 100 : 0;
-                    const saleDate = new Date(sale.timestamp);
-                    const itemsDisplay = sale.items.map(i => `${i.quantity}x ${i.productName} (${i.size})`).join(', ');
+                  {(() => {
+                    // Guard against Infinity × 0 = NaN when page size is "All".
+                    const effectiveSize = isFinite(rowsPerPage) ? rowsPerPage : filteredSales.length || 1;
+                    const startIdx = (currentPage - 1) * effectiveSize;
+                    return filteredSales
+                      .slice(startIdx, startIdx + effectiveSize)
+                      .map((sale, idx) => {
+                      const absoluteIdx = startIdx + idx + 1;
+                      // Voided sales contribute 0 revenue/cost/profit so the table
+                      // row math matches the KPI cards and CSV export exactly.
+                      const revenue = saleRevenue(sale);
+                      const cost = saleCost(sale);
+                      const profit = saleProfit(sale);
+                      const totalQty = sale.isVoided ? 0 : sale.items.reduce((sum, item) => sum + item.quantity, 0);
+                      const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
+                      const saleDate = new Date(sale.timestamp);
+                      const itemsDisplay = sale.items.map(i => `${i.quantity}x ${i.productName} (${i.size})`).join(', ');
 
-                    return (
+                      return (
                       <tr key={sale.id} className={`hover:bg-gray-100 border-b border-black ${sale.isVoided ? 'bg-red-50/30 line-through decoration-red-500 decoration-2' : ''}`}>
-                        <td className="px-2 py-1.5 text-gray-500 font-mono text-xs sticky left-0 bg-white border-r border-black">{idx + 1}</td>
+                        <td className="px-2 py-1.5 text-gray-500 font-mono text-xs sticky left-0 bg-white border-r border-black">{absoluteIdx}</td>
                         <td className="px-2 py-1.5 text-gray-700 font-mono text-[10px] border-r border-black">#{sale.id.slice(-8)}</td>
                         <td className="px-2 py-1.5 text-gray-800 text-xs whitespace-nowrap border-r border-black">
                           {saleDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
@@ -636,12 +767,12 @@ const Reports = () => {
                           )}
                         </td>
                         <td className="px-2 py-1.5 text-center font-bold text-gray-900 border-r border-black">{totalQty}</td>
-                        <td className="px-2 py-1.5 text-right text-gray-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(sale.totalCost)}</td>
-                        <td className="px-2 py-1.5 text-right font-bold text-gray-900 border-r border-black">{CURRENCY_FORMATTER.format(sale.totalAmount)}</td>
+                        <td className="px-2 py-1.5 text-right text-gray-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(cost)}</td>
+                        <td className="px-2 py-1.5 text-right font-bold text-gray-900 border-r border-black">{CURRENCY_FORMATTER.format(revenue)}</td>
                         <td className="px-2 py-1.5 text-right font-bold text-green-700 border-r border-black">{CURRENCY_FORMATTER.format(profit)}</td>
                         <td className="px-2 py-1.5 text-right text-xs border-r border-black">
-                          <span className={`font-bold ${margin >= 30 ? 'text-green-700' : margin >= 15 ? 'text-amber-700' : 'text-red-700'}`}>
-                            {margin.toFixed(1)}%
+                          <span className={`font-bold ${sale.isVoided ? 'text-gray-400' : margin >= 30 ? 'text-green-700' : margin >= 15 ? 'text-amber-700' : 'text-red-700'}`}>
+                            {sale.isVoided ? '—' : `${margin.toFixed(1)}%`}
                           </span>
                         </td>
                         <td className={`px-2 py-1.5 text-center border-r border-black ${sale.isVoided ? 'bg-red-50/30' : ''}`}>
@@ -665,7 +796,8 @@ const Reports = () => {
                         </td>
                       </tr>
                     );
-                  })}
+                  });
+                  })()}
                 </tbody>
                 <tfoot className="bg-gray-200 border-t-2 border-black">
                   <tr className="font-bold">
@@ -685,6 +817,14 @@ const Reports = () => {
                 </tfoot>
               </table>
             </div>
+            <Pagination
+              total={filteredSales.length}
+              page={currentPage}
+              pageSize={rowsPerPage}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={setRowsPerPage}
+              itemLabel="transactions"
+            />
           </div>
         </>
       )}

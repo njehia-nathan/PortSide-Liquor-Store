@@ -168,6 +168,8 @@ export const dbPromise = getDB;
  * @param type - The action type (e.g. 'SALE')
  * @param payload - The data object
  */
+export const SYNC_QUEUE_EVENT = 'pos:sync-queue-updated';
+
 export const addToSyncQueue = async (type: string, payload: any) => {
   const db = await getDB();
   await db.add('syncQueue', {
@@ -175,4 +177,8 @@ export const addToSyncQueue = async (type: string, payload: any) => {
     payload,
     timestamp: Date.now()
   });
+  // Notify the StoreContext sync processor so it pushes immediately.
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(SYNC_QUEUE_EVENT));
+  }
 };

@@ -12,6 +12,14 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NO
 -- Add updatedAt to business_settings table
 ALTER TABLE business_settings ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
 
+-- Add updatedAt to the remaining tables for multi-device conflict resolution
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE void_requests ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE stock_change_requests ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE product_sale_logs ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+
 -- ============================================================================
 -- Create function to auto-update updatedAt timestamp on row updates
 -- ============================================================================
@@ -43,10 +51,51 @@ CREATE TRIGGER update_products_updated_at
 
 -- Trigger for business_settings table
 DROP TRIGGER IF EXISTS update_business_settings_updated_at ON business_settings;
-CREATE TRIGGER update_business_settings_updated_at 
+CREATE TRIGGER update_business_settings_updated_at
     BEFORE UPDATE ON business_settings
-    FOR EACH ROW 
+    FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- Triggers for sales, shifts, audit_logs, void_requests, stock_change_requests, product_sale_logs
+DROP TRIGGER IF EXISTS update_sales_updated_at ON sales;
+CREATE TRIGGER update_sales_updated_at
+    BEFORE UPDATE ON sales
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_shifts_updated_at ON shifts;
+CREATE TRIGGER update_shifts_updated_at
+    BEFORE UPDATE ON shifts
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_audit_logs_updated_at ON audit_logs;
+CREATE TRIGGER update_audit_logs_updated_at
+    BEFORE UPDATE ON audit_logs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_void_requests_updated_at ON void_requests;
+CREATE TRIGGER update_void_requests_updated_at
+    BEFORE UPDATE ON void_requests
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_stock_change_requests_updated_at ON stock_change_requests;
+CREATE TRIGGER update_stock_change_requests_updated_at
+    BEFORE UPDATE ON stock_change_requests
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_product_sale_logs_updated_at ON product_sale_logs;
+CREATE TRIGGER update_product_sale_logs_updated_at
+    BEFORE UPDATE ON product_sale_logs
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- Enable Supabase Realtime for all sync tables so every device hears changes immediately
+ALTER PUBLICATION supabase_realtime ADD TABLE products, sales, shifts, audit_logs,
+    void_requests, stock_change_requests, product_sale_logs, users, business_settings;
 
 -- ============================================================================
 -- VERIFICATION QUERIES

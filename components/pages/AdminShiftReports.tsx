@@ -4,12 +4,19 @@ import React, { useState, useMemo } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Shift, Sale } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
-import { Clock, Calendar, DollarSign, Users, MessageSquare, X, Eye, Filter, Printer, FileText, Download, Info } from 'lucide-react';
+import { Clock, Calendar, DollarSign, Users, MessageSquare, X, Eye, Filter, Printer, FileText, Download, Info, AlertTriangle } from 'lucide-react';
+import { todayLocalISO, daysAgoLocalISO } from '../../utils/timezone';
+import { attributeSalesToShifts, aggregateSales, saleRevenue, saleCost, saleProfit, groupOrphansByCashierDay, OrphanGroup } from '../../utils/aggregates';
 
-// Enhanced Tooltip component matching the screenshot style
+// Enhanced Tooltip component matching the screenshot style.
+// Uses historical priceAtSale/costAtSale from the sale line item — never the
+// current product price — so the number never drifts when admin edits prices.
 const ItemTooltip = ({ item, sale }: { item: any; sale: Sale }) => {
-  const profit = (item.sellingPrice - item.costPrice) * item.quantity;
-  const profitMargin = item.costPrice > 0 ? ((item.sellingPrice - item.costPrice) / item.costPrice * 100) : 0;
+  const priceAtSale = Number(item.priceAtSale) || 0;
+  const costAtSale = Number(item.costAtSale) || 0;
+  const qty = Number(item.quantity) || 0;
+  const profit = (priceAtSale - costAtSale) * qty;
+  const profitMargin = priceAtSale > 0 ? ((priceAtSale - costAtSale) / priceAtSale) * 100 : 0;
   
   return (
     <div className="absolute left-0 top-full mt-2 z-[100] bg-slate-800 text-white p-4 rounded-xl shadow-2xl min-w-[320px] text-sm border border-slate-700">
@@ -31,24 +38,24 @@ const ItemTooltip = ({ item, sale }: { item: any; sale: Sale }) => {
         
         <div className="flex justify-between items-center py-1.5">
           <span className="text-slate-300">Unit Price:</span>
-          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(item.sellingPrice)}</span>
+          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(priceAtSale)}</span>
         </div>
-        
+
         <div className="flex justify-between items-center py-1.5">
           <span className="text-slate-300">Cost Price:</span>
-          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(item.costPrice)}</span>
+          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(costAtSale)}</span>
         </div>
-        
+
         <div className="border-t border-slate-600 my-2"></div>
-        
+
         <div className="flex justify-between items-center py-1.5">
           <span className="text-slate-300">Subtotal:</span>
-          <span className="font-bold text-white">{CURRENCY_FORMATTER.format(item.sellingPrice * item.quantity)}</span>
+          <span className="font-bold text-white">{CURRENCY_FORMATTER.format(priceAtSale * qty)}</span>
         </div>
-        
+
         <div className="flex justify-between items-center py-1.5">
           <span className="text-slate-300">Total Cost:</span>
-          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(item.costPrice * item.quantity)}</span>
+          <span className="font-semibold text-white">{CURRENCY_FORMATTER.format(costAtSale * qty)}</span>
         </div>
         
         <div className="border-t border-slate-600 my-2"></div>
@@ -72,52 +79,78 @@ const ItemTooltip = ({ item, sale }: { item: any; sale: Sale }) => {
 };
 
 const AdminShiftReports = () => {
-  const { shifts, sales, users, businessSettings, fetchHistory, isSyncing } = useStore();
+  const { shifts, sales, users, businessSettings, fetchHistory, isSyncing, createBackfillShift } = useStore();
+  const [closingOrphanKey, setClosingOrphanKey] = useState<string | null>(null);
+  const [closingAll, setClosingAll] = useState(false);
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null);
   const [filterUser, setFilterUser] = useState<string>('all');
   const [showZReport, setShowZReport] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<{ saleId: string; itemIndex: number } | null>(null);
 
-  // Date range state
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7); // Default to past 7 days
-    return d.toISOString().split('T')[0];
-  });
-  const [endDate, setEndDate] = useState(() => {
-    return new Date().toISOString().split('T')[0];
-  });
+  // Date range state — local-time defaults so devices in different timezones
+  // see the same default 7-day window.
+  const [startDate, setStartDate] = useState(() => daysAgoLocalISO(7));
+  const [endDate, setEndDate] = useState(() => todayLocalISO());
 
 
-  const allShifts = useMemo(() => {
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
+  // Sales that fall within the admin's selected date range. This is the
+  // baseline against which shift revenue must reconcile.
+  const salesInRange = useMemo(() => {
+    const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate); end.setHours(23, 59, 59, 999);
+    return sales.filter(s => {
+      const t = new Date(s.timestamp);
+      return t >= start && t <= end;
+    });
+  }, [sales, startDate, endDate]);
 
-    let filtered = [...shifts]
-      .filter(s => 
-        new Date(s.startTime) >= start &&
-        new Date(s.startTime) <= end
-      )
-      .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
-      
-    if (filterUser !== 'all') {
-      filtered = filtered.filter(s => s.cashierId === filterUser);
-    }
-    return filtered;
+  // Shifts whose window OVERLAPS the range (not just shifts started inside it)
+  // — otherwise a shift that started the night before would drop off and its
+  // early-morning sales would become orphans.
+  const shiftsInRange = useMemo(() => {
+    const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate); end.setHours(23, 59, 59, 999);
+    const now = Date.now();
+    let filtered = shifts.filter(s => {
+      const shiftStart = new Date(s.startTime).getTime();
+      const shiftEnd = s.endTime ? new Date(s.endTime).getTime() : now;
+      return shiftEnd >= start.getTime() && shiftStart <= end.getTime();
+    });
+    if (filterUser !== 'all') filtered = filtered.filter(s => s.cashierId === filterUser);
+    return filtered.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
   }, [shifts, filterUser, startDate, endDate]);
+
+  // Canonical attribution: every sale-in-range maps to exactly one shift
+  // (or lands in `orphans` when no matching shift exists). Using all shifts
+  // — not just shiftsInRange — so a sale near midnight falls into the right
+  // shift even if that shift starts outside the date window.
+  const attribution = useMemo(
+    () => attributeSalesToShifts(salesInRange, shifts),
+    [salesInRange, shifts]
+  );
+
+  // Also filter by cashier for totals display if a user filter is on.
+  const salesForFilter = useMemo(() => {
+    if (filterUser === 'all') return salesInRange;
+    return salesInRange.filter(s => s.cashierId === filterUser);
+  }, [salesInRange, filterUser]);
+
+  const allShifts = shiftsInRange;
 
   const handleFetchHistory = async () => {
     await fetchHistory('shifts', startDate, endDate);
     await fetchHistory('sales', startDate, endDate);
   };
 
-  const getShiftSales = (cashierId: string, shiftStart: string, shiftEnd?: string) => {
+  const getShiftSales = (cashierId: string, _shiftStart: string, _shiftEnd?: string, shiftId?: string) => {
+    // Use the single-assignment attribution so every sale lands in exactly
+    // one shift. Callers pass the shift id when they have it.
+    if (shiftId) return attribution.shiftSales.get(shiftId) ?? [];
+    // Legacy fallback: cashier + time window (still one-shift-per-sale).
     return sales.filter(s => {
       const saleTime = new Date(s.timestamp);
-      const startTime = new Date(shiftStart);
-      const endTime = shiftEnd ? new Date(shiftEnd) : new Date();
+      const startTime = new Date(_shiftStart);
+      const endTime = _shiftEnd ? new Date(_shiftEnd) : new Date();
       return s.cashierId === cashierId && saleTime >= startTime && saleTime <= endTime;
     });
   };
@@ -139,19 +172,82 @@ const AdminShiftReports = () => {
     return `${hours}h ${minutes}m`;
   };
 
-  const totalRevenue = allShifts.reduce((acc, shift) => {
-    const shiftSales = getShiftSales(shift.cashierId, shift.startTime, shift.endTime);
-    return acc + shiftSales.filter(s => !s.isVoided).reduce((sum, s) => sum + s.totalAmount, 0);
-  }, 0);
+  // Sum of per-shift revenue — uses canonical historical-price aggregate.
+  // This must equal rangeTotal − orphanRevenue (see the reconciliation below).
+  const totalRevenue = useMemo(
+    () => allShifts.reduce((acc, shift) => acc + aggregateSales(attribution.shiftSales.get(shift.id) ?? []).revenue, 0),
+    [allShifts, attribution]
+  );
+
+  // Range-wide truth (matches what the Reports page shows for the same range).
+  const rangeAgg = useMemo(() => aggregateSales(salesForFilter), [salesForFilter]);
+  // Orphan sales = sales in range not attributed to any shift.
+  const orphansInScope = useMemo(
+    () => attribution.orphans.filter(s => filterUser === 'all' || s.cashierId === filterUser),
+    [attribution, filterUser]
+  );
+  const orphanAgg = useMemo(() => aggregateSales(orphansInScope), [orphansInScope]);
+  const orphanGroups = useMemo(() => groupOrphansByCashierDay(orphansInScope), [orphansInScope]);
+
+  // Close a single orphan group into one backfill shift. The shift's window
+  // is tightened 60s around the actual sale timestamps so it can never
+  // swallow sales from a neighbouring real shift.
+  const closeOrphanGroup = async (g: OrphanGroup) => {
+    setClosingOrphanKey(g.key);
+    try {
+      const startMs = new Date(g.earliest).getTime() - 60_000;
+      const endMs = new Date(g.latest).getTime() + 60_000;
+      await createBackfillShift({
+        cashierId: g.cashierId,
+        cashierName: g.cashierName,
+        startTime: new Date(startMs).toISOString(),
+        endTime: new Date(endMs).toISOString(),
+        expectedCash: g.aggregate.revenue,
+        comments: `Backfill for ${g.sales.length} sale${g.sales.length === 1 ? '' : 's'} on ${g.date}`,
+      });
+    } catch (e) {
+      console.error('Failed to create backfill shift:', e);
+      alert('Failed to close orphan sales. Check your connection and try again.');
+    } finally {
+      setClosingOrphanKey(null);
+    }
+  };
+
+  const closeAllOrphans = async () => {
+    if (!confirm(`Create ${orphanGroups.length} backfill shift${orphanGroups.length === 1 ? '' : 's'} to attribute every orphan sale?`)) return;
+    setClosingAll(true);
+    try {
+      for (const g of orphanGroups) {
+        const startMs = new Date(g.earliest).getTime() - 60_000;
+        const endMs = new Date(g.latest).getTime() + 60_000;
+        await createBackfillShift({
+          cashierId: g.cashierId,
+          cashierName: g.cashierName,
+          startTime: new Date(startMs).toISOString(),
+          endTime: new Date(endMs).toISOString(),
+          expectedCash: g.aggregate.revenue,
+          comments: `Bulk backfill for ${g.sales.length} sale${g.sales.length === 1 ? '' : 's'} on ${g.date}`,
+        });
+      }
+    } catch (e) {
+      console.error('Bulk backfill failed partway:', e);
+      alert('Bulk backfill failed partway. Some groups may not have been closed.');
+    } finally {
+      setClosingAll(false);
+    }
+  };
 
   const shiftsWithComments = allShifts.filter(s => s.comments);
 
-  const selectedShiftSales = selectedShift ? getShiftSales(selectedShift.cashierId, selectedShift.startTime, selectedShift.endTime) : [];
-  const selectedShiftRevenue = selectedShiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
+  const selectedShiftSales = selectedShift
+    ? (attribution.shiftSales.get(selectedShift.id) ?? [])
+    : [];
+  const selectedShiftRevenue = selectedShiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + saleRevenue(s), 0);
   const selectedShiftVoidedSales = selectedShiftSales.filter(s => s.isVoided);
 
   const paymentBreakdown = selectedShiftSales.reduce((acc, s) => {
     if (s.isVoided) return acc;
+    const rev = saleRevenue(s);
 
     if (s.paymentMethod === 'SPLIT' && s.splitPayment) {
       acc.cash += s.splitPayment.cashAmount;
@@ -159,13 +255,13 @@ const AdminShiftReports = () => {
       acc.cashCount++;
       acc.mobileCount++;
     } else if (s.paymentMethod === 'CASH') {
-      acc.cash += s.totalAmount;
+      acc.cash += rev;
       acc.cashCount++;
     } else if (s.paymentMethod === 'CARD') {
-      acc.card += s.totalAmount;
+      acc.card += rev;
       acc.cardCount++;
     } else if (s.paymentMethod === 'MOBILE') {
-      acc.mobile += s.totalAmount;
+      acc.mobile += rev;
       acc.mobileCount++;
     }
 
@@ -409,6 +505,93 @@ const AdminShiftReports = () => {
         </div>
       </div>
 
+      {/* Reconciliation strip — every sale in the date range is either
+          attributed to a shift OR reported as an orphan. The three numbers
+          add up to the range total shown on the Reports page. */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+        <div className="flex items-start gap-3">
+          <div className={`p-2 rounded-lg flex-shrink-0 ${orphanAgg.revenue > 0 ? 'bg-amber-100 text-amber-600' : 'bg-emerald-100 text-emerald-600'}`}>
+            {orphanAgg.revenue > 0 ? <AlertTriangle size={18} /> : <DollarSign size={18} />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h3 className="font-semibold text-slate-900 text-sm">Revenue reconciliation</h3>
+              <span className="text-xs text-slate-500 tabular-nums">
+                Range total: <span className="font-bold text-slate-900">{CURRENCY_FORMATTER.format(rangeAgg.revenue)}</span>
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+              <div className="flex justify-between sm:block">
+                <span className="text-slate-500 text-xs">Attributed to shifts</span>
+                <span className="font-semibold text-slate-900 tabular-nums sm:block">{CURRENCY_FORMATTER.format(totalRevenue)}</span>
+              </div>
+              <div className="flex justify-between sm:block">
+                <span className="text-slate-500 text-xs">Orphan sales (no shift)</span>
+                <span className={`font-semibold tabular-nums sm:block ${orphanAgg.revenue > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
+                  {CURRENCY_FORMATTER.format(orphanAgg.revenue)}
+                  {orphansInScope.length > 0 && <span className="text-xs text-slate-400 font-normal ml-1">({orphansInScope.length} tx)</span>}
+                </span>
+              </div>
+              <div className="flex justify-between sm:block">
+                <span className="text-slate-500 text-xs">Voided</span>
+                <span className="font-semibold text-slate-400 tabular-nums sm:block">
+                  {rangeAgg.voidedCount} transaction{rangeAgg.voidedCount === 1 ? '' : 's'}
+                </span>
+              </div>
+            </div>
+            {orphanAgg.revenue > 0 && (
+              <div className="mt-3">
+                <p className="text-xs text-amber-700 mb-3">
+                  {orphansInScope.length} sale{orphansInScope.length === 1 ? '' : 's'} were rung up outside any shift window. Close each group below to attribute them to a retrospective shift for the cashier who made them.
+                </p>
+                <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                  <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                    {orphanGroups.length} group{orphanGroups.length === 1 ? '' : 's'} to close
+                  </p>
+                  <button
+                    onClick={closeAllOrphans}
+                    disabled={closingAll}
+                    className="inline-flex items-center gap-2 bg-amber-600 hover:bg-amber-700 disabled:bg-amber-300 text-white px-3 py-1.5 rounded-md text-xs font-semibold transition-colors"
+                  >
+                    {closingAll ? 'Closing...' : `Close all ${orphanGroups.length}`}
+                  </button>
+                </div>
+                <div className="border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+                    {orphanGroups.map(g => {
+                      const startLabel = new Date(g.earliest).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                      const endLabel = new Date(g.latest).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                      const dateLabel = new Date(g.date + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+                      const closing = closingOrphanKey === g.key;
+                      return (
+                        <div key={g.key} className="flex items-center justify-between gap-3 px-3 py-2 hover:bg-slate-50">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold text-slate-900 truncate">{g.cashierName}</p>
+                            <p className="text-xs text-slate-500 tabular-nums">
+                              {dateLabel} · {startLabel}–{endLabel} · {g.sales.length} sale{g.sales.length === 1 ? '' : 's'}
+                            </p>
+                          </div>
+                          <span className="text-sm font-bold text-slate-900 tabular-nums whitespace-nowrap">
+                            {CURRENCY_FORMATTER.format(g.aggregate.revenue)}
+                          </span>
+                          <button
+                            onClick={() => closeOrphanGroup(g)}
+                            disabled={closing || closingAll}
+                            className="inline-flex items-center gap-1 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 text-white px-2.5 py-1 rounded text-xs font-semibold whitespace-nowrap transition-colors"
+                          >
+                            {closing ? 'Closing…' : 'Close'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Shifts Table */}
       <div className="bg-white rounded-xl border border-blue-200 shadow-sm overflow-hidden">
         <div className="p-4 border-b border-blue-100 bg-gradient-to-r from-blue-50 to-sky-50">
@@ -425,8 +608,8 @@ const AdminShiftReports = () => {
             {/* Mobile View */}
             <div className="lg:hidden divide-y divide-blue-100">
               {allShifts.map((shift, index) => {
-                const shiftSales = getShiftSales(shift.cashierId, shift.startTime, shift.endTime);
-                const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
+                const shiftSales = getShiftSales(shift.cashierId, shift.startTime, shift.endTime, shift.id);
+                const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + saleRevenue(s), 0);
                 const startDT = formatDateTime(shift.startTime);
                 const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
 
@@ -470,8 +653,8 @@ const AdminShiftReports = () => {
                 </thead>
                 <tbody className="divide-y divide-blue-100 text-sm">
                   {allShifts.map((shift, index) => {
-                    const shiftSales = getShiftSales(shift.cashierId, shift.startTime, shift.endTime);
-                    const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + s.totalAmount, 0);
+                    const shiftSales = getShiftSales(shift.cashierId, shift.startTime, shift.endTime, shift.id);
+                    const shiftRevenue = shiftSales.filter(s => !s.isVoided).reduce((acc, s) => acc + saleRevenue(s), 0);
                     const startDT = formatDateTime(shift.startTime);
                     const endDT = shift.endTime ? formatDateTime(shift.endTime) : null;
 

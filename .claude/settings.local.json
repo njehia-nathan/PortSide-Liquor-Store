@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -rn \"isPhone\\\\|window.innerWidth\" /c/Users/inkno/Documents/GitHub/PortSide-Liquor-Store/components/pages/*.tsx)",
+      "Bash(npx tsc:*)",
+      "Bash(npx next:*)"
+    ]
+  }
+}

@@ -52,6 +52,13 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS "lowStockThreshold" INTEGER NULL D
 ALTER TABLE products ADD COLUMN IF NOT EXISTS barcode TEXT NULL;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS "unitsSold" INTEGER NULL DEFAULT 0;
 
+-- Sync/audit metadata used by the client
+ALTER TABLE products ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE products ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS "lastModifiedBy" TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS "lastModifiedByName" TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS "priceHistory" JSONB DEFAULT '[]'::jsonb;
+
 -- ============================================================================
 -- SALES TABLE
 -- Completed transactions with line items stored as JSONB
@@ -63,7 +70,7 @@ CREATE TABLE IF NOT EXISTS sales (
     "cashierName" TEXT NOT NULL,
     "totalAmount" NUMERIC(10, 2) NOT NULL,
     "totalCost" NUMERIC(10, 2) NOT NULL,
-    "paymentMethod" TEXT NOT NULL CHECK ("paymentMethod" IN ('CASH', 'CARD', 'MOBILE')),
+    "paymentMethod" TEXT NOT NULL CHECK ("paymentMethod" IN ('CASH', 'CARD', 'MOBILE', 'SPLIT')),
     items JSONB NOT NULL DEFAULT '[]',
     "isVoided" BOOLEAN DEFAULT FALSE,
     "voidedAt" TIMESTAMPTZ,
@@ -83,6 +90,12 @@ ALTER TABLE sales ADD COLUMN IF NOT EXISTS "isVoided" BOOLEAN DEFAULT FALSE;
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS "voidedAt" TIMESTAMPTZ;
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS "voidedBy" TEXT;
 ALTER TABLE sales ADD COLUMN IF NOT EXISTS "voidReason" TEXT;
+ALTER TABLE sales ADD COLUMN IF NOT EXISTS "splitPayment" JSONB NULL;
+
+-- Widen the paymentMethod CHECK constraint to include SPLIT
+ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_paymentMethod_check;
+ALTER TABLE sales ADD CONSTRAINT sales_paymentMethod_check
+    CHECK ("paymentMethod" IN ('CASH', 'CARD', 'MOBILE', 'SPLIT'));
 
 -- ============================================================================
 -- SHIFTS TABLE

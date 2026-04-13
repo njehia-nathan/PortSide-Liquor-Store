@@ -5,6 +5,7 @@ import { useStore } from '../../context/StoreContext';
 import { Product, AlcoholType, Role } from '../../types';
 import { CURRENCY_FORMATTER } from '../../constants';
 import { ProductAnalytics } from '@/components/ProductAnalytics';
+import { aggregateByProduct, unitsSoldByProduct } from '../../utils/aggregates';
 import {
   AlertCircle,
   ArrowDown,
@@ -108,21 +109,11 @@ const Inventory = () => {
     profit: true,
   });
 
-  // --- CRITICAL FIX: Calculate Units Sold on the Fly ---
-  // Since we stopped updating product.unitsSold in the database to prevent errors,
-  // we now calculate it live from the sales history.
-  const unitsSoldMap = useMemo(() => {
-    const map = new Map<string, number>();
-    sales.forEach(sale => {
-      if (!sale.isVoided) {
-        sale.items.forEach(item => {
-          const current = map.get(item.productId) || 0;
-          map.set(item.productId, current + item.quantity);
-        });
-      }
-    });
-    return map;
-  }, [sales]);
+  // Canonical per-product aggregates — historical prices, voided sales excluded.
+  // Every KPI on this page derives from these maps so Inventory agrees with
+  // Reports and the shift pages for the same set of sales.
+  const productAgg = useMemo(() => aggregateByProduct(sales), [sales]);
+  const unitsSoldMap = useMemo(() => unitsSoldByProduct(sales), [sales]);
 
   // Global barcode scanner listener
   useEffect(() => {
@@ -252,20 +243,17 @@ const Inventory = () => {
 
   const totalItems = useMemo(() => products.reduce((sum, p) => sum + (Number(p.stock) || 0), 0), [products]);
 
-  // Calculate total revenue and profit for admin
-  const totalRevenue = useMemo(() => {
-    return products.reduce((sum, p) => {
-      const unitsSold = unitsSoldMap.get(p.id) || 0;
-      return sum + (unitsSold * p.sellingPrice);
-    }, 0);
-  }, [products, unitsSoldMap]);
-
-  const totalProfit = useMemo(() => {
-    return products.reduce((sum, p) => {
-      const unitsSold = unitsSoldMap.get(p.id) || 0;
-      return sum + (unitsSold * (p.sellingPrice - p.costPrice));
-    }, 0);
-  }, [products, unitsSoldMap]);
+  // Historical-price revenue/profit so these match Reports/Shift pages exactly.
+  // The old formula `unitsSold × current sellingPrice` drifted whenever admin
+  // edited a product price, producing different KPI numbers on every page.
+  const totalRevenue = useMemo(
+    () => Array.from(productAgg.values()).reduce((s, p) => s + p.revenue, 0),
+    [productAgg]
+  );
+  const totalProfit = useMemo(
+    () => Array.from(productAgg.values()).reduce((s, p) => s + p.profit, 0),
+    [productAgg]
+  );
 
   const handleBarcodeScanned = (barcode: string) => {
     const product = products.find(p => p.barcode === barcode || p.sku === barcode);
@@ -389,8 +377,8 @@ const Inventory = () => {
       if (visibleColumns.unitsSold) row.push(unitsSoldMap.get(p.id) || 0);
       if (visibleColumns.lowStockThreshold) row.push(p.lowStockThreshold || 5);
       if (visibleColumns.value) row.push((p.costPrice * p.stock).toFixed(2));
-      if (currentUser?.role === Role.ADMIN && visibleColumns.totalRevenue) row.push(((unitsSoldMap.get(p.id) || 0) * p.sellingPrice).toFixed(2));
-      if (currentUser?.role === Role.ADMIN && visibleColumns.profit) row.push(((unitsSoldMap.get(p.id) || 0) * (p.sellingPrice - p.costPrice)).toFixed(2));
+      if (currentUser?.role === Role.ADMIN && visibleColumns.totalRevenue) row.push((productAgg.get(p.id)?.revenue ?? 0).toFixed(2));
+      if (currentUser?.role === Role.ADMIN && visibleColumns.profit) row.push((productAgg.get(p.id)?.profit ?? 0).toFixed(2));
       return row.join(',');
     });
 
@@ -727,8 +715,8 @@ const Inventory = () => {
                         </TableCell>}
                         {visibleColumns.lowStockThreshold && <TableCell className="px-3 py-1.5 text-center text-slate-700 text-xs border-r border-black">{p.lowStockThreshold || 5}</TableCell>}
                         {visibleColumns.value && <TableCell className="px-3 py-1.5 text-right font-bold text-slate-900 text-xs border-r border-black">{CURRENCY_FORMATTER.format(p.costPrice * p.stock)}</TableCell>}
-                        {isAdmin && visibleColumns.totalRevenue && <TableCell className="px-3 py-1.5 text-right font-bold text-purple-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format((unitsSoldMap.get(p.id) || 0) * p.sellingPrice)}</TableCell>}
-                        {isAdmin && visibleColumns.profit && <TableCell className="px-3 py-1.5 text-right font-bold text-emerald-700 text-xs">{CURRENCY_FORMATTER.format((unitsSoldMap.get(p.id) || 0) * (p.sellingPrice - p.costPrice))}</TableCell>}
+                        {isAdmin && visibleColumns.totalRevenue && <TableCell className="px-3 py-1.5 text-right font-bold text-purple-700 text-xs border-r border-black">{CURRENCY_FORMATTER.format(productAgg.get(p.id)?.revenue ?? 0)}</TableCell>}
+                        {isAdmin && visibleColumns.profit && <TableCell className="px-3 py-1.5 text-right font-bold text-emerald-700 text-xs">{CURRENCY_FORMATTER.format(productAgg.get(p.id)?.profit ?? 0)}</TableCell>}
                       </TableRow>
                     ))
                   )}

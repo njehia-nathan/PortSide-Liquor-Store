@@ -11,6 +11,32 @@ export const getCurrentTimestamp = (): string => {
 };
 
 /**
+ * Today as YYYY-MM-DD in the device's LOCAL timezone.
+ * Use this everywhere a date input is initialised — never mix
+ * `new Date().toISOString().split('T')[0]` (UTC) with `setDate()` (local),
+ * which is what causes mobile/laptop in different zones to disagree about "today".
+ */
+export const todayLocalISO = (): string => {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+/**
+ * `n` days ago in the device's LOCAL timezone, as YYYY-MM-DD.
+ */
+export const daysAgoLocalISO = (n: number): string => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+/**
  * Parse timestamp safely
  */
 export const parseTimestamp = (timestamp: string | undefined): Date | null => {

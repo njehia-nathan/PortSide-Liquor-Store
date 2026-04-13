@@ -96,6 +96,7 @@ export interface Sale {
     cashAmount: number;
     mobileAmount: number;
   };
+  updatedAt?: string; // Sync watermark for multi-device reconciliation
 }
 
 export interface Shift {
@@ -109,6 +110,7 @@ export interface Shift {
   expectedCash?: number; // Calculated from sales
   status: 'OPEN' | 'CLOSED';
   comments?: string; // Shift end comments from cashier
+  updatedAt?: string; // Sync watermark for multi-device reconciliation
 }
 
 export interface AuditLog {

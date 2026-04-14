@@ -214,6 +214,60 @@ export const shiftAggregate = (shift: Shift, attribution: ShiftAttribution): Sal
   return aggregateSales(sales);
 };
 
+// ─── Shift close math ──────────────────────────────────────────────────────
+// Single source of truth for "how much cash should be in the drawer at close."
+// Rules (same everywhere — POS close modal, closeShift action, backfill, etc.):
+//   • cashier must match, sale must not be voided.
+//   • sale timestamp must fall in [startTime, closeAt] — inclusive both ends.
+//     closeAt defaults to now; passing it explicitly keeps the filter window
+//     aligned with the endTime we persist on the shift row.
+//   • cash contribution per sale:
+//       CASH  → full saleRevenue(sale)   (historical prices, not cached total)
+//       SPLIT → splitPayment.cashAmount
+//       CARD / MOBILE → 0
+//   • expectedCash = shift.openingCash + cashSalesTotal.
+// Fixes the old bug where SPLIT cash was ignored and where '>' was used
+// instead of '>=' on the shift start.
+export interface ShiftCashResult {
+  expectedCash: number;   // openingCash + cashSalesTotal
+  cashSalesTotal: number; // CASH revenue + SPLIT.cashAmount
+  shiftSales: Sale[];     // every in-window non-voided sale for the cashier
+}
+
+export const shiftCashExpected = (
+  shift: Shift,
+  sales: Sale[],
+  closeAt: Date = new Date(),
+): ShiftCashResult => {
+  const startMs = new Date(shift.startTime).getTime();
+  const endMs = closeAt.getTime();
+
+  const shiftSales: Sale[] = [];
+  let cashSalesTotal = 0;
+
+  for (const sale of sales) {
+    if (sale.isVoided) continue;
+    if (sale.cashierId !== shift.cashierId) continue;
+    const t = new Date(sale.timestamp).getTime();
+    if (t < startMs || t > endMs) continue;
+
+    shiftSales.push(sale);
+
+    if (sale.paymentMethod === 'CASH') {
+      cashSalesTotal += saleRevenue(sale);
+    } else if (sale.paymentMethod === 'SPLIT') {
+      cashSalesTotal += Number(sale.splitPayment?.cashAmount) || 0;
+    }
+    // CARD and MOBILE contribute zero to the cash drawer.
+  }
+
+  return {
+    expectedCash: (Number(shift.openingCash) || 0) + cashSalesTotal,
+    cashSalesTotal,
+    shiftSales,
+  };
+};
+
 // Buckets orphan sales by cashier + local calendar day so the admin can close
 // each group into one retrospective shift. Each bucket carries the time window
 // and running revenue totals needed to mint that shift.

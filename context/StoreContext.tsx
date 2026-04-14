@@ -6,6 +6,7 @@ import { SaleReconciliation, ProductReconciliation } from '../components/Reconci
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
 import { dbPromise, addToSyncQueue, SYNC_QUEUE_EVENT } from '../db';
 import { pushToCloud, supabase, fetchAll } from '../cloud';
+import { shiftCashExpected } from '../utils/aggregates';
 
 /**
  * STORE CONTEXT INTERFACE
@@ -56,7 +57,11 @@ interface StoreContextType {
 
   // --- SHIFT ACTIONS ---
   openShift: (openingCash?: number) => Promise<void>;
-  closeShift: (closingCash: number, comments?: string) => Promise<void>;
+  closeShift: (
+    closingCash: number,
+    comments?: string,
+    opts?: { expectedCash?: number },
+  ) => Promise<Shift | undefined>;
   createBackfillShift: (params: {
     cashierId: string;
     cashierName: string;
@@ -146,6 +151,7 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
   // useRef locks are synchronous — immune to React's async state batching
   const isSyncLockedRef = useRef(false);   // Prevents duplicate sales on rapid clicks
   const isSyncRunningRef = useRef(false);  // Prevents concurrent sync queue processing
+  const isClosingShiftRef = useRef(false); // Prevents double-submit on Close Shift
   const lastUserActionRef = useRef<number>(0); // Timestamp of last user-triggered action (sale, stock, etc.)
   const [dataLoadedTimestamp, setDataLoadedTimestamp] = useState(0);
 
@@ -927,33 +933,53 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     return newShift;
   };
 
-  const closeShift = async (closingCash: number, comments?: string) => {
-    if (!currentShift) return;
+  const closeShift = async (
+    closingCash: number,
+    comments?: string,
+    opts?: { expectedCash?: number },
+  ): Promise<Shift | undefined> => {
+    if (!currentShift) return undefined;
+    // Synchronous guard — a rapid double-submit can fire the second call
+    // before the first `setShifts` has committed, so `if (!currentShift)`
+    // alone is not enough.
+    if (isClosingShiftRef.current) return undefined;
+    isClosingShiftRef.current = true;
 
-    const shiftSales = sales.filter(s =>
-      new Date(s.timestamp) > new Date(currentShift.startTime) &&
-      s.cashierId === currentShift.cashierId &&
-      s.paymentMethod === 'CASH' &&
-      !s.isVoided
-    );
-    const totalCashSales = shiftSales.reduce((acc, s) => acc + s.totalAmount, 0);
-    const expected = currentShift.openingCash + totalCashSales;
+    try {
+      // The exact instant the close fires. We use the same moment as both
+      // the shift's endTime and the upper bound of the sales filter so the
+      // saved shift window exactly matches what was counted.
+      const closedAt = new Date();
 
-    const updatedShift: Shift = {
-      ...currentShift,
-      endTime: new Date().toISOString(),
-      closingCash,
-      expectedCash: expected,
-      status: 'CLOSED',
-      comments,
-    };
+      // If the caller pre-computed expectedCash (POS modal already shows it
+      // on the receipt), trust that number — eliminates divergence between
+      // what the cashier sees and what the database stores. Otherwise
+      // compute it here with the canonical helper.
+      const expected = opts?.expectedCash ?? shiftCashExpected(currentShift, sales, closedAt).expectedCash;
 
-    setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
+      const updatedShift: Shift = {
+        ...currentShift,
+        endTime: closedAt.toISOString(),
+        closingCash,
+        expectedCash: expected,
+        status: 'CLOSED',
+        comments,
+        updatedAt: closedAt.toISOString(),
+      };
 
-    const db = await dbPromise();
-    await db.put('shifts', updatedShift);
-    await addLog('SHIFT_CLOSE', `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}${comments ? `. Comments: ${comments}` : ''}`);
-    await addToSyncQueue('CLOSE_SHIFT', updatedShift);
+      setShifts(prev => prev.map(s => s.id === currentShift.id ? updatedShift : s));
+
+      const db = await dbPromise();
+      await db.put('shifts', updatedShift);
+      await addLog(
+        'SHIFT_CLOSE',
+        `Shift closed. Counted: ${CURRENCY_FORMATTER.format(closingCash)}, Expected: ${CURRENCY_FORMATTER.format(expected)}${comments ? `. Comments: ${comments}` : ''}`,
+      );
+      await addToSyncQueue('CLOSE_SHIFT', updatedShift);
+      return updatedShift;
+    } finally {
+      isClosingShiftRef.current = false;
+    }
   };
 
   /**

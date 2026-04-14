@@ -7,6 +7,7 @@ import { CURRENCY_FORMATTER } from '../../constants';
 import { Search, Plus, Minus, Trash2, CreditCard, Banknote, Smartphone, LogOut, Receipt, Printer, X, Clock, Barcode, MessageCircle, Send, Ban, CheckCircle, DollarSign } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Shift } from '../../types';
+import { shiftCashExpected, saleRevenue } from '../../utils/aggregates';
 
 const POS = () => {
   const router = useRouter();
@@ -344,36 +345,35 @@ const POS = () => {
     const amount = parseFloat(shiftCashAmount);
     if (isNaN(amount) || !currentShift) return;
 
-    // Calculate shift stats before closing
-    const shiftSales = sales.filter(s => {
-      const saleTime = new Date(s.timestamp);
-      const startTime = new Date(currentShift.startTime);
-      return s.cashierId === currentShift.cashierId && saleTime >= startTime && !s.isVoided;
-    });
-    const revenue = shiftSales.reduce((sum, s) => sum + s.totalAmount, 0);
-    const cashSalesTotal = shiftSales.reduce((sum, s) => {
-      if (s.paymentMethod === 'CASH') return sum + s.totalAmount;
-      if (s.paymentMethod === 'SPLIT' && s.splitPayment) return sum + s.splitPayment.cashAmount;
-      return sum;
-    }, 0);
-    const expectedCash = currentShift.openingCash + cashSalesTotal;
+    // Single canonical cash calculation — same helper the store action uses,
+    // so the receipt number and the persisted `expectedCash` are guaranteed
+    // to match regardless of CASH / SPLIT / CARD / MOBILE mix.
+    const { expectedCash, cashSalesTotal, shiftSales } = shiftCashExpected(currentShift, sales);
+    const revenue = shiftSales.reduce((sum, s) => sum + saleRevenue(s), 0);
 
-    // Store shift data for report
+    // Close first so the receipt renders from the authoritative shift row
+    // (correct endTime, expectedCash, updatedAt, status=CLOSED).
+    const closed = await closeShift(amount, undefined, { expectedCash });
+    setShiftCashAmount('');
+    setShowShiftModal(false);
+
+    const closedShift: Shift = closed ?? {
+      ...currentShift,
+      closingCash: amount,
+      expectedCash,
+      endTime: new Date().toISOString(),
+      status: 'CLOSED',
+    };
+
     setClosedShiftData({
-      shift: { ...currentShift, closingCash: amount, expectedCash },
+      shift: closedShift,
       salesCount: shiftSales.length,
       revenue,
       cashSales: cashSalesTotal,
       expectedCash,
-      closingCash: amount
+      closingCash: amount,
     });
 
-    // Close shift
-    await closeShift(amount);
-    setShiftCashAmount('');
-    setShowShiftModal(false);
-
-    // Show shift report
     setShowShiftReport(true);
   };
 

@@ -61,15 +61,42 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const [isBulkOperationInProgress, setIsBulkOperationInProgress] = useState(false);
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
   const [failedSyncCount, setFailedSyncCount] = useState(0);
+  const [firstFailedError, setFirstFailedError] = useState<string | null>(null);
+  const [isSyncStalled, setIsSyncStalled] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const [schemaDrift, setSchemaDrift] = useState<{ message: string; code: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    // Pending-queue stall detection: track when syncQueue size last decreased.
+    // If it stays flat > 5 min while online, flip the stalled flag.
+    const stallState = { lastCount: 0, lastDropAt: Date.now() };
+    const STALL_THRESHOLD_MS = 5 * 60 * 1000;
+
     const poll = async () => {
       try {
         const db = await dbPromise();
-        const count = await db.count('failedSyncQueue');
-        if (!cancelled) setFailedSyncCount(count);
+        const [failedCount, queueCount, failedRows] = await Promise.all([
+          db.count('failedSyncQueue'),
+          db.count('syncQueue'),
+          db.getAll('failedSyncQueue'),
+        ]);
+        if (cancelled) return;
+        setFailedSyncCount(failedCount);
+        setPendingCount(queueCount);
+        const err = (failedRows?.[0] as any)?.lastError;
+        setFirstFailedError(err && typeof err === 'string' ? err : null);
+
+        // Stall tracking.
+        if (queueCount < stallState.lastCount || queueCount === 0) {
+          stallState.lastDropAt = Date.now();
+        }
+        stallState.lastCount = queueCount;
+        const stalled =
+          queueCount > 0 &&
+          navigator.onLine &&
+          Date.now() - stallState.lastDropAt > STALL_THRESHOLD_MS;
+        setIsSyncStalled(stalled);
       } catch {
         /* IndexedDB not available on SSR or locked — ignore */
       }
@@ -1859,19 +1886,50 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           </div>
         )}
 
-        {/* Failed-sync banner — visible until the admin reviews the panel */}
+        {/* Failed-sync banner — visible until the admin reviews the panel.
+            Surfaces the first underlying error so "Unknown error" can never
+            mask a multi-day silent stall again. */}
         {failedSyncCount > 0 && (
           <div className="sticky top-0 z-30 bg-red-600 text-white px-4 py-3 flex items-center justify-between shadow-lg print:hidden">
-            <div className="flex items-center gap-3 flex-1">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
               <AlertCircle size={20} className="flex-shrink-0" />
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 <p className="font-semibold text-sm">{failedSyncCount} {failedSyncCount === 1 ? 'record' : 'records'} failed to sync</p>
-                <p className="text-xs opacity-90">Some data is only saved locally. Tap to review and retry.</p>
+                {firstFailedError ? (
+                  <p className="text-xs opacity-90 truncate" title={firstFailedError}>
+                    Error: {firstFailedError}
+                  </p>
+                ) : (
+                  <p className="text-xs opacity-90">Some data is only saved locally. Tap to review and retry.</p>
+                )}
               </div>
             </div>
             <Link
               href="/admin/failed-sync"
               className="ml-4 px-3 py-1.5 bg-white text-red-700 rounded-md text-xs font-semibold hover:bg-red-50"
+            >
+              Review
+            </Link>
+          </div>
+        )}
+
+        {/* Stalled-queue banner — fires when syncQueue hasn't decreased for
+            5+ minutes while online. Something is blocking push that isn't
+            showing up in failedSyncQueue yet (items may still be mid-retry).
+            Silent stalls used to take days to notice; now they're visible
+            within the first 5-minute window. */}
+        {isSyncStalled && failedSyncCount === 0 && (
+          <div className="sticky top-0 z-30 bg-amber-500 text-white px-4 py-3 flex items-center justify-between shadow-lg print:hidden">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <AlertCircle size={20} className="flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-sm">Sync stalled — {pendingCount} {pendingCount === 1 ? 'item' : 'items'} pending for 5+ minutes</p>
+                <p className="text-xs opacity-90">Cloud reachable but nothing is flushing. Check the Failed Sync panel or reload the app.</p>
+              </div>
+            </div>
+            <Link
+              href="/admin/failed-sync"
+              className="ml-4 px-3 py-1.5 bg-white text-amber-700 rounded-md text-xs font-semibold hover:bg-amber-50"
             >
               Review
             </Link>

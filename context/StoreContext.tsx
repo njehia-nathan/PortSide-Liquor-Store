@@ -5,7 +5,7 @@ import {
 import { SaleReconciliation, ProductReconciliation } from '../components/ReconciliationDialog';
 import { INITIAL_USERS, INITIAL_PRODUCTS, CURRENCY_FORMATTER } from '../constants';
 import { dbPromise, addToSyncQueue, SYNC_QUEUE_EVENT } from '../db';
-import { pushToCloud, supabase, fetchAll } from '../cloud';
+import { pushToCloud, supabase, fetchAll, runSchemaPreflight } from '../cloud';
 import { shiftCashExpected } from '../utils/aggregates';
 
 /**
@@ -551,12 +551,12 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     loadData();
 
-    // One-shot: after the migration ships, past schema-drift errors (42703 etc)
-    // will have piled items into `failedSyncQueue`. On every app start, move
-    // them back into `syncQueue` with cleared retry counters so they flush
-    // automatically. Cheap (one pass) and self-limiting — if they still fail,
-    // they land back in failedSyncQueue after 5 more retries.
-    (async () => {
+    // Drains failedSyncQueue back into syncQueue with cleared retry counters,
+    // so transient schema/network issues don't strand writes forever. Run on
+    // boot AND every time the browser announces we're back online. Self-
+    // limiting: items that still fail land back in failedSyncQueue after 5
+    // more retries, but now with a fresh lastError message.
+    const requeueFailedItems = async () => {
       try {
         const db = await dbPromise();
         const failed = await db.getAll('failedSyncQueue');
@@ -575,16 +575,58 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       } catch (err) {
         console.warn('Failed-queue re-queue pass error (non-fatal):', err);
       }
+    };
+
+    requeueFailedItems();
+
+    // Once-per-schema-version silent reconcile. If this device has never
+    // cleaned the legacy random-id phantom logs, do it now. No user click,
+    // no UI. If the flag is already set, this is a no-op.
+    const RECONCILE_FLAG = 'pos:reconcile_v1_done';
+    (async () => {
+      try {
+        if (typeof window === 'undefined') return;
+        if (localStorage.getItem(RECONCILE_FLAG)) return;
+        if (!navigator.onLine) return; // needs cloud; will try again next boot
+        const r = await reconcileProductSaleLogs();
+        console.log(`🧼 Silent boot reconcile: kept ${r.keptFromCloud}, removed ${r.removedLocal}, queued ${r.pushed}`);
+        localStorage.setItem(RECONCILE_FLAG, new Date().toISOString());
+      } catch (err) {
+        console.warn('Silent boot reconcile failed (non-fatal):', err);
+      }
     })();
 
-    const handleOnline = () => setIsOnline(true);
+    const handleOnline = () => {
+      setIsOnline(true);
+      // Network just came back — pull anything stuck in failedSyncQueue and
+      // let the 2s sync tick push it immediately.
+      requeueFailedItems();
+    };
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
+    // Schema preflight: on boot and every 5 minutes. If the cloud schema
+    // lacks a column this client intends to write, we know BEFORE a sale
+    // tries and fails. Posts 'pos:schema-drift' on issues — AppLayout
+    // shows the red banner.
+    const runPreflight = () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      runSchemaPreflight().then(report => {
+        if (!report.ok) {
+          console.warn('[Preflight] Schema issues detected:', report.issues);
+        } else {
+          console.log('[Preflight] Schema OK');
+        }
+      }).catch(err => console.warn('[Preflight] check failed (non-fatal):', err));
+    };
+    runPreflight();
+    const preflightInterval = setInterval(runPreflight, 5 * 60 * 1000);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      clearInterval(preflightInterval);
     };
   }, []);
 

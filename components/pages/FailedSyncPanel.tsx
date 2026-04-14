@@ -39,18 +39,18 @@ const FailedSyncPanel: React.FC = () => {
 
   const handleRetry = async (item: FailedSyncQueueItem & { key: number }) => {
     setRetryingItem(item.key);
-    
+
     try {
-      const success = await pushToCloud(item.type, item.payload);
-      
-      if (success) {
+      const result = await pushToCloud(item.type, item.payload);
+
+      if (result.ok) {
         const db = await dbPromise();
         await db.delete('failedSyncQueue', item.key);
-        
+
         alert('✅ Item synced successfully!');
         await loadFailedItems();
       } else {
-        alert('❌ Sync failed again. Check your connection and try later.');
+        alert(`❌ Sync failed again: ${result.error}`);
       }
     } catch (error: any) {
       alert(`❌ Retry failed: ${error.message || error}`);
@@ -84,8 +84,8 @@ const FailedSyncPanel: React.FC = () => {
     
     for (const item of failedItems) {
       try {
-        const success = await pushToCloud(item.type, item.payload);
-        if (success) {
+        const result = await pushToCloud(item.type, item.payload);
+        if (result.ok) {
           const db = await dbPromise();
           await db.delete('failedSyncQueue', item.key);
           successCount++;

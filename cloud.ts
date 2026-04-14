@@ -58,14 +58,18 @@ const normalizeProductPayload = (payload: any): any => ({
   priceHistory: payload.priceHistory ?? [],
 });
 
+export interface PushResult { ok: boolean; error?: string; code?: string }
+
 /**
  * Pushes a single local syncQueue item to Supabase.
- * Returns true on success (caller removes from queue), false on failure (caller retries).
+ * Returns { ok: true } on success (caller removes from queue),
+ * { ok: false, error } on failure so the caller can persist the real message
+ * onto the failedSyncQueue row instead of the useless "Unknown error" fallback.
  */
-export const pushToCloud = async (type: string, payload: any): Promise<boolean> => {
+export const pushToCloud = async (type: string, payload: any): Promise<PushResult> => {
   if (!IS_CONFIGURED) {
     console.log(`[Simulation] Cloud Sync Success: ${type}`, payload);
-    return true;
+    return { ok: true };
   }
 
   try {
@@ -82,7 +86,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
         });
         if (stockError) throw stockError;
       }
-      return true;
+      return { ok: true };
     }
 
     // Legacy SALE_STOCK_DELTA kept for backwards compatibility with items already
@@ -93,7 +97,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
         delta_qty: payload.quantity,
       });
       if (error) throw error;
-      return true;
+      return { ok: true };
     }
 
     let table = '';
@@ -162,7 +166,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
         if (voidError) throw voidError;
         const { error: saleError } = await supabase.from('sales').upsert(payload.sale);
         if (saleError) throw saleError;
-        return true;
+        return { ok: true };
       }
 
       case 'STOCK_CHANGE_REQUEST':
@@ -175,7 +179,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
         if (requestError) throw requestError;
         const { error: productError } = await supabase.from('products').upsert(normalizeProductPayload(payload.product));
         if (productError) throw productError;
-        return true;
+        return { ok: true };
       }
 
       case 'PRODUCT_SALE_LOG':
@@ -185,7 +189,7 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
 
       default:
         console.warn('Unknown sync type:', type);
-        return true; // skip unknown types so they don't block the queue
+        return { ok: true }; // skip unknown types so they don't block the queue
     }
 
     if (action === 'delete') {
@@ -202,12 +206,21 @@ export const pushToCloud = async (type: string, payload: any): Promise<boolean> 
       }
     }
 
-    return true;
-  } catch (error) {
+    return { ok: true };
+  } catch (error: any) {
     console.error(`[Cloud Error] Failed to sync ${type}:`, error);
     if (type !== 'SALE_STOCK_DELTA') {
       console.error(`[Cloud Error] Payload:`, JSON.stringify(payload, null, 2));
     }
-    return false;
+    const code = error?.code || error?.details || '';
+    const message = error?.message || String(error);
+    // 42703 = undefined_column. Surface schema drift so AppLayout can show
+    // the persistent banner.
+    if (typeof window !== 'undefined' && (code === '42703' || /column .* does not exist/i.test(message))) {
+      window.dispatchEvent(new CustomEvent('pos:schema-drift', {
+        detail: { type, message, code },
+      }));
+    }
+    return { ok: false, error: message, code: String(code || '') };
   }
 };

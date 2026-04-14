@@ -86,6 +86,8 @@ interface StoreContextType {
   reconcileStock: () => Promise<{ reconciled: number; errors: string[] }>;
   refreshProductSaleLogs: () => Promise<void>;
   cleanupDuplicateLogs: () => Promise<{ removed: number; errors: string[] }>;
+  reconcileProductSaleLogs: () => Promise<{ removedLocal: number; pushed: number; keptFromCloud: number; errors: string[] }>;
+  verifySyncIntegrity: () => Promise<Array<{ table: string; local: number; cloud: number; missingLocal: number; missingCloud: number }>>;
   fetchHistory: (table: 'sales' | 'shifts' | 'audit_logs' | 'product_sale_logs' | 'void_requests' | 'stock_change_requests', startDate: string, endDate: string) => Promise<void>;
 }
 
@@ -549,6 +551,32 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
 
     loadData();
 
+    // One-shot: after the migration ships, past schema-drift errors (42703 etc)
+    // will have piled items into `failedSyncQueue`. On every app start, move
+    // them back into `syncQueue` with cleared retry counters so they flush
+    // automatically. Cheap (one pass) and self-limiting — if they still fail,
+    // they land back in failedSyncQueue after 5 more retries.
+    (async () => {
+      try {
+        const db = await dbPromise();
+        const failed = await db.getAll('failedSyncQueue');
+        if (failed.length === 0) return;
+        console.log(`🔁 Re-queueing ${failed.length} previously-failed sync items for retry`);
+        const tx = db.transaction(['syncQueue', 'failedSyncQueue'], 'readwrite');
+        for (const item of failed) {
+          const { key, failedAt, totalRetries, canRetry, retryCount, lastError, ...rest } = item as any;
+          await tx.objectStore('syncQueue').add({ ...rest, retryCount: 0 });
+          await tx.objectStore('failedSyncQueue').delete(item.key as number);
+        }
+        await tx.done;
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('pos:sync-queue-updated'));
+        }
+      } catch (err) {
+        console.warn('Failed-queue re-queue pass error (non-fatal):', err);
+      }
+    })();
+
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
@@ -738,18 +766,19 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
               await new Promise(resolve => setTimeout(resolve, 300));
             }
             try {
-              const success = await pushToCloud(item.type, item.payload);
-              if (success) {
+              const result = await pushToCloud(item.type, item.payload);
+              if (result.ok) {
                 await db.delete('syncQueue', item.key!);
                 successCount++;
               } else {
                 const retryCount = (item.retryCount || 0) + 1;
+                const lastError = result.error;
                 if (retryCount >= 5) {
-                  await db.add('failedSyncQueue', { ...item, failedAt: Date.now(), totalRetries: retryCount, canRetry: true });
+                  await db.add('failedSyncQueue', { ...item, lastError, failedAt: Date.now(), totalRetries: retryCount, canRetry: true });
                   await db.delete('syncQueue', item.key!);
-                  console.error(`❌ Item ${item.key} moved to failed queue after ${retryCount} retries`);
+                  console.error(`❌ Item ${item.key} moved to failed queue after ${retryCount} retries: ${lastError}`);
                 } else {
-                  await db.put('syncQueue', { ...item, retryCount });
+                  await db.put('syncQueue', { ...item, retryCount, lastError });
                 }
               }
             } catch (error) {
@@ -2263,6 +2292,149 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     }
   };
 
+  // Cloud-as-source-of-truth reconcile for product_sale_logs. Groups local rows
+  // by (saleId,productId). If the cloud has the pair, keep the row whose id
+  // matches the cloud row and discard the others LOCALLY only — no cloud delete
+  // is ever enqueued (prevents the dedup panel from wiping the canonical cloud
+  // row when legacy random-id siblings still live in IndexedDB). If the cloud
+  // does not have the pair, the row with canonical id `${saleId}-${productId}`
+  // wins (falls back to newest timestamp); winner gets enqueued for push, losers
+  // are dropped locally.
+  const reconcileProductSaleLogs = async (): Promise<{ removedLocal: number; pushed: number; keptFromCloud: number; errors: string[] }> => {
+    const errors: string[] = [];
+    let removedLocal = 0;
+    let pushed = 0;
+    let keptFromCloud = 0;
+
+    try {
+      const db = await dbPromise();
+      const localLogs = await db.getAll('productSaleLogs') as ProductSaleLog[];
+
+      // Build an earliest-timestamp floor so we only pull cloud rows that could
+      // correspond to anything we have locally. fetchAll is paginated past 1000.
+      const minTs = localLogs.reduce<string | null>((acc, l) => {
+        if (!l.timestamp) return acc;
+        return !acc || l.timestamp < acc ? l.timestamp : acc;
+      }, null);
+
+      const cloudLogs = await fetchAll<ProductSaleLog>(
+        'product_sale_logs',
+        { column: 'timestamp', ascending: false },
+        q => (minTs ? q.gte('timestamp', minTs) : q)
+      );
+
+      const cloudByPair = new Map<string, ProductSaleLog>();
+      for (const c of cloudLogs) {
+        cloudByPair.set(`${c.saleId}-${c.productId}`, c);
+      }
+
+      const localByPair = new Map<string, ProductSaleLog[]>();
+      for (const l of localLogs) {
+        const key = `${l.saleId}-${l.productId}`;
+        const arr = localByPair.get(key);
+        if (arr) arr.push(l); else localByPair.set(key, [l]);
+      }
+
+      const tx = db.transaction(['productSaleLogs', 'syncQueue'], 'readwrite');
+      const logStore = tx.objectStore('productSaleLogs');
+      const syncStore = tx.objectStore('syncQueue');
+
+      for (const [pair, group] of localByPair.entries()) {
+        const cloudWinner = cloudByPair.get(pair);
+        if (cloudWinner) {
+          // Make sure the cloud winner exists locally, then drop siblings.
+          await logStore.put(cloudWinner);
+          keptFromCloud++;
+          for (const l of group) {
+            if (l.id !== cloudWinner.id) {
+              await logStore.delete(l.id);
+              removedLocal++;
+            }
+          }
+        } else {
+          // Cloud-absent: pick canonical-id row if present, else newest.
+          const canonicalId = pair;
+          let winner = group.find(l => l.id === canonicalId);
+          if (!winner) {
+            winner = [...group].sort((a, b) =>
+              new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+            )[0];
+          }
+          for (const l of group) {
+            if (l.id !== winner.id) {
+              await logStore.delete(l.id);
+              removedLocal++;
+            }
+          }
+          await syncStore.add({
+            type: 'PRODUCT_SALE_LOG',
+            payload: winner,
+            timestamp: Date.now(),
+          });
+          pushed++;
+        }
+      }
+
+      await tx.done;
+
+      await refreshProductSaleLogs();
+      triggerSync();
+
+      await addLog(
+        'RECONCILE_PRODUCT_SALE_LOGS',
+        `Reconciled local product sale logs with cloud: kept ${keptFromCloud} from cloud, removed ${removedLocal} local-only siblings, queued ${pushed} local-only rows for push`
+      );
+
+      return { removedLocal, pushed, keptFromCloud, errors };
+    } catch (error) {
+      console.error('❌ reconcileProductSaleLogs failed:', error);
+      errors.push(String(error));
+      return { removedLocal, pushed, keptFromCloud, errors };
+    }
+  };
+
+  // Per-table local-vs-cloud id-set diff. Read-only: never writes anything.
+  const verifySyncIntegrity = async (): Promise<Array<{ table: string; local: number; cloud: number; missingLocal: number; missingCloud: number }>> => {
+    const db = await dbPromise();
+    const sources: Array<{ cloudTable: string; localStore: Parameters<typeof db.getAll>[0] }> = [
+      { cloudTable: 'products', localStore: 'products' },
+      { cloudTable: 'users', localStore: 'users' },
+      { cloudTable: 'sales', localStore: 'sales' },
+      { cloudTable: 'shifts', localStore: 'shifts' },
+      { cloudTable: 'audit_logs', localStore: 'auditLogs' },
+      { cloudTable: 'void_requests', localStore: 'voidRequests' },
+      { cloudTable: 'stock_change_requests', localStore: 'stockChangeRequests' },
+      { cloudTable: 'product_sale_logs', localStore: 'productSaleLogs' },
+    ];
+
+    const out: Array<{ table: string; local: number; cloud: number; missingLocal: number; missingCloud: number }> = [];
+    for (const { cloudTable, localStore } of sources) {
+      try {
+        const [localRows, cloudRows] = await Promise.all([
+          db.getAll(localStore) as Promise<Array<{ id: string }>>,
+          fetchAll<{ id: string }>(cloudTable),
+        ]);
+        const localIds = new Set(localRows.map(r => r.id));
+        const cloudIds = new Set(cloudRows.map(r => r.id));
+        let missingLocal = 0;
+        for (const id of cloudIds) if (!localIds.has(id)) missingLocal++;
+        let missingCloud = 0;
+        for (const id of localIds) if (!cloudIds.has(id)) missingCloud++;
+        out.push({
+          table: cloudTable,
+          local: localRows.length,
+          cloud: cloudRows.length,
+          missingLocal,
+          missingCloud,
+        });
+      } catch (error) {
+        console.error(`integrity check failed for ${cloudTable}:`, error);
+        out.push({ table: cloudTable, local: -1, cloud: -1, missingLocal: -1, missingCloud: -1 });
+      }
+    }
+    return out;
+  };
+
   /**
    * FETCH HISTORY
    * Manually pulls older data from Supabase for a specific date range.
@@ -2394,6 +2566,8 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
     reconcileStock,
     refreshProductSaleLogs,
     cleanupDuplicateLogs,
+    reconcileProductSaleLogs,
+    verifySyncIntegrity,
     fetchHistory,
   }), [
     currentUser,

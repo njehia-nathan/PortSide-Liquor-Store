@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS stock_change_requests (
     "quantityChange" INTEGER NOT NULL,
     reason TEXT,
     "newCost" NUMERIC(10, 2),
+    "supplierName" TEXT,
     "requestedBy" TEXT NOT NULL,
     "requestedByName" TEXT NOT NULL,
     "requestedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -190,6 +191,9 @@ CREATE TABLE IF NOT EXISTS stock_change_requests (
 
 ALTER TABLE stock_change_requests ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow all for anon" ON stock_change_requests FOR ALL USING (true);
+
+-- IF YOUR TABLE ALREADY EXISTS, RUN THIS TO ADD THE MISSING COLUMN:
+ALTER TABLE stock_change_requests ADD COLUMN IF NOT EXISTS "supplierName" TEXT;
 
 -- Index for pending requests
 CREATE INDEX IF NOT EXISTS idx_stock_change_requests_status ON stock_change_requests(status);

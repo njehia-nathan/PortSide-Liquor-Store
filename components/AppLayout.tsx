@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 
 const AppLayout = ({ children }: PropsWithChildren) => {
-  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings, products, updateProduct, sales, productSaleLogs, setProductSaleLogs, isLoading, dataLoadedTimestamp, refreshProductSaleLogs } = useStore();
+  const { currentUser, logout, currentShift, isOnline, isSyncing, auditLogs, businessSettings, products, updateProduct, sales, productSaleLogs, setProductSaleLogs, isLoading, dataLoadedTimestamp, refreshProductSaleLogs, reconcileProductSaleLogs, verifySyncIntegrity } = useStore();
   const pathname = usePathname();
   const router = useRouter();
   const [lastSaved, setLastSaved] = useState<string>('');
@@ -51,6 +51,9 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const [corruptedSales, setCorruptedSales] = useState<any[]>([]);
   const [missingSaleLogs, setMissingSaleLogs] = useState<any[]>([]);
   const [duplicateLogs, setDuplicateLogs] = useState<any[]>([]);
+  const [isReconciling, setIsReconciling] = useState(false);
+  const [integrityRows, setIntegrityRows] = useState<Array<{ table: string; local: number; cloud: number; missingLocal: number; missingCloud: number }> | null>(null);
+  const [isCheckingIntegrity, setIsCheckingIntegrity] = useState(false);
   const [editingSaleItemId, setEditingSaleItemId] = useState<string | null>(null);
   const [editItemCost, setEditItemCost] = useState('');
   const [editItemPrice, setEditItemPrice] = useState('');
@@ -58,6 +61,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const [isBulkOperationInProgress, setIsBulkOperationInProgress] = useState(false);
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
   const [failedSyncCount, setFailedSyncCount] = useState(0);
+  const [schemaDrift, setSchemaDrift] = useState<{ message: string; code: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,7 +76,16 @@ const AppLayout = ({ children }: PropsWithChildren) => {
     };
     poll();
     const interval = setInterval(poll, 5000);
-    return () => { cancelled = true; clearInterval(interval); };
+
+    // Listen for schema-drift events fired from cloud.ts when a 42703 hits.
+    // Keep the banner visible until the admin acts — silent drift is exactly
+    // what caused the multi-day sync stall in the first place.
+    const onDrift = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      setSchemaDrift({ message: d?.message ?? 'Schema mismatch', code: d?.code ?? '' });
+    };
+    window.addEventListener('pos:schema-drift', onDrift);
+    return () => { cancelled = true; clearInterval(interval); window.removeEventListener('pos:schema-drift', onDrift); };
   }, []);
 
   useEffect(() => {
@@ -221,18 +234,30 @@ const AppLayout = ({ children }: PropsWithChildren) => {
           trulyMissing: missingLogs.length
         });
 
-        // STEP 5: Detect duplicates (same saleId-productId key, multiple IDs)
+        // STEP 5: Detect duplicates (same saleId-productId key, multiple IDs).
+        // Winner preference: (1) row whose id === `${saleId}-${productId}` (the
+        // canonical deterministic scheme used by processSale + stored in cloud),
+        // (2) otherwise newest by timestamp. Everything else is a "duplicate"
+        // that is safe to delete LOCALLY ONLY — the dedup panel must not push
+        // DELETE_PRODUCT_SALE_LOG because siblings often share the same pair
+        // as the cloud's canonical row and a cloud delete would wipe it.
         console.log('🔍 Step 5: Checking for duplicate logs...');
         const duplicates: any[] = [];
         logLookup.forEach((logs, key) => {
           if (logs.length > 1) {
             console.log(`🔁 Duplicate found for ${key}: ${logs.length} logs`);
-            // Sort by timestamp, keep newest
-            logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-            // Mark all except the first (newest) as duplicates
-            logs.slice(1).forEach(log => {
-              duplicates.push(log);
+            const canonicalIdx = logs.findIndex(l => l.id === key);
+            let winner;
+            if (canonicalIdx >= 0) {
+              winner = logs[canonicalIdx];
+            } else {
+              const sorted = [...logs].sort(
+                (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+              );
+              winner = sorted[0];
+            }
+            logs.forEach(log => {
+              if (log.id !== winner.id) duplicates.push(log);
             });
           }
         });
@@ -678,33 +703,53 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   };
 
   const handleDeleteDuplicateLog = async (log: any) => {
+    // Local-only delete. These rows are phantom siblings (same saleId+productId
+    // as the cloud's canonical row but with a legacy random id). Pushing
+    // DELETE_PRODUCT_SALE_LOG would wipe the canonical cloud row in the common
+    // case where the deleted legacy id does not exist in cloud (no-op) OR,
+    // worse, when it does (actual data loss). To push genuinely local-only
+    // rows to cloud, use the "Reconcile with cloud" button.
     try {
-      if (isOnline) {
-        const { pushToCloud } = await import('../cloud');
-        const success = await pushToCloud('DELETE_PRODUCT_SALE_LOG', { id: log.id });
-
-        if (!success) {
-          throw new Error('Failed to delete from Supabase');
-        }
-      }
-
       const db = await dbPromise();
       await db.delete('productSaleLogs', log.id);
-
-      if (!isOnline) {
-        await db.add('syncQueue', {
-          type: 'DELETE_PRODUCT_SALE_LOG',
-          payload: { id: log.id },
-          timestamp: Date.now()
-        });
-      }
-
       setDuplicateLogs(prev => prev.filter(l => l.id !== log.id));
-
-      notifySuccess(`Deleted duplicate log for ${log.productName}`);
+      notifySuccess(`Removed phantom duplicate for ${log.productName}`);
     } catch (error) {
       console.error('Failed to delete duplicate log:', error);
       notifyError('Failed to delete duplicate log. Please try again.');
+    }
+  };
+
+  const handleReconcileLogs = async () => {
+    if (!isOnline) {
+      notifyError('Reconcile needs a cloud connection. Reconnect and try again.');
+      return;
+    }
+    setIsReconciling(true);
+    try {
+      const r = await reconcileProductSaleLogs();
+      setDuplicateLogs([]);
+      notifySuccess(
+        `Reconciled: kept ${r.keptFromCloud} from cloud, removed ${r.removedLocal} local siblings, queued ${r.pushed} for push.`
+      );
+    } catch (error) {
+      console.error('Reconcile failed:', error);
+      notifyError('Reconcile failed — check the console for details.');
+    } finally {
+      setIsReconciling(false);
+    }
+  };
+
+  const handleVerifyIntegrity = async () => {
+    setIsCheckingIntegrity(true);
+    try {
+      const rows = await verifySyncIntegrity();
+      setIntegrityRows(rows);
+    } catch (error) {
+      console.error('Integrity check failed:', error);
+      notifyError('Integrity check failed — check the console for details.');
+    } finally {
+      setIsCheckingIntegrity(false);
     }
   };
 
@@ -714,36 +759,12 @@ const AppLayout = ({ children }: PropsWithChildren) => {
     try {
       const count = duplicateLogs.length;
 
-      if (isOnline) {
-        const { pushToCloud } = await import('../cloud');
-        const results = await Promise.all(
-          duplicateLogs.map(log =>
-            pushToCloud('DELETE_PRODUCT_SALE_LOG', { id: log.id })
-          )
-        );
-
-        const failedCount = results.filter(r => !r).length;
-        if (failedCount > 0) {
-          throw new Error(`Failed to delete ${failedCount} logs from Supabase`);
-        }
-      }
-
+      // Local-only: see handleDeleteDuplicateLog for why we never cloud-delete
+      // from this path.
       const db = await dbPromise();
       await Promise.all(
         duplicateLogs.map(log => db.delete('productSaleLogs', log.id))
       );
-
-      if (!isOnline) {
-        await Promise.all(
-          duplicateLogs.map(log =>
-            db.add('syncQueue', {
-              type: 'DELETE_PRODUCT_SALE_LOG',
-              payload: { id: log.id },
-              timestamp: Date.now()
-            })
-          )
-        );
-      }
 
       setDuplicateLogs([]);
 
@@ -1286,7 +1307,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       )}
 
       {/* Sales Validation Dialog */}
-      {showSalesWarning && (corruptedSales.length > 0 || missingSaleLogs.length > 0 || duplicateLogs.length > 0) && (
+      {showSalesWarning && (corruptedSales.length > 0 || missingSaleLogs.length > 0 || duplicateLogs.length > 0 || integrityRows !== null) && (
         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
             <div className="p-6 border-b border-slate-200 bg-gradient-to-r from-orange-500 to-orange-600">
@@ -1309,6 +1330,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                   onClick={() => {
                     localStorage.setItem('sales_validation_dismissed', 'true');
                     setShowSalesWarning(false);
+                    setIntegrityRows(null);
                   }}
                   className="p-2 hover:bg-white/20 rounded-full transition-colors"
                   title="Dismiss (persists across reloads)"
@@ -1565,11 +1587,19 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                 {/* Duplicate Logs Section */}
                 {duplicateLogs.length > 0 && (
                   <div className="mb-6">
-                    <div className="bg-red-100 px-4 py-2 border-b-2 border-red-300">
+                    <div className="bg-red-100 px-4 py-2 border-b-2 border-red-300 flex items-center justify-between gap-3">
                       <h3 className="text-sm font-bold text-red-900 flex items-center gap-2">
                         <AlertTriangle size={16} />
                         Duplicate Product Sale Logs ({duplicateLogs.length})
                       </h3>
+                      <button
+                        onClick={handleReconcileLogs}
+                        disabled={isReconciling || !isOnline}
+                        title={!isOnline ? 'Cloud offline — reconnect to reconcile' : 'Pulls cloud truth, drops local phantom siblings, queues local-only rows for push'}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white rounded text-xs font-bold transition-colors"
+                      >
+                        {isReconciling ? 'Reconciling…' : 'Reconcile with cloud'}
+                      </button>
                     </div>
                     <table className="w-full">
                       <thead className="bg-red-600 text-white sticky top-0 z-10">
@@ -1687,6 +1717,50 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                     </table>
                   </div>
                 )}
+
+                {/* Integrity Check Section */}
+                <div className="mt-6">
+                  <div className="bg-slate-100 px-4 py-2 border-b-2 border-slate-300 flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Integrity Check (local vs cloud)
+                    </h3>
+                    <button
+                      onClick={handleVerifyIntegrity}
+                      disabled={isCheckingIntegrity || !isOnline}
+                      title={!isOnline ? 'Cloud offline — reconnect to check' : 'Compares per-table row counts and id sets between local IndexedDB and Supabase'}
+                      className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded text-xs font-bold transition-colors"
+                    >
+                      {isCheckingIntegrity ? 'Checking…' : 'Run check'}
+                    </button>
+                  </div>
+                  {integrityRows && (
+                    <table className="w-full">
+                      <thead className="bg-slate-700 text-white">
+                        <tr>
+                          <th className="px-2 py-2 text-left text-xs font-bold uppercase border-r border-slate-600">Table</th>
+                          <th className="px-2 py-2 text-right text-xs font-bold uppercase border-r border-slate-600">Local</th>
+                          <th className="px-2 py-2 text-right text-xs font-bold uppercase border-r border-slate-600">Cloud</th>
+                          <th className="px-2 py-2 text-right text-xs font-bold uppercase border-r border-slate-600">Cloud-only</th>
+                          <th className="px-2 py-2 text-right text-xs font-bold uppercase">Local-only</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {integrityRows.map(r => {
+                          const drift = r.missingLocal > 0 || r.missingCloud > 0;
+                          return (
+                            <tr key={r.table} className={`border-b ${drift ? 'bg-amber-50' : 'bg-white'}`}>
+                              <td className="px-2 py-2 text-xs font-mono text-slate-700 border-r border-slate-200">{r.table}</td>
+                              <td className="px-2 py-2 text-xs font-mono text-right text-slate-700 border-r border-slate-200">{r.local}</td>
+                              <td className="px-2 py-2 text-xs font-mono text-right text-slate-700 border-r border-slate-200">{r.cloud}</td>
+                              <td className={`px-2 py-2 text-xs font-mono text-right border-r border-slate-200 ${r.missingLocal > 0 ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>{r.missingLocal}</td>
+                              <td className={`px-2 py-2 text-xs font-mono text-right ${r.missingCloud > 0 ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>{r.missingCloud}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1700,6 +1774,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                     onClick={() => {
                       localStorage.setItem('sales_validation_dismissed', 'true');
                       setShowSalesWarning(false);
+                      setIntegrityRows(null);
                     }}
                     className="px-4 py-2 bg-slate-500 hover:bg-slate-600 text-white rounded-lg text-sm font-bold transition-colors"
                   >
@@ -1757,6 +1832,29 @@ const AppLayout = ({ children }: PropsWithChildren) => {
               aria-label="Dismiss"
             >
               <X size={18} />
+            </button>
+          </div>
+        )}
+
+        {/* Schema drift banner — fired when a cloud write gets 42703
+            "undefined_column", meaning the Supabase schema is behind the
+            client code. Admin must run APPLY_THIS_IN_SUPABASE.sql. */}
+        {schemaDrift && (
+          <div className="sticky top-0 z-40 bg-orange-600 text-white px-4 py-3 flex items-center justify-between shadow-lg print:hidden">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <AlertTriangle size={20} className="flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-sm">Cloud schema is out of date — sales aren't saving</p>
+                <p className="text-xs opacity-90 truncate">
+                  Ask the admin to paste <span className="font-mono bg-orange-700 px-1 rounded">APPLY_THIS_IN_SUPABASE.sql</span> into the Supabase SQL Editor and run it.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setSchemaDrift(null)}
+              className="ml-4 px-3 py-1.5 bg-white text-orange-700 rounded-md text-xs font-semibold hover:bg-orange-50"
+            >
+              Dismiss
             </button>
           </div>
         )}

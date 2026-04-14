@@ -427,28 +427,12 @@ export const runSchemaPreflight = async (): Promise<PreflightReport> => {
       }
     }
 
-    // 2. Realtime publication check — this one query covers all tables.
-    //    If we can't access pg_publication_tables via PostgREST (default)
-    //    we silently skip; missing realtime is non-fatal (UI still works
-    //    with polling fallback).
-    try {
-      const { data, error } = await supabase
-        .from('pg_publication_tables' as any)
-        .select('tablename')
-        .eq('pubname', 'supabase_realtime');
-      if (!error && data) {
-        const published = new Set(data.map((r: any) => r.tablename));
-        for (const t of tables) {
-          if (!published.has(t)) {
-            issues.push({
-              kind: 'not-in-realtime',
-              table: t,
-              message: `${t} not in supabase_realtime publication — other devices won't see updates live`,
-            });
-          }
-        }
-      }
-    } catch { /* non-fatal */ }
+    // 2. Realtime publication check removed. Supabase doesn't expose
+    //    pg_publication_tables through PostgREST by default, so this probe
+    //    always 404'd and added console noise for zero signal. Missing
+    //    realtime surfaces as "other devices don't update" rather than
+    //    silent data loss, and admins can verify it in the Supabase
+    //    dashboard. Not worth the noise on every 5-minute tick.
 
     // 3. RPC sanity — call each required RPC with canary args. If the RPC
     //    body references a missing column or is undefined, we 42703 /

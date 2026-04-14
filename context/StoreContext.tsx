@@ -866,14 +866,18 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
         const db = await dbPromise();
         // Drain in batches until empty or until a batch makes no progress.
         while (true) {
-          const queueItems = await db.getAll('syncQueue');
+          // Pass BATCH_SIZE as the count argument so idb only reads 10 records
+          // from IndexedDB at a time. Without this, db.getAll() loads every
+          // pending item (potentially hundreds of thousands) into RAM at once,
+          // crashing the tab before any sync can happen.
+          const queueItems = await db.getAll('syncQueue', undefined, BATCH_SIZE);
           if (queueItems.length === 0) break;
 
           const USER_ACTION_WINDOW_MS = 30000;
           const isUserTriggered = Date.now() - lastUserActionRef.current < USER_ACTION_WINDOW_MS;
           if (isUserTriggered) setIsSyncing(true);
 
-          const batch = queueItems.slice(0, BATCH_SIZE);
+          const batch = queueItems; // already limited to BATCH_SIZE by the query
           let successCount = 0;
 
           for (const item of batch) {

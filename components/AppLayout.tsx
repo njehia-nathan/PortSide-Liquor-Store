@@ -80,7 +80,8 @@ const AppLayout = ({ children }: PropsWithChildren) => {
         const [failedCount, queueCount, failedRows] = await Promise.all([
           db.count('failedSyncQueue'),
           db.count('syncQueue'),
-          db.getAll('failedSyncQueue'),
+          // Only need the first row for its lastError message — fetch 1 item max.
+          db.getAll('failedSyncQueue', undefined, 1),
         ]);
         if (cancelled) return;
         setFailedSyncCount(failedCount);

@@ -25,17 +25,45 @@ const STORES = [
   'syncQueue', 'failedSyncQueue', 'businessSettings',
 ] as const;
 
-const readAllIndexedDb = async (): Promise<Record<string, any[]>> => {
+// These stores can grow to hundreds of thousands of records. Loading them
+// entirely into RAM causes the same OOM crash we're trying to diagnose.
+// We capture a small sample + the real count instead.
+const LARGE_STORES = new Set<string>(['syncQueue', 'failedSyncQueue']);
+const LARGE_STORE_SAMPLE = 100;
+
+interface IndexedDbSnapshot {
+  data: Record<string, any[]>;
+  /** Accurate row count for each store (not skewed by sampling). */
+  counts: Record<string, number>;
+}
+
+const readAllIndexedDb = async (): Promise<IndexedDbSnapshot> => {
   const db = await dbPromise();
-  const out: Record<string, any[]> = {};
+  const data: Record<string, any[]> = {};
+  const counts: Record<string, number> = {};
+
   for (const s of STORES) {
     try {
-      out[s] = (await db.getAll(s as any)) as any[];
+      if (LARGE_STORES.has(s)) {
+        // Count first (cheap cursor-free IDB call), then fetch a small sample.
+        const totalCount = await db.count(s as any);
+        counts[s] = totalCount;
+        const sample = (await db.getAll(s as any, undefined, LARGE_STORE_SAMPLE)) as any[];
+        data[s] = totalCount > LARGE_STORE_SAMPLE
+          ? [{ _sampled: true, totalCount, keptFirst: LARGE_STORE_SAMPLE }, ...sample]
+          : sample;
+      } else {
+        const items = (await db.getAll(s as any)) as any[];
+        data[s] = items;
+        counts[s] = items.length;
+      }
     } catch (err) {
-      out[s] = [{ _error: String(err) }];
+      data[s] = [{ _error: String(err) }];
+      counts[s] = 0;
     }
   }
-  return out;
+
+  return { data, counts };
 };
 
 const readAllLocalStorage = (): Record<string, string> => {
@@ -122,7 +150,7 @@ const isPayloadTooLargeError = (err: any): boolean => {
 };
 
 export const dumpLocalState = async (opts: DumpOptions = {}): Promise<DumpResult> => {
-  const indexedDb = await readAllIndexedDb();
+  const { data: indexedDb, counts } = await readAllIndexedDb();
   const localStorageSnap = readAllLocalStorage();
   const environment = captureEnvironment();
 
@@ -138,6 +166,10 @@ export const dumpLocalState = async (opts: DumpOptions = {}): Promise<DumpResult
   const id = (crypto as any)?.randomUUID?.() || `snap-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const deviceId = getOrCreateDeviceId();
 
+  // Use accurate counts from db.count(), not the (possibly sampled) array length.
+  const syncQueueCount = counts['syncQueue'] ?? 0;
+  const failedSyncQueueCount = counts['failedSyncQueue'] ?? 0;
+
   const attempt = async (): Promise<{ bytes: number }> => {
     const serialized = JSON.stringify(payload);
     const bytes = serialized.length;
@@ -145,8 +177,8 @@ export const dumpLocalState = async (opts: DumpOptions = {}): Promise<DumpResult
       id,
       deviceId,
       userName: opts.userName ?? null,
-      syncQueueCount: indexedDb.syncQueue?.length ?? 0,
-      failedSyncQueueCount: indexedDb.failedSyncQueue?.length ?? 0,
+      syncQueueCount,
+      failedSyncQueueCount,
       pathname: (environment as any).pathname ?? null,
       userAgent: (environment as any).userAgent ?? null,
       note: opts.note ?? null,
@@ -164,8 +196,8 @@ export const dumpLocalState = async (opts: DumpOptions = {}): Promise<DumpResult
         id,
         bytes,
         truncations: [...truncations],
-        syncQueueCount: indexedDb.syncQueue?.length ?? 0,
-        failedSyncQueueCount: indexedDb.failedSyncQueue?.length ?? 0,
+        syncQueueCount,
+        failedSyncQueueCount,
       };
     } catch (err) {
       lastErr = err;

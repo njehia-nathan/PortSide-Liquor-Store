@@ -54,6 +54,7 @@ const AppLayout = ({ children }: PropsWithChildren) => {
   const [isReconciling, setIsReconciling] = useState(false);
   const [integrityRows, setIntegrityRows] = useState<Array<{ table: string; local: number; cloud: number; missingLocal: number; missingCloud: number }> | null>(null);
   const [isCheckingIntegrity, setIsCheckingIntegrity] = useState(false);
+  const [isDumpingState, setIsDumpingState] = useState(false);
   const [editingSaleItemId, setEditingSaleItemId] = useState<string | null>(null);
   const [editItemCost, setEditItemCost] = useState('');
   const [editItemPrice, setEditItemPrice] = useState('');
@@ -129,6 +130,31 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       setShowOfflineBanner(true);
     }
   }, [isOnline]);
+
+  // When sync stalls (online + pending items stuck 5+ min), auto-capture a
+  // forensic snapshot so we can analyse the queue without asking the
+  // operator to click anything. One dump per stall episode; re-arms when
+  // the stall clears.
+  useEffect(() => {
+    if (!isSyncStalled) return;
+    if (!isOnline) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { dumpLocalState } = await import('../utils/diagnostics');
+        const r = await dumpLocalState({
+          note: `auto-dump on stall (pending=${pendingCount})`,
+          userName: currentUser?.name ?? null,
+        });
+        if (!cancelled) {
+          console.log(`📸 Auto-dump on stall: ${r.id} (${(r.bytes / 1024 / 1024).toFixed(2)} MB)`);
+        }
+      } catch (err) {
+        console.warn('Auto-dump on stall failed (non-fatal):', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isSyncStalled, isOnline, pendingCount, currentUser?.name]);
 
   useEffect(() => {
     if (currentUser && currentUser.permissions?.includes('ADMIN') && dataLoadedTimestamp > 0 && products.length > 0) {
@@ -777,6 +803,32 @@ const AppLayout = ({ children }: PropsWithChildren) => {
       notifyError('Integrity check failed — check the console for details.');
     } finally {
       setIsCheckingIntegrity(false);
+    }
+  };
+
+  const handleDumpLocalState = async () => {
+    const note = prompt(
+      'Optional note for this snapshot (e.g. "before reload, till #2, Charles"):',
+      ''
+    );
+    if (note === null) return;
+    setIsDumpingState(true);
+    try {
+      const { dumpLocalState } = await import('../utils/diagnostics');
+      const r = await dumpLocalState({
+        note: note || undefined,
+        userName: currentUser?.name ?? null,
+      });
+      const mb = (r.bytes / (1024 * 1024)).toFixed(2);
+      const extra = r.truncations.length ? `\nTruncated: ${r.truncations.join('; ')}` : '';
+      notifySuccess(
+        `Snapshot ${r.id.slice(0, 8)}… uploaded (${mb} MB, ${r.syncQueueCount} pending, ${r.failedSyncQueueCount} failed).${extra}`
+      );
+    } catch (err: any) {
+      console.error('Snapshot failed:', err);
+      notifyError(`Snapshot failed: ${err?.message ?? err}`);
+    } finally {
+      setIsDumpingState(false);
     }
   };
 
@@ -1751,14 +1803,24 @@ const AppLayout = ({ children }: PropsWithChildren) => {
                     <h3 className="text-sm font-bold text-slate-900">
                       Integrity Check (local vs cloud)
                     </h3>
-                    <button
-                      onClick={handleVerifyIntegrity}
-                      disabled={isCheckingIntegrity || !isOnline}
-                      title={!isOnline ? 'Cloud offline — reconnect to check' : 'Compares per-table row counts and id sets between local IndexedDB and Supabase'}
-                      className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded text-xs font-bold transition-colors"
-                    >
-                      {isCheckingIntegrity ? 'Checking…' : 'Run check'}
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleDumpLocalState}
+                        disabled={isDumpingState || !isOnline}
+                        title={!isOnline ? 'Cloud offline — reconnect to upload snapshot' : 'Upload this device\'s full local state (IndexedDB + localStorage) to Supabase for forensic analysis. Do this BEFORE reloading.'}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white rounded text-xs font-bold transition-colors"
+                      >
+                        {isDumpingState ? 'Uploading…' : 'Dump local state'}
+                      </button>
+                      <button
+                        onClick={handleVerifyIntegrity}
+                        disabled={isCheckingIntegrity || !isOnline}
+                        title={!isOnline ? 'Cloud offline — reconnect to check' : 'Compares per-table row counts and id sets between local IndexedDB and Supabase'}
+                        className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded text-xs font-bold transition-colors"
+                      >
+                        {isCheckingIntegrity ? 'Checking…' : 'Run check'}
+                      </button>
+                    </div>
                   </div>
                   {integrityRows && (
                     <table className="w-full">

@@ -1,4 +1,10 @@
-const CACHE_NAME = 'GrabBottle-pos-v3';
+// Bump this version when shipping a build that every device must refresh to.
+// The layout polls registration.update() every 60s, so within ~1 minute of a
+// Vercel deploy carrying a new CACHE_NAME, the updatefound + statechange hook
+// in app/layout.tsx auto-reloads each connected device. Pair this with an
+// INSERT into pos_commands (command='reload') if you need to force devices
+// that aren't polling or want to reload them immediately.
+const CACHE_NAME = 'GrabBottle-pos-v4-2026-04-14';
 const STATIC_ASSETS = [
   '/',
   '/inventory',

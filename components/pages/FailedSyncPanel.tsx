@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, RefreshCw, Trash2, Clock, XCircle, CheckCircle } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Trash2, Clock, XCircle, CheckCircle, Upload } from 'lucide-react';
 import { dbPromise, FailedSyncQueueItem } from '../../db';
 import { pushToCloud } from '../../cloud';
+import { dumpLocalState } from '../../utils/diagnostics';
 
 /**
  * FAILED SYNC ADMIN PANEL
@@ -12,6 +13,7 @@ const FailedSyncPanel: React.FC = () => {
   const [failedItems, setFailedItems] = useState<(FailedSyncQueueItem & { key: number })[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [retryingItem, setRetryingItem] = useState<number | null>(null);
+  const [isDumping, setIsDumping] = useState(false);
 
   const loadFailedItems = async () => {
     setIsLoading(true);
@@ -105,7 +107,7 @@ const FailedSyncPanel: React.FC = () => {
     if (!confirm(`Are you sure you want to delete all ${failedItems.length} failed sync items? This cannot be undone.`)) {
       return;
     }
-    
+
     try {
       const db = await dbPromise();
       for (const item of failedItems) {
@@ -115,6 +117,38 @@ const FailedSyncPanel: React.FC = () => {
       await loadFailedItems();
     } catch (error) {
       alert('❌ Failed to clear items');
+    }
+  };
+
+  // Forensic dump: send this device's full local state (IndexedDB + localStorage)
+  // to Supabase as a single JSONB row. Used before a reload so we can analyse
+  // the stranded queue shape and understand why specific rows didn't push.
+  const handleDumpState = async () => {
+    const note = prompt(
+      'Optional note for this snapshot (e.g. "before reload, till #2, Charles"):',
+      ''
+    );
+    if (note === null) return; // user cancelled
+    setIsDumping(true);
+    try {
+      const result = await dumpLocalState({ note: note || undefined });
+      const mb = (result.bytes / (1024 * 1024)).toFixed(2);
+      const truncMsg = result.truncations.length
+        ? `\n\n⚠️ Truncated to fit: ${result.truncations.join('; ')}`
+        : '';
+      alert(
+        `✅ Snapshot uploaded.\n\n` +
+        `ID: ${result.id}\n` +
+        `Size: ${mb} MB\n` +
+        `Pending queue: ${result.syncQueueCount}\n` +
+        `Failed queue: ${result.failedSyncQueueCount}` +
+        truncMsg
+      );
+    } catch (error: any) {
+      console.error('Snapshot failed:', error);
+      alert(`❌ Snapshot failed: ${error?.message ?? error}`);
+    } finally {
+      setIsDumping(false);
     }
   };
 
@@ -139,13 +173,24 @@ const FailedSyncPanel: React.FC = () => {
             Items that failed to sync after maximum retries
           </p>
         </div>
-        <button
-          onClick={loadFailedItems}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
-        >
-          <RefreshCw size={16} />
-          Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleDumpState}
+            disabled={isDumping}
+            title="Upload this device's full local state (IndexedDB + localStorage) to Supabase for forensic analysis. Do this BEFORE reloading the app."
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-slate-400 flex items-center gap-2"
+          >
+            <Upload size={16} className={isDumping ? 'animate-pulse' : ''} />
+            {isDumping ? 'Uploading…' : 'Dump local state'}
+          </button>
+          <button
+            onClick={loadFailedItems}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+          >
+            <RefreshCw size={16} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {failedItems.length === 0 ? (

@@ -596,6 +596,39 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
       }
     })();
 
+    // Auto-forensic dump: if this device boots with backlog (pending or
+    // failed sync items), silently upload a snapshot so the stuck state is
+    // captured before anything drains. Throttled to once every 6 hours per
+    // device so we don't saturate the snapshot table. The server-side
+    // prune trigger keeps only the 3 most recent rows per device regardless.
+    const AUTO_DUMP_FLAG = 'pos:last_auto_dump';
+    const AUTO_DUMP_THROTTLE_MS = 6 * 60 * 60 * 1000;
+    (async () => {
+      try {
+        if (typeof window === 'undefined') return;
+        if (!navigator.onLine) return;
+        const lastStr = localStorage.getItem(AUTO_DUMP_FLAG);
+        const lastAt = lastStr ? new Date(lastStr).getTime() : 0;
+        if (lastAt && Date.now() - lastAt < AUTO_DUMP_THROTTLE_MS) return;
+
+        const db = await dbPromise();
+        const [pending, failed] = await Promise.all([
+          db.count('syncQueue'),
+          db.count('failedSyncQueue'),
+        ]);
+        if (pending === 0 && failed === 0) return; // nothing worth capturing
+
+        const { dumpLocalState } = await import('../utils/diagnostics');
+        const r = await dumpLocalState({
+          note: `auto-dump on boot (pending=${pending}, failed=${failed})`,
+        });
+        localStorage.setItem(AUTO_DUMP_FLAG, new Date().toISOString());
+        console.log(`📸 Auto-dump on boot: ${r.id} (${(r.bytes / 1024 / 1024).toFixed(2)} MB)`);
+      } catch (err) {
+        console.warn('Auto-dump on boot failed (non-fatal):', err);
+      }
+    })();
+
     const handleOnline = () => {
       setIsOnline(true);
       // Network just came back — pull anything stuck in failedSyncQueue and
@@ -723,6 +756,46 @@ export const StoreProvider = ({ children }: PropsWithChildren) => {
           });
         } catch (err) {
           console.warn('Realtime business_settings handler error:', err);
+        }
+      }
+    );
+
+    // Admin command channel. An INSERT into pos_commands from the Supabase
+    // SQL editor (or MCP) triggers an action on every online device. Today:
+    //   - 'reload'       → location.reload()
+    //   - 'dump_state'   → silent forensic snapshot
+    // Commands older than 60 s are ignored so a late subscriber doesn't
+    // replay stale instructions.
+    channel.on(
+      'postgres_changes' as any,
+      { event: 'INSERT', schema: 'public', table: 'pos_commands' },
+      async (payload: any) => {
+        try {
+          const row = payload.new;
+          if (!row?.command) return;
+          const issuedAt = row.issuedAt ? new Date(row.issuedAt).getTime() : 0;
+          if (issuedAt && Date.now() - issuedAt > 60_000) return;
+          // Optional device targeting. Omit targetDeviceId to broadcast.
+          if (row.targetDeviceId) {
+            const { getOrCreateDeviceId } = await import('../utils/diagnostics');
+            if (row.targetDeviceId !== getOrCreateDeviceId()) return;
+          }
+          console.log(`📡 pos_commands received: ${row.command}`, row);
+          if (row.command === 'reload') {
+            // Brief delay lets the console log flush and lets any in-flight
+            // sync tick complete so a sale isn't interrupted mid-upsert.
+            setTimeout(() => {
+              if (typeof window !== 'undefined') window.location.reload();
+            }, 500);
+          } else if (row.command === 'dump_state') {
+            const { dumpLocalState } = await import('../utils/diagnostics');
+            dumpLocalState({
+              note: row.note || 'remote-triggered',
+              userName: currentUser?.name ?? null,
+            }).catch(err => console.warn('remote dump_state failed:', err));
+          }
+        } catch (err) {
+          console.warn('pos_commands handler error:', err);
         }
       }
     );
